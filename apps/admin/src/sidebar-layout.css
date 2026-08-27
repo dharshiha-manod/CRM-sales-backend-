@@ -1,0 +1,18 @@
+/* Layout safety: sidebar labels must remain visible when the viewport is resized. */
+.app-shell { min-width: 0; }
+.sidebar { width: 256px; min-width: 256px; flex: 0 0 256px; flex-shrink: 0; overflow-x: visible; overflow-y: auto; }
+.side-nav { min-width: 0; }
+.nav-label, .side-nav button, .sidebar-footer { white-space: nowrap; }
+.side-nav button { min-width: 0; overflow: visible; }
+.side-nav button span { flex: 0 0 1rem; }
+.workspace { width: calc(100% - 256px); min-width: 0; margin-left: 256px; }
+
+/* Keep text navigation on common resized desktop windows; horizontal scrolling is preferable to clipped labels. */
+@media (max-width: 860px) {
+  .sidebar { width: 240px; min-width: 240px; flex-basis: 240px; padding: 1rem .5rem; }
+  .brand { justify-content: flex-start; }
+  .brand > span:last-child, .side-nav button { font-size: inherit; }
+  .side-nav button { justify-content: flex-start; padding: .7rem; }
+  .nav-label, .side-nav em, .sidebar-footer { display: block; }
+  .workspace { width: calc(100% - 240px); margin-left: 240px; }
+}

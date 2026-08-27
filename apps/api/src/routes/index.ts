@@ -1,0 +1,32 @@
+import { Router } from 'express';
+import { health } from '../controllers/health.controller.js';
+import { authRouter } from './auth.routes.js';
+import { masterDataRouter } from './master-data.routes.js';
+import { mobileRouter } from './mobile.routes.js';
+import { dashboardRouter } from './dashboard.routes.js';
+import { userManagementRouter } from './user-management.routes.js';
+import { fieldActivityRouter } from './field-activity.routes.js';
+import { productsRouter } from './products.routes.js';
+import { ordersRouter } from './orders.routes.js';
+import { followUpsRouter } from './follow-ups.routes.js';
+import { telephonyRouter } from './telephony.routes.js';
+import { collectionsRouter } from './collections.routes.js';
+import { reportsRouter } from './reports.routes.js';
+import { industryTypesRouter } from './industry-types.routes.js';
+export const apiRouter = Router();
+apiRouter.get('/health', health);
+apiRouter.use('/auth', authRouter);
+apiRouter.use(masterDataRouter);
+// Keep the sales-representative-only middleware inside the mobile URL scope.
+// Mounting this router at the API root made it run for dashboard requests too.
+apiRouter.use('/mobile', mobileRouter);
+apiRouter.use(dashboardRouter);
+apiRouter.use(userManagementRouter);
+apiRouter.use(fieldActivityRouter);
+apiRouter.use(productsRouter);
+apiRouter.use(ordersRouter);
+apiRouter.use(followUpsRouter);
+apiRouter.use(telephonyRouter);
+apiRouter.use(collectionsRouter);
+apiRouter.use(reportsRouter);
+apiRouter.use(industryTypesRouter);

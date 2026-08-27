@@ -1,0 +1,3 @@
+import { z } from 'zod';
+export const productCreateSchema = z.object({ productCode: z.string().trim().min(1).max(80), productName: z.string().trim().min(1).max(240), category: z.string().trim().max(120).optional().nullable(), description: z.string().trim().max(4000).optional().nullable(), sellingPrice: z.number().nonnegative(), costPrice: z.number().nonnegative().optional().nullable(), stockQuantity: z.number().nonnegative().optional().nullable(), status: z.enum(['active', 'inactive']).default('active'), industryTypeIds: z.array(z.string().uuid()).max(50).optional() });
+export const productUpdateSchema = productCreateSchema.partial();

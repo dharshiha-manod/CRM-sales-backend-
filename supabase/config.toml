@@ -1,0 +1,8 @@
+project_id = "field-sales-platform"
+
+[api]
+enabled = true
+port = 54321
+
+[db]
+port = 54322

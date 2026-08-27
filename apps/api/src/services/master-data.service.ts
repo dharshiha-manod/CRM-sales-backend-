@@ -1,0 +1,3 @@
+import * as repo from '../repositories/master-data.repository.js';
+export const representativeService = { list: repo.listRepresentatives, get: repo.getRepresentative, async create(org: string, input: Record<string, unknown>) { await repo.assertRepresentativeUserMembership(org, input.userId as string); return repo.createRepresentative(org, input); }, update: repo.updateRepresentative };
+export const clientService = { list: repo.listClients, get: repo.getClient, create: repo.createClient, update: repo.updateClient, contacts: { list: repo.listContacts, create: repo.createContact, update: repo.updateContact, remove: repo.deleteContact }, assignments: { list: repo.listAssignedClients, assign: repo.assignClient, remove: repo.unassignClient } };

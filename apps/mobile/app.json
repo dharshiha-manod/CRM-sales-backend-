@@ -1,0 +1,1 @@
+{ "expo": { "name": "Field Sales", "slug": "field-sales", "version": "0.1.0", "orientation": "portrait", "scheme": "fieldsales", "userInterfaceStyle": "automatic", "plugins": ["expo-router", "expo-secure-store"], "experiments": { "typedRoutes": true } } }

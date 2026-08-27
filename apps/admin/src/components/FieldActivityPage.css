@@ -1,0 +1,24 @@
+.field-action { border-left: 4px solid #2557c6; }
+.visit-form { display: grid; gap: .75rem; max-width: 620px; margin-top: 1rem; }
+.visit-form textarea { min-height: 90px; resize: vertical; padding: .65rem; border: 1px solid #cbd5e1; border-radius: 7px; font: inherit; }
+.visit-form button { justify-self: start; background: #2557c6; color: white; border-color: #2557c6; }
+.visit-form .secondary-action { background: white; color: #2557c6; }
+.nearby-list { display: grid; gap: .5rem; }
+.nearby-list button { width: 100%; display: flex; justify-content: space-between; align-items: center; background: #f6f8ff; color: #132d5b; border-color: #dbe5ff; }
+.nearby-list span { color: #66758e; font-size: .85rem; }
+.activity-values { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+.saved-activities { display: grid; gap: .5rem; padding: .75rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+.saved-activities article { display: grid; gap: .2rem; padding: .6rem; background: white; border-left: 3px solid #2557c6; }
+.saved-activities p { margin: 0; color: #475569; }
+.saved-activities span, .saved-activities small { color: #66758e; }
+.order-builder { display: grid; gap: .65rem; padding: .9rem; border: 1px solid #dbe5ff; background: #f8faff; border-radius: 8px; }
+.order-line { display: grid; grid-template-columns: minmax(0, 1fr) 86px 86px 100px auto; gap: .5rem; align-items: center; }
+.order-line span { font-weight: 700; color: #132d5b; text-align: right; }
+.text-action { background: white !important; color: #c2410c !important; border-color: #fed7aa !important; }
+.order-total { display: flex; justify-content: space-between; padding-top: .5rem; border-top: 1px solid #dbe5ff; color: #132d5b; }
+@media (max-width: 760px) { .order-line { grid-template-columns: 1fr 1fr; } .order-line select { grid-column: 1 / -1; } }
+@media (max-width: 520px) { .activity-values { grid-template-columns: 1fr; } }
+.active-visit { color: #067647; font-weight: 700; }
+.visit-count { color: #66758e; font-size: .85rem; }
+.status-badge.checked_in, .status-badge.in_progress { background: #e8f0ff; color: #2453b4; }
+.status-badge.checked_out { background: #dcfae9; color: #067647; }

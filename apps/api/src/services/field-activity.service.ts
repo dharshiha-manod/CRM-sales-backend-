@@ -1,0 +1,2 @@
+import * as repository from '../repositories/field-activity.repository.js';
+export const fieldActivityService = { currentRepresentative: repository.findCurrentRepresentative, assignedClients: repository.listAssignedClients, nearbyAssignedClients: repository.listNearbyAssignedClients, checkIn: repository.checkIn, addPing: repository.addPing, checkOut: repository.checkOut, listVisits: repository.listVisits, listVisitActivities: repository.listVisitActivities, createVisitActivity: repository.createVisitActivity, liveVisits: repository.listLiveVisits };

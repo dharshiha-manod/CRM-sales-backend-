@@ -1,0 +1,9 @@
+import { z } from 'zod';
+
+const coordinate = z.number().finite();
+const gps = z.object({ latitude: coordinate.min(-90).max(90), longitude: coordinate.min(-180).max(180), accuracyMeters: z.number().finite().min(0).optional().nullable() });
+export const checkInSchema = z.object({ clientId: z.string().uuid().optional().nullable(), unlistedClientName: z.string().trim().min(2).max(240).optional().nullable(), notes: z.string().trim().max(10000).optional().nullable(), location: gps }).refine((data) => Boolean(data.clientId || data.unlistedClientName), { path: ['clientId'], message: 'Select a client or enter an unlisted client name.' });
+export const pingSchema = z.object({ location: gps });
+export const checkOutSchema = z.object({ location: gps, notes: z.string().trim().max(10000).optional().nullable(), outcome: z.enum(['sale_made', 'follow_up_needed', 'no_interest', 'other']).optional().nullable() });
+export const visitActivityCreateSchema = z.object({ personMet: z.string().trim().max(240).optional().nullable(), designation: z.string().trim().max(240).optional().nullable(), purpose: z.string().trim().max(500).optional().nullable(), requirements: z.string().trim().max(10000).optional().nullable(), expectedQuantity: z.number().finite().min(0).optional().nullable(), expectedValue: z.number().finite().min(0).optional().nullable(), notes: z.string().trim().max(10000).optional().nullable(), photoUrl: z.string().url().max(2000).optional().nullable() }).refine((data) => Boolean(data.personMet || data.purpose || data.requirements || data.notes), { message: 'Add at least one meeting detail, requirement, purpose, or note.' });
+export const nearbyClientSchema = z.object({ latitude: coordinate.min(-90).max(90), longitude: coordinate.min(-180).max(180), radiusMeters: z.coerce.number().int().min(100).max(50000).default(5000) });

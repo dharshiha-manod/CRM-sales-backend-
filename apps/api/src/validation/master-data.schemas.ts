@@ -1,0 +1,16 @@
+import { z } from 'zod';
+export const uuid = z.string().uuid();
+const optionalText = z.string().trim().min(1).max(500).optional().nullable();
+const phone = z.string().trim().regex(/^[+()0-9.\-\s]{5,32}$/, 'Invalid phone number').optional().nullable();
+const email = z.string().trim().email().max(254).optional().nullable();
+export const representativeCreateSchema = z.object({ userId: uuid, employeeCode: z.string().trim().min(1).max(80), phone, email, designation: optionalText, joiningDate: z.string().date().optional().nullable(), status: z.enum(['active', 'inactive']).default('active') });
+export const representativeUpdateSchema = representativeCreateSchema.omit({ userId: true }).partial();
+export const representativeStatusSchema = z.object({ status: z.enum(['active', 'inactive']) });
+const clientFieldsSchema = z.object({ clientCode: z.string().trim().min(1).max(80), clientName: z.string().trim().min(1).max(240), clientType: z.string().trim().min(1).max(80), industry: optionalText, industryTypeId: z.string().uuid().optional().nullable(), phone, email, website: z.string().trim().url().max(500).optional().nullable(), address: optionalText, city: z.string().trim().max(120).optional().nullable(), state: z.string().trim().max(120).optional().nullable(), country: z.string().trim().max(120).optional().nullable(), postalCode: z.string().trim().max(30).optional().nullable(), latitude: z.number().min(-90).max(90).optional().nullable(), longitude: z.number().min(-180).max(180).optional().nullable(), gpsRadiusMeters: z.number().int().min(10).max(10000).optional().nullable(), priority: z.enum(['low', 'normal', 'high', 'critical']).default('normal'), status: z.enum(['active', 'inactive']).default('active'), notes: z.string().trim().max(10000).optional().nullable() });
+const enforceGpsCoordinatePair = <T extends { latitude?: number | null; longitude?: number | null }>(value: T) => (value.latitude == null) === (value.longitude == null);
+export const clientCreateSchema = clientFieldsSchema.refine(enforceGpsCoordinatePair, { message: 'Latitude and longitude must be supplied together', path: ['latitude'] });
+export const clientUpdateSchema = clientFieldsSchema.partial().refine(enforceGpsCoordinatePair, { message: 'Latitude and longitude must be supplied together', path: ['latitude'] });
+export const clientStatusSchema = z.object({ status: z.enum(['active', 'inactive']) });
+export const contactCreateSchema = z.object({ name: z.string().trim().min(1).max(160), designation: optionalText, department: optionalText, phone, alternatePhone: phone, email, isPrimary: z.boolean().default(false), notes: z.string().trim().max(10000).optional().nullable() });
+export const contactUpdateSchema = contactCreateSchema.partial();
+export const assignmentSchema = z.object({ notes: z.string().trim().max(10000).optional().nullable() });
