@@ -10,10 +10,11 @@ export async function listIndustryTypes(org: string, search?: string, status?: s
   const { data, error } = await query;
   return error ? fail(error) : data;
 }
-
+// NEW — wrap the raw DB error instead of letting it fall through to a bare
+// "unexpected error occurred" with no useful message anywhere.
 export async function getIndustryType(org: string, id: string) {
   const { data, error } = await supabaseAdmin.from('industry_types').select('*').eq('organization_id', org).eq('id', id).maybeSingle();
-  if (error) fail(error);
+  if (error) throw new AppError(500, 'INDUSTRY_TYPE_LOOKUP_FAILED', error.message);
   if (!data) throw new AppError(404, 'INDUSTRY_TYPE_NOT_FOUND', 'Industry type was not found.');
   return data;
 }

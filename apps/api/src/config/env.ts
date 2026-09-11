@@ -9,6 +9,22 @@ const schema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_JWT_ISSUER: z.string().url(),
-  SUPABASE_JWT_AUDIENCE: z.string().min(1).default('authenticated')
+  SUPABASE_JWT_AUDIENCE: z.string().min(1).default('authenticated'),
+  // NEW — Telephony/IVR. All optional: if TELEPHONY_PROVIDER is unset, the
+  // Calls & IVR page keeps working in "not configured" mode (existing
+  // behaviour is fully preserved).
+  TELEPHONY_PROVIDER: z.enum(['twilio', 'exotel']).optional(),
+  TWILIO_ACCOUNT_SID: z.string().optional(),
+  TWILIO_AUTH_TOKEN: z.string().optional(),
+  TWILIO_PHONE_NUMBER: z.string().optional(),
+  EXOTEL_SID: z.string().optional(),
+  EXOTEL_API_KEY: z.string().optional(),
+  EXOTEL_API_TOKEN: z.string().optional(),
+  EXOTEL_SUBDOMAIN: z.string().optional(),
+  EXOTEL_PHONE_NUMBER: z.string().optional(),
+  // Public base URL of THIS api (e.g. https://api.yourcompany.com/api) used
+  // to build the webhook URLs the telephony provider needs to call back into.
+  TELEPHONY_PUBLIC_BASE_URL: z.string().url().optional(),
+  TWILIO_VOICE_ANSWER_URL: z.string().url().optional()
 });
 export const env = schema.parse(process.env);

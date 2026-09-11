@@ -1,6 +1,7 @@
 import type { RequestHandler } from 'express';
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
+import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 
 const org = (req: Parameters<RequestHandler>[0]) => { const value = req.header('x-organization-id'); if (!value) throw new AppError(400, 'ORGANIZATION_CONTEXT_REQUIRED', 'x-organization-id is required'); return value; };
 const total = (result: { count: number | null }) => result.count ?? 0;
@@ -8,13 +9,23 @@ const total = (result: { count: number | null }) => result.count ?? 0;
 export const reports: Record<string, RequestHandler> = {
   summary: async (req, res) => {
     const organizationId = org(req);
+    const requested = typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : undefined;
+    const industryTypeId = resolveIndustryTypeId(req.industryScope!, requested);
     const since = new Date(); since.setDate(since.getDate() - 30);
-    const [visits, orders, collections, reps] = await Promise.all([
-      supabaseAdmin.from('field_visits').select('id, representative_id, status, check_in_time, clients(client_name), sales_representatives(employee_code, user_profiles(display_name))').eq('organization_id', organizationId).gte('check_in_time', since.toISOString()).order('check_in_time', { ascending: false }).limit(500),
-      supabaseAdmin.from('sale_orders').select('id, representative_id, client_id, total_amount, created_at, clients(client_name), sales_representatives(employee_code, user_profiles(display_name))').eq('organization_id', organizationId).gte('created_at', since.toISOString()).order('created_at', { ascending: false }).limit(500),
-      supabaseAdmin.from('sales_collections').select('id, representative_id, amount, collected_at, clients(client_name), sales_representatives(employee_code, user_profiles(display_name))').eq('organization_id', organizationId).gte('collected_at', since.toISOString()).order('collected_at', { ascending: false }).limit(500),
-      supabaseAdmin.from('sales_representatives').select('id, employee_code, user_profiles(display_name)').eq('organization_id', organizationId).eq('status', 'active'),
-    ]);
+
+    let visitsQuery = supabaseAdmin.from('field_visits').select(industryTypeId ? 'id, representative_id, status, check_in_time, clients!inner(client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))' : 'id, representative_id, status, check_in_time, clients(client_name), sales_representatives(employee_code, user_profiles(display_name))').eq('organization_id', organizationId).gte('check_in_time', since.toISOString()).order('check_in_time', { ascending: false }).limit(500);
+    if (industryTypeId) visitsQuery = visitsQuery.eq('clients.industry_type_id', industryTypeId);
+
+    let ordersQuery = supabaseAdmin.from('sale_orders').select(industryTypeId ? 'id, representative_id, client_id, total_amount, created_at, clients!inner(client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))' : 'id, representative_id, client_id, total_amount, created_at, clients(client_name), sales_representatives(employee_code, user_profiles(display_name))').eq('organization_id', organizationId).gte('created_at', since.toISOString()).order('created_at', { ascending: false }).limit(500);
+    if (industryTypeId) ordersQuery = ordersQuery.eq('clients.industry_type_id', industryTypeId);
+
+    let collectionsQuery = supabaseAdmin.from('sales_collections').select(industryTypeId ? 'id, representative_id, amount, collected_at, clients!inner(client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))' : 'id, representative_id, amount, collected_at, clients(client_name), sales_representatives(employee_code, user_profiles(display_name))').eq('organization_id', organizationId).gte('collected_at', since.toISOString()).order('collected_at', { ascending: false }).limit(500);
+    if (industryTypeId) collectionsQuery = collectionsQuery.eq('clients.industry_type_id', industryTypeId);
+
+    let repsQuery = supabaseAdmin.from('sales_representatives').select(industryTypeId ? 'id, employee_code, user_profiles(display_name), sales_representative_industry_types!inner(industry_type_id)' : 'id, employee_code, user_profiles(display_name)').eq('organization_id', organizationId).eq('status', 'active');
+    if (industryTypeId) repsQuery = repsQuery.eq('sales_representative_industry_types.industry_type_id', industryTypeId);
+
+    const [visits, orders, collections, reps] = await Promise.all([visitsQuery, ordersQuery, collectionsQuery, repsQuery]);
     for (const result of [visits, orders, collections, reps]) if (result.error) throw result.error;
     const nameOf = (row: { sales_representatives?: { employee_code?: string | null; user_profiles?: { display_name?: string | null } | null } | null }) => row.sales_representatives?.user_profiles?.display_name ?? row.sales_representatives?.employee_code ?? 'Unassigned';
     const byRep = new Map<string, { representativeId: string; representative: string; visits: number; orders: number; sales: number; collections: number }>();

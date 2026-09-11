@@ -2,6 +2,7 @@ import type { RequestHandler } from 'express';
 import { AppError } from '../errors/app-error.js';
 import { fieldActivityService } from '../services/field-activity.service.js';
 import { checkInSchema, checkOutSchema, nearbyClientSchema, pingSchema, visitActivityCreateSchema } from '../validation/field-activity.schemas.js';
+import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 
 const organization = (req: Parameters<RequestHandler>[0]) => {
   const value = req.header('x-organization-id');
@@ -51,12 +52,20 @@ export const fieldActivity: Record<string, RequestHandler> = {
     const rep = await fieldActivityService.currentRepresentative(org, req.auth!.sub!);
     res.status(201).json({ data: await fieldActivityService.createVisitActivity(org, rep.id, param(req.params.id), visitActivityCreateSchema.parse(req.body)) });
   },
-  allActivities: async (req, res) => res.json({ data: await fieldActivityService.listVisitActivities(organization(req), param(req.params.id)) }),
+  allActivities: async (req, res) => res.json({ data: await fieldActivityService.listVisitActivities(organization(req), param(req.params.id), undefined, req.industryScope!) }),
   mine: async (req, res) => {
     const org = organization(req);
     const rep = await fieldActivityService.currentRepresentative(org, req.auth!.sub!);
     res.json({ data: await fieldActivityService.listVisits(org, rep.id) });
   },
-  all: async (req, res) => res.json({ data: await fieldActivityService.listVisits(organization(req)) }),
-  live: async (req, res) => res.json({ data: await fieldActivityService.liveVisits(organization(req)) })
+  all: async (req, res) => {
+    const requested = typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : undefined;
+    const industryTypeId = resolveIndustryTypeId(req.industryScope!, requested);
+    res.json({ data: await fieldActivityService.listVisits(organization(req), undefined, industryTypeId) });
+  },
+  live: async (req, res) => {
+    const requested = typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : undefined;
+    const industryTypeId = resolveIndustryTypeId(req.industryScope!, requested);
+    res.json({ data: await fieldActivityService.liveVisits(organization(req), industryTypeId) });
+  }
 };

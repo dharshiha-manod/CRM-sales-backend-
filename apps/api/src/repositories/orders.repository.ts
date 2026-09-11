@@ -23,9 +23,9 @@ export async function createOrderFromVisit(organizationId: string, representativ
   if (lineError) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); fail(lineError); }
   return { ...order, items: savedLines };
 }
-
-export async function listOrders(organizationId: string, representativeId?: string) {
-  let query = supabaseAdmin.from('sale_orders').select('*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name)), sale_order_items(quantity, unit_price, discount_amount, subtotal, products(product_code, product_name))').eq('organization_id', organizationId).order('created_at', { ascending: false }).limit(100);
+export async function listOrders(organizationId: string, representativeId?: string, industryTypeId?: string | null) {
+  let query = supabaseAdmin.from('sale_orders').select('*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), sale_order_items(quantity, unit_price, discount_amount, subtotal, products(product_code, product_name))').eq('organization_id', organizationId).order('created_at', { ascending: false }).limit(100);
   if (representativeId) query = query.eq('representative_id', representativeId);
+  if (industryTypeId) query = query.eq('clients.industry_type_id', industryTypeId);
   const { data, error } = await query; return error ? fail(error) : data;
 }

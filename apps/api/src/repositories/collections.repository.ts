@@ -21,9 +21,10 @@ export async function createFromVisit(organizationId: string, representativeId: 
   return data;
 }
 
-export async function listCollections(organizationId: string, representativeId?: string) {
-  let query = supabaseAdmin.from('sales_collections').select('*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name)), sale_orders(order_number)').eq('organization_id', organizationId).order('collected_at', { ascending: false }).limit(100);
+export async function listCollections(organizationId: string, representativeId?: string, industryTypeId?: string | null) {
+  let query = supabaseAdmin.from('sales_collections').select('*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), sale_orders(order_number)').eq('organization_id', organizationId).order('collected_at', { ascending: false }).limit(100);
   if (representativeId) query = query.eq('representative_id', representativeId);
+  if (industryTypeId) query = query.eq('clients.industry_type_id', industryTypeId);
   const { data, error } = await query;
   if (error) throw error;
   return data;

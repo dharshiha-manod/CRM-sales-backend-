@@ -10,7 +10,13 @@ const organizationId = (req: Parameters<RequestHandler>[0]) => {
 };
 
 export const users: Record<string, RequestHandler> = {
-  list: async (req, res) => res.json({ data: await userManagementService.listUsers(organizationId(req)) }),
+  // Admin/Super Admin pass ?industryTypeId= to scope the list to one
+  // industry (their selector) -- their global role means no server-side
+  // lock is applied, so this is purely their own choice, not a boundary.
+  list: async (req, res) => {
+    const industryTypeId = typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : undefined;
+    res.json({ data: await userManagementService.listUsers(organizationId(req), industryTypeId) });
+  },
   roles: async (_req, res) => res.json({ data: await userManagementService.listRoles() }),
   saveMembership: async (req, res) => res.status(201).json({ data: await userManagementService.saveMembership(organizationId(req), userMembershipSchema.parse(req.body)) }),
   create: async (req, res) => {
@@ -18,4 +24,4 @@ export const users: Record<string, RequestHandler> = {
     if (input.roleCode === 'super_admin' && req.organizationRole !== 'super_admin') throw new AppError(403, 'SUPER_ADMIN_REQUIRED', 'Only a Super Admin can create another Super Admin.');
     res.status(201).json({ data: await userManagementService.createUser(organizationId(req), input) });
   }
-};
+};  

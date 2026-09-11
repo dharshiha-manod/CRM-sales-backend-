@@ -14,6 +14,13 @@
 .order-builder { display: grid; gap: .65rem; padding: .9rem; border: 1px solid #dbe5ff; background: #f8faff; border-radius: 8px; }
 .order-line { display: grid; grid-template-columns: minmax(0, 1fr) 86px 86px 100px auto; gap: .5rem; align-items: center; }
 .order-line span { font-weight: 700; color: #132d5b; text-align: right; }
+.order-line-header { font-weight: 700; }
+.order-line-header .order-line-label { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #66758e; text-align: left; }
+.order-line-header .order-line-label:nth-child(2),
+.order-line-header .order-line-label:nth-child(3),
+.order-line-header .order-line-label:nth-child(4) { text-align: center; }
+.order-line-header .order-line-label:last-child { text-align: right; }
+@media (max-width: 760px) { .order-line-header { display: none; } }
 .text-action { background: white !important; color: #c2410c !important; border-color: #fed7aa !important; }
 .order-total { display: flex; justify-content: space-between; padding-top: .5rem; border-top: 1px solid #dbe5ff; color: #132d5b; }
 @media (max-width: 760px) { .order-line { grid-template-columns: 1fr 1fr; } .order-line select { grid-column: 1 / -1; } }

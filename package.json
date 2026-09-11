@@ -9,5 +9,11 @@
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test"
   },
-  "devDependencies": { "prettier": "^3.5.3" }
+  "devDependencies": {
+    "prettier": "^3.5.3"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.114.0",
+    "dotenv": "^17.4.2"
+  }
 }

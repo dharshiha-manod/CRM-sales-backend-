@@ -1,1 +1,983 @@
-.master-page{max-width:1180px}.master-toolbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin:1.5rem 0 1rem}.master-search{display:flex;align-items:center;gap:.6rem;flex:1;min-width:0}.master-search input{width:min(420px,100%)}.master-filter-bar{display:flex;align-items:end;flex-wrap:wrap;gap:1rem;padding:1rem 1.1rem;border:1px solid #dce5f4;border-radius:.65rem;background:#f8faff;margin-bottom:1.25rem}.master-filter-bar label,.master-modal-form label{display:grid;gap:.38rem;color:#314b75;font-size:.86rem;font-weight:700}.master-filter-bar select{min-width:180px}.master-actions{display:flex;gap:.35rem;white-space:nowrap}.master-modal{width:min(680px,100%);max-height:calc(100vh - 2.5rem);overflow:auto;background:#fff;border-radius:.85rem;box-shadow:0 20px 60px rgba(7,26,60,.28);padding:1.35rem}.master-modal-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.master-modal-form input,.master-modal-form select{width:100%;box-sizing:border-box}.master-modal-form .modal-actions{grid-column:1/-1}.detail-panel dl{display:grid;grid-template-columns:160px 1fr;gap:.8rem 1rem;margin:0}.detail-panel dt{color:#627391;font-weight:700}.detail-panel dd{margin:0;color:#152f59}@media(max-width:700px){.master-toolbar,.master-search{align-items:stretch;flex-direction:column}.master-search input{width:100%}.master-filter-bar{align-items:stretch;flex-direction:column}.master-filter-bar select{width:100%}.master-modal-form{grid-template-columns:1fr}.detail-panel dl{grid-template-columns:1fr;gap:.25rem}.detail-panel dd{margin-bottom:.75rem}}
+/* ── Advanced Route/Beat professional styling — append to MasterDataPages.css ── */
+
+.kpi-grid { display: grid; grid-template-columns: repeat(var(--kpi-count, 4), minmax(0, 1fr)); gap: 1rem; margin: 1.25rem 0; }
+.kpi-card { display: flex; align-items: flex-start; gap: .8rem; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 1.05rem 1.15rem; box-shadow: 0 1px 2px rgba(16, 21, 31, .05), 0 1px 8px rgba(16, 21, 31, .04); transition: box-shadow .15s ease, transform .15s ease; }
+.kpi-card:hover { box-shadow: 0 6px 18px rgba(16, 21, 31, .08); transform: translateY(-1px); }
+.kpi-icon { display: inline-grid; place-items: center; width: 2.4rem; height: 2.4rem; border-radius: 10px; font-size: 1.1rem; font-weight: 600; flex: none; } 
+.kpi-card span { display: block; font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); margin-bottom: .3rem; }
+.kpi-card strong { display: block; font-family: var(--font-mono); font-size: 1.3rem; color: var(--text); letter-spacing: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.kpi-card > div:last-child { min-width: 0; }
+.kpi-card small { display: block; color: var(--text-faint); font-size: .76rem; margin-top: .2rem; }
+.kpi-progress { width: 100%; height: 5px; border-radius: 4px; background: var(--paper); overflow: hidden; margin-top: .4rem; }
+.kpi-progress-fill { height: 100%; background: var(--green); border-radius: 4px; transition: width .3s ease; }
+@media (max-width: 980px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .kpi-grid { grid-template-columns: 1fr; } }
+.kpi-card[data-tone] { border-top: 2px solid var(--line); }
+.kpi-card[data-tone='ink'] { border-top-color: var(--ink); }
+.kpi-card[data-tone='blue'] { border-top-color: var(--accent-blue); }
+.kpi-card[data-tone='amber'] { border-top-color: var(--amber-strong); }
+.kpi-card[data-tone='green'] { border-top-color: var(--green); }
+.kpi-card[data-tone='red'] { border-top-color: var(--red); }
+.order-kpi-grid-6 { grid-template-columns: repeat(6, 1fr); }
+.orders-toolbar .master-search { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.orders-toolbar select, .orders-toolbar input[type="date"] { min-width: 140px; }
+.clients-page .data-table-wrap { overflow-x: hidden; width: 100%; max-width: 100%; }
+.clients-page .data-table-wrap table { table-layout: fixed; width: 100%; max-width: 100%; font-size: .74rem; }
+.clients-page .data-table-wrap table th,
+.clients-page .data-table-wrap table td {
+  padding: .6rem .5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clients-page .data-table-wrap table td:first-child { white-space: normal; overflow-wrap: break-word; }
+.clients-page .data-table-wrap th { font-size: .66rem; letter-spacing: 0; padding-left: .45rem; padding-right: .45rem; }
+.clients-page .data-table-wrap th:nth-child(1) { width: 20%; }
+.clients-page .data-table-wrap th:nth-child(2) { width: 12%; }
+.clients-page .data-table-wrap th:nth-child(3) { width: 9%; }
+.clients-page .data-table-wrap th:nth-child(4) { width: 11%; }
+.clients-page .data-table-wrap th:nth-child(5) { width: 18%; }
+.clients-page .data-table-wrap th:nth-child(6) { width: 9%; }
+.clients-page .data-table-wrap th:nth-child(7) { width: 11%; }
+.clients-page .data-table-wrap th:nth-child(8) { width: 6%; }
+.clients-page .data-table-wrap td.master-actions { overflow: visible; text-overflow: clip; }
+.data-table-wrap table th, .data-table-wrap table td { white-space: nowrap; vertical-align: middle; }
+.data-table-wrap table td:nth-child(2) { white-space: normal; } 
+
+.master-search { display: flex; align-items: center; gap: .6rem; flex: 1; min-width: 0; flex-wrap: wrap; }
+.master-search input[type='search'] { width: min(320px, 100%); }
+.master-search select { min-width: 150px; }
+.master-search input,
+.master-search select {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: .55rem .75rem;
+  font-size: .87rem;
+  color: var(--text);
+  background: var(--surface);
+}
+.master-search input::placeholder { color: var(--text-faint); }
+.master-search input[type='date'] { min-width: 150px; color: var(--text); }
+.master-search select:focus, .master-search input:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-soft);
+}
+
+.rep-cell { display: flex; align-items: center; gap: .5rem; }
+.rep-avatar { display: inline-grid; place-items: center; width: 1.9rem; height: 1.9rem; border-radius: 50%; color: #fff; font-size: .72rem; font-weight: 700; flex: none; }
+
+.day-chip-row { display: flex; flex-wrap: wrap; gap: .3rem; }
+.day-chip { display: inline-flex; align-items: center; padding: .18rem .48rem; border-radius: 6px; font-size: .7rem; font-weight: 600; background: var(--paper); color: var(--text-faint); border: 1px solid var(--line); }
+.day-chip-today { background: var(--amber-soft); color: var(--amber-strong); border-color: var(--amber); }
+
+.coverage-cell { display: flex; flex-direction: column; gap: .35rem; min-width: 110px; }
+.coverage-bar { width: 100%; height: 5px; border-radius: 4px; background: var(--paper); overflow: hidden; }
+.coverage-bar-fill { height: 100%; background: var(--amber); border-radius: 4px; transition: width .3s ease; }
+.coverage-bar-fill { background: var(--green); }
+
+.skeleton-row td { padding-top: 1rem; padding-bottom: 1rem; }
+.skeleton-block { display: inline-block; height: .85rem; border-radius: 5px; background: linear-gradient(90deg, var(--paper) 25%, var(--line) 37%, var(--paper) 63%); background-size: 400% 100%; animation: skeleton-shimmer 1.4s ease infinite; }
+@keyframes skeleton-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: .5rem; padding: 1.3rem 1rem; }
+.empty-state-icon { display: inline-grid; place-items: center; width: 2.6rem; height: 2.6rem; border-radius: 50%; background: var(--paper); font-size: 1.3rem; color: var(--text-faint); }
+.empty-state p { margin: 0; color: var(--text-muted); font-size: .92rem; text-align: center; max-width: 320px; }
+
+.error-message, .success-message {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  margin: .9rem 0;
+  padding: .7rem 1rem;
+  border-radius: var(--radius);
+  font-size: .86rem;
+  font-weight: 500;
+  border: 1px solid;
+}
+.error-message { background: var(--red-soft); border-color: rgba(166, 64, 43, .25); color: var(--red); }
+.success-message { background: var(--green-soft); border-color: rgba(47, 107, 79, .25); color: var(--green); }
+.error-message::before { content: '⚠'; flex: none; font-size: 1rem; }
+.field-hint-error { display: block; margin-top: .25rem; color: var(--red); font-size: .78rem; }
+.success-message::before { content: '✓'; flex: none; font-size: 1rem; }
+
+.scheme-type-chip { display: inline-flex; align-items: center; gap: .4rem; font-size: .84rem; color: var(--text); }
+.scheme-type-chip i { display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 6px; background: var(--paper); font-style: normal; font-size: .8rem; flex: none; }
+
+/* Utility classes referenced across pages but not previously defined anywhere */
+.text-warn { color: var(--amber-strong); font-weight: 600; }
+.text-faint-inline { color: var(--text-faint); font-size: .82rem; }
+.capitalize { text-transform: capitalize; }
+.ledger-heading { margin: 1rem 0 .5rem; font-size: .82rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--text-faint); }
+
+/* Distributor Management */
+.kpi-icon-red { background: var(--red-soft); color: var(--red); }
+.kpi-icon-ink { background: var(--paper); color: var(--ink); }
+.kpi-icon-green { background: var(--green-soft); color: var(--green); }
+.kpi-icon-amber { background: var(--amber-soft); color: var(--amber-strong); }
+.kpi-icon-ink { background: var(--paper); color: var(--ink); }
+.kpi-icon-green { background: var(--green-soft); color: var(--green); }
+.kpi-icon-amber { background: var(--amber-soft); color: var(--amber-strong); }
+.coverage-bar-fill.tone-watch { background: var(--amber); }
+.coverage-bar-fill.tone-over { background: var(--red); }
+
+/* ══════════════════════════════════════════════════════════════
+   PAGE SHELL — wraps every master-data page (Route/Beat, Clients,
+   Distributors, Schemes, …). The bare <section> tag from styles.css
+   already gives a surface/border/shadow; this layers page-level
+   rhythm on top so heading, KPIs and table read as one composition.
+   ══════════════════════════════════════════════════════════════ */
+.page-panel { display: flex; flex-direction: column; }
+.page-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; }
+.page-panel-heading h2 { font-size: 1.32rem; margin: .3rem 0 0; }
+/* Dense, professional CRM density: drop the marketing-style description line
+   under every page title app-wide. Scoped to skip the eyebrow paragraph. */
+.page-panel-heading > div > p:not(.eyebrow) { display: none; }
+.master-page { position: relative; }
+
+.master-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin: 1.1rem 0 .9rem; }
+.master-actions { display: flex; align-items: center; gap: .35rem; white-space: nowrap; }
+.data-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
+.data-table-wrap table { margin-top: 0; }
+.data-table-wrap thead { background: var(--paper); }
+.data-table-wrap th { white-space: nowrap; padding: .75rem 1rem; text-align: left; font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); border-bottom: 1px solid var(--line); }
+.data-table-wrap th:first-child, .data-table-wrap td:first-child { padding-left: 1.1rem; }
+.data-table-wrap th:last-child, .data-table-wrap td:last-child { padding-right: 1.1rem; }
+.data-table-wrap tbody tr:hover { background: var(--paper); }
+.data-table-wrap tbody tr:last-child td { border-bottom: none; }
+/* ── Buttons — three-tier hierarchy shared across every page ── */
+.primary-action { background: var(--ink); color: #f5f3ec; border-color: var(--ink); font-weight: 600; font-size: .87rem; padding: .62rem 1.05rem; box-shadow: 0 1px 2px rgba(16, 21, 31, .12); }
+.primary-action:hover:not(:disabled) { background: var(--ink-soft); border-color: var(--ink-soft); }
+.primary-action:active:not(:disabled) { transform: translateY(1px); }
+
+.quiet-button { background: var(--surface); color: var(--text); border: 1px solid var(--line); font-weight: 500; font-size: .87rem; }
+.quiet-button:hover:not(:disabled) { background: var(--paper); border-color: var(--amber); }
+.quiet-button.primary-action { background: var(--ink); color: #f5f3ec; }
+
+.icon-action {
+  display: inline-grid; place-items: center;
+  width: 2rem; height: 2rem; padding: 0;
+  border-radius: 50%; border: 1px solid var(--line); background: var(--surface);
+  color: var(--text-muted); font-size: .86rem; line-height: 1;
+}
+.icon-action:hover:not(:disabled) { background: var(--paper); border-color: var(--amber); color: var(--amber-strong); }
+.icon-action:disabled { opacity: .4; cursor: not-allowed; }
+.icon-action--danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); color: var(--red); }
+/* Delete-confirm button: solid red, not just a hover state (used on the
+   'Delete' button inside the confirm dialog, combined with .primary-action) */
+.primary-action.icon-action--danger { background: var(--red); border-color: var(--red); color: #fff; }
+.primary-action.icon-action--danger:hover:not(:disabled) { background: var(--red); border-color: var(--red); filter: brightness(0.92); }
+
+/* Extra status-badge variants not covered by the base UsersPage.css rule */
+.status-badge.inactive { background: var(--red-soft); color: var(--red); }
+.status-badge.status-pending { background: var(--paper); color: var(--text-faint); }
+.status-badge.status-quoted { background: var(--amber-soft); color: var(--amber-strong); }
+.status-badge.status-completed { background: var(--green-soft); color: var(--green); }
+
+/* ══════════════════════════════════════════════════════════════
+   MODAL SYSTEM — a slide-in side drawer rather than a centered
+   popup. Header and footer stay pinned so long forms (Add beat,
+   Manage outlets) never lose their title or action buttons while
+   the middle section scrolls — the "form or other page" feel the
+   user is after, without a real route change.
+   ══════════════════════════════════════════════════════════════ */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(16, 21, 31, .48);
+  backdrop-filter: blur(2px);
+  display: flex; justify-content: flex-end;
+  animation: backdrop-in .18s ease;
+}
+@keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+
+.master-modal {
+  width: min(560px, 100vw);
+  height: 100vh;
+  background: var(--surface);
+  box-shadow: -24px 0 60px rgba(16, 21, 31, .18);
+  display: flex; flex-direction: column;
+  animation: drawer-in .22s cubic-bezier(.2, .7, .3, 1);
+}
+.master-modal.detail-panel { width: min(760px, 100vw); overflow-y: auto; }
+.master-modal.detail-panel .modal-heading { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+@keyframes drawer-in { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* Centered dialog variant — used for the Add/Edit lead form instead of a side drawer */
+.modal-backdrop--center { justify-content: center; align-items: center; padding: 1.5rem; }
+.master-modal--center {
+  width: min(640px, 100%);
+  height: auto;
+  max-height: min(88vh, 820px);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(16, 21, 31, .28);
+  animation: dialog-in .18s cubic-bezier(.2, .7, .3, 1);
+}
+@keyframes dialog-in { from { transform: translateY(12px) scale(.98); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
+@media (max-width: 640px) {
+  .modal-backdrop--center { padding: 0; align-items: flex-end; }
+  .master-modal--center { width: 100vw; max-height: 92vh; border-radius: 14px 14px 0 0; }
+}
+
+.modal-heading {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+  padding: 1.4rem 1.6rem;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.modal-heading h3 { font-size: 1.15rem; margin: .25rem 0 0; }
+.modal-heading .icon-action { margin-top: .15rem; }
+
+.master-modal-form {
+  display: flex; flex-direction: column; gap: 1.4rem;
+  padding: 1.5rem 1.6rem;
+  overflow-y: auto;
+  flex: 1;
+}
+.master-modal-form label { display: grid; gap: .5rem; font-size: .92rem; font-weight: 600; color: var(--text); }
+.master-modal-form input, .master-modal-form select, .master-modal-form textarea { width: 100%; box-sizing: border-box; }
+
+/* Top-level fields (school code, name, city, GSTIN, credit terms, status)
+   flow in a 2-col grid; direct <label> children only, so nested fieldsets are unaffected. */
+.master-modal-form .field-grid { display: grid; grid-template-columns: 1fr; gap: 1.4rem; }
+
+/* Grouped sections (SCHOOL DETAILS, ADVANCE DETAILS, etc.) — real <fieldset>s,
+   not repurposed .modal-actions divs, so they can't inherit flex-end/justify rules. */
+.modal-fieldset {
+  grid-column: 1 / -1;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.1rem 1.2rem;
+  margin: 0;
+}
+.modal-fieldset legend {
+  padding: 0 .4rem;
+  margin-left: -.4rem;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.modal-fieldset .fieldset-grid {
+  display: grid; grid-template-columns: 1fr; gap: 1.2rem;
+  margin-top: .3rem;
+}
+
+.master-modal .data-table-wrap { margin: 0 1.6rem 1.4rem; width: auto; }
+.master-modal > input[type='text'], .master-modal > input:not([type]) { margin: 0 1.6rem 1rem; width: calc(100% - 3.2rem); }
+
+.modal-actions {
+  display: flex; justify-content: flex-end; gap: .6rem;
+  padding: 1.1rem 1.6rem;
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+  flex: none;
+}
+
+@media (max-width: 640px) {
+  .modal-fieldset .fieldset-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .master-modal, .master-modal.detail-panel { width: 100vw; }
+  .master-modal-form .field-grid { grid-template-columns: 1fr; }
+}
+/* ── Lead Pipeline — premium CRM additions ── */
+
+.demo-data-banner {
+  display: flex; align-items: center; gap: .6rem;
+  background: var(--amber-soft); color: var(--amber-strong);
+  border-radius: var(--radius); padding: .6rem .9rem;
+  font-size: .85rem; font-weight: 600; margin-bottom: .9rem;
+}
+
+.lead-kpi-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .lead-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .lead-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.quote-kpi-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .quote-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .quote-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.quote-kpi-grid .kpi-card strong { white-space: nowrap; }
+.order-kpi-grid { grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(0, 1.6fr); }
+@media (max-width: 1200px) { .order-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .order-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.order-kpi-grid .kpi-card { min-width: 0; }
+.order-kpi-grid .kpi-card > div:last-child { min-width: 0; width: 100%; }
+.order-kpi-grid .kpi-card strong { white-space: nowrap; font-size: .95rem; }
+.order-builder-field { display: flex; flex-direction: column; gap: .4rem; font-size: .9rem; font-weight: 600; color: var(--text); margin-bottom: 1rem; }
+.order-builder-field select { font-weight: 400; width: 100%; box-sizing: border-box; }
+.order-builder-field small { font-weight: 400; }
+
+.client-kpi-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .client-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .client-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.rep-kpi-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .rep-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .rep-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.sort-select { display: flex; align-items: center; gap: .4rem; font-size: .84rem; font-weight: 600; color: var(--text-muted); }
+.sort-select select { min-width: 140px; }
+
+/* Pipeline stage bar: New → Contacted → Qualified → Follow-up → Won → Lost */
+.lead-pipeline-bar { display: flex; align-items: stretch; gap: 1.3rem; margin: 1.1rem 0; overflow-x: auto; padding-bottom: .2rem; }
+.lead-pipeline-stage { flex: 1; min-width: 110px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: .7rem .85rem; position: relative; }
+.lead-pipeline-stage::after { content: '→'; position: absolute; right: -1.1rem; top: 50%; transform: translateY(-50%); color: var(--text-faint); font-size: .95rem; }
+.lead-pipeline-stage:last-child::after { display: none; }
+.lead-pipeline-stage span { display: block; font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); margin-bottom: .3rem; }
+.lead-pipeline-stage strong { font-family: var(--font-mono); font-size: 1.2rem; color: var(--text); }
+.lead-pipeline-stage.stage-converted strong { color: var(--green); }
+.lead-pipeline-stage.stage-lost strong { color: var(--red); }
+@media (max-width: 720px) { .lead-pipeline-stage::after { display: none; } }
+
+/* Lead status badges (new/contacted/qualified/unqualified/converted/lost) */
+.status-badge.status-new { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-contacted { background: var(--amber-soft); color: var(--amber-strong); }
+.status-badge.status-qualified { background: var(--accent-teal-soft); color: var(--accent-teal); }
+.status-badge.status-unqualified { background: var(--paper); color: var(--text-faint); }
+.status-badge.status-converted { background: var(--green-soft); color: var(--green); }
+.status-badge.status-lost { background: var(--red-soft); color: var(--red); }
+.status-badge.status-rejected { background: var(--red-soft); color: var(--red); }
+.status-badge.status-expired { background: var(--paper); color: var(--text-faint); }
+
+.quotation-workflow-strip {
+  display: flex; align-items: center; gap: .5rem;
+  font-size: .85rem; color: var(--text-muted);
+  margin: 0 0 .9rem;
+}
+.quotation-workflow-strip span { font-weight: 700; text-transform: uppercase; letter-spacing: .04em; font-size: .72rem; color: var(--text-faint); }
+.quotation-workflow-strip strong { color: var(--text); font-weight: 600; }
+.status-badge.status-open { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-dropped { background: var(--red-soft); color: var(--red); }
+
+/* Lead priority badges (low/normal/high/critical) */
+.status-badge.status-low { background: var(--paper); color: var(--text-faint); }
+.status-badge.status-normal { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-high { background: var(--amber-soft); color: var(--amber-strong); }
+.status-badge.status-critical { background: var(--red-soft); color: var(--red); }
+
+/* Row "⋯" action menu */
+.row-menu-backdrop { position: fixed; inset: 0; z-index: 1099; }
+.row-menu {
+  position: fixed; z-index: 1100; min-width: 160px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(16, 21, 31, .16);
+  padding: .35rem; display: flex; flex-direction: column;
+}
+.row-menu button {
+  text-align: left; background: none; border: none; padding: .5rem .6rem;
+  border-radius: 6px; font-size: .86rem; color: var(--text); cursor: pointer;
+}
+.row-menu button:hover:not(:disabled) { background: var(--paper); }
+.row-menu button:disabled { color: var(--text-faint); cursor: not-allowed; }
+
+.row-menu--icons { min-width: 148px; }
+.row-menu--icons button { display: flex; align-items: center; gap: .6rem; }
+.row-menu--icons button svg { flex: none; color: var(--text-muted); }
+.row-menu--icons button:hover:not(:disabled) svg { color: var(--amber-strong); }
+.row-menu--icons button.row-menu-danger:hover:not(:disabled) { background: var(--red-soft); color: var(--red); }
+.row-menu--icons button.row-menu-danger:hover:not(:disabled) svg { color: var(--red); }
+.row-menu--icons button:disabled svg { color: var(--text-faint); }
+
+/* Activity timeline in the lead detail drawer */
+.lead-activity-timeline { list-style: none; margin: 0; padding: 0; }
+.lead-activity-timeline li { display: flex; gap: .8rem; padding: 0 0 1rem; position: relative; }
+.lead-activity-timeline li::before {
+  content: ''; position: absolute; left: 5px; top: 16px; bottom: -4px; width: 2px; background: var(--line);
+}
+.lead-activity-timeline li:last-child::before { display: none; }
+.timeline-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--ink); margin-top: 3px; }
+.lead-activity-timeline strong { display: block; font-size: .88rem; }
+.lead-activity-timeline p { margin: .2rem 0 0; font-size: .85rem; color: var(--text-muted); }
+.lead-activity-timeline small { color: var(--text-faint); font-size: .76rem; }
+/* ── Sales Orders — premium redesign additions ── */
+
+.kpi-icon-blue { background: var(--accent-blue-soft); color: var(--accent-blue); }
+
+.status-badge.status-confirmed { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-cancelled { background: var(--red-soft); color: var(--red); }
+.status-badge.status-packed { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-dispatched { background: var(--amber-soft); color: var(--amber-strong); }
+.status-badge.status-delivered { background: var(--green-soft); color: var(--green); }
+
+/* Visit → Order step indicator */
+.workflow-steps { display: flex; align-items: center; gap: .75rem; margin: 1.1rem 0; flex-wrap: wrap; }
+.workflow-steps-label { font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); margin-right: .2rem; }
+.workflow-step { display: inline-flex; align-items: center; gap: .5rem; padding: .5rem .95rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); font-weight: 600; font-size: .85rem; color: var(--text-muted); }
+.workflow-step.is-current { border-color: var(--ink); background: var(--ink); color: #f5f3ec; }
+.workflow-step-icon { font-size: .95rem; line-height: 1; }
+.workflow-arrow { color: var(--text-faint); font-size: 1rem; }
+
+/* Larger empty state used when there is no data at all (vs. "no filter matches") */
+.empty-state-lg { padding: 3rem 1rem; }
+.empty-state-lg .empty-state-icon { width: 3.4rem; height: 3.4rem; font-size: 1.6rem; }
+.empty-state-lg h3 { margin: .3rem 0 0; font-size: 1.15rem; color: var(--text); }
+.empty-state-lg p { max-width: 360px; }
+.empty-state-lg .primary-action { margin-top: .5rem; }
+
+/* Key-value strip at the top of the order details drawer */
+.detail-dl { display: grid; grid-template-columns: max-content 1fr; gap: .55rem 1.2rem; margin: 1.1rem 1.6rem 1.3rem; font-size: .9rem; align-items: start; }
+.detail-dl dt { color: var(--text-faint); font-weight: 700; font-size: .74rem; text-transform: uppercase; letter-spacing: .03em; margin: 0; white-space: nowrap; }
+.detail-dl dd { margin: 0; color: var(--text); }
+@media (max-width: 640px) { .detail-dl { grid-template-columns: 1fr; } }
+.master-modal.detail-panel .eyebrow { margin: 1.4rem 1.6rem 0.6rem; padding-top: 0.9rem; border-top: 1px solid var(--line); }
+.master-modal.detail-panel .eyebrow:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+
+.target-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 1.4rem; margin: .8rem 1.6rem .5rem; }
+.target-inputs label { display: grid; gap: .5rem; font-size: .92rem; font-weight: 600; color: var(--text); }
+.target-inputs input { width: 100%; box-sizing: border-box; }
+@media (max-width: 640px) { .target-inputs { grid-template-columns: 1fr; } }
+/* ── Follow-ups — premium redesign additions ── */
+
+.priority-badge {
+  display: inline-flex; align-items: center;
+  padding: .28rem .62rem; border-radius: 20px;
+  font-size: .74rem; font-weight: 700; text-transform: capitalize;
+}
+
+.priority-badge.priority-low { background: var(--paper); color: var(--text-faint); }
+.priority-badge.priority-normal { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.priority-badge.priority-high { background: var(--amber-soft); color: var(--amber-strong); }
+.priority-badge.priority-critical { background: var(--red-soft); color: var(--red); }
+
+.due-flag {
+  display: inline-block; margin-left: .5rem;
+  padding: .1rem .45rem; border-radius: 6px;
+  font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+}
+.due-flag-overdue { background: var(--red-soft); color: var(--red); }
+.due-flag-today { background: var(--amber-soft); color: var(--amber-strong); }
+
+.data-table-wrap tr.row-overdue td:first-child { box-shadow: inset 3px 0 0 var(--red); }
+.data-table-wrap tr.row-due-today td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+/* ── Representative Workspace — premium dashboard additions ── */
+
+.admin-view-banner {
+  display: flex; align-items: center; gap: .7rem;
+  background: var(--accent-blue-soft); border: 1px solid rgba(52, 87, 213, .18);
+  border-radius: var(--radius); padding: .6rem .9rem; margin-bottom: 1rem;
+  font-size: .85rem; color: var(--text-muted);
+}
+.admin-view-badge {
+  flex: none; background: var(--accent-blue); color: #fff;
+  font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  padding: .2rem .55rem; border-radius: 20px;
+}
+.admin-view-banner p { margin: 0; }
+
+.activity-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .1rem; }
+.activity-timeline li {
+  display: flex; align-items: center; gap: .8rem;
+  padding: .75rem .2rem; border-bottom: 1px solid var(--line);
+}
+.activity-timeline li:last-child { border-bottom: none; }
+.activity-timeline li > div { flex: 1; min-width: 0; }
+.activity-timeline strong { display: block; font-size: .9rem; }
+.activity-timeline p { margin: .1rem 0 0; font-size: .85rem; color: var(--text-muted); }
+.activity-timeline small { color: var(--text-faint); font-size: .76rem; }
+.timeline-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; margin-top: 2px; }
+.timeline-dot.dot-live { background: var(--amber); box-shadow: 0 0 0 4px var(--amber-soft); }
+.timeline-dot.dot-done { background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); }
+/* ── Products — premium catalog redesign additions ── */
+
+.product-kpi-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .product-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .product-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.products-page .data-table-wrap td small { display: block; margin-top: .2rem; }
+.products-page .data-table-wrap td .status-badge { margin-top: .35rem; }  
+
+
+/* ══════════════════════════════════════════════════════════════
+   PAGE SHELL — wraps every master-data page (Route/Beat, Clients,
+   Distributors, Schemes, …). The bare <section> tag from styles.css
+   already gives a surface/border/shadow; this layers page-level
+   rhythm on top so heading, KPIs and table read as one composition.
+   ══════════════════════════════════════════════════════════════ */
+.page-panel { display: flex; flex-direction: column; }
+.page-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; }
+.page-panel-heading h2 { font-size: 1.32rem; margin: .3rem 0 0; }
+/* Dense, professional CRM density: drop the marketing-style description line
+   under every page title app-wide. Scoped to skip the eyebrow paragraph. */
+.page-panel-heading > div > p:not(.eyebrow) { display: none; }
+.master-page { position: relative; }
+
+.master-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin: 1.1rem 0 .9rem; }
+.master-actions { display: flex; align-items: center; gap: .35rem; white-space: nowrap; }
+
+
+
+/* ── Buttons — three-tier hierarchy shared across every page ── */
+.primary-action { background: var(--ink); color: #f5f3ec; border-color: var(--ink); font-weight: 600; font-size: .87rem; padding: .62rem 1.05rem; box-shadow: 0 1px 2px rgba(16, 21, 31, .12); }
+.primary-action:hover:not(:disabled) { background: var(--ink-soft); border-color: var(--ink-soft); }
+.primary-action:active:not(:disabled) { transform: translateY(1px); }
+
+.quiet-button { background: var(--surface); color: var(--text); border: 1px solid var(--line); font-weight: 500; font-size: .87rem; }
+.quiet-button:hover:not(:disabled) { background: var(--paper); border-color: var(--amber); }
+.quiet-button.primary-action { background: var(--ink); color: #f5f3ec; }
+
+.icon-action {
+  display: inline-grid; place-items: center;
+  width: 2rem; height: 2rem; padding: 0;
+  border-radius: 50%; border: 1px solid var(--line); background: var(--surface);
+  color: var(--text-muted); font-size: .86rem; line-height: 1;
+}
+.icon-action:hover:not(:disabled) { background: var(--paper); border-color: var(--amber); color: var(--amber-strong); }
+
+/* Extra status-badge variants not covered by the base UsersPage.css rule */
+.status-badge.inactive { background: var(--red-soft); color: var(--red); }
+.status-badge.status-pending { background: var(--paper); color: var(--text-faint); }
+.status-badge.status-quoted { background: var(--amber-soft); color: var(--amber-strong); }
+.status-badge.status-completed { background: var(--green-soft); color: var(--green); }
+
+/* ══════════════════════════════════════════════════════════════
+   MODAL SYSTEM — a slide-in side drawer rather than a centered
+   popup. Header and footer stay pinned so long forms (Add beat,
+   Manage outlets) never lose their title or action buttons while
+   the middle section scrolls — the "form or other page" feel the
+   user is after, without a real route change.
+   ══════════════════════════════════════════════════════════════ */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(16, 21, 31, .48);
+  backdrop-filter: blur(2px);
+  display: flex; justify-content: flex-end;
+  animation: backdrop-in .18s ease;
+}
+@keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+
+.master-modal {
+  width: min(560px, 100vw);
+  height: 100vh;
+  background: var(--surface);
+  box-shadow: -24px 0 60px rgba(16, 21, 31, .18);
+  display: flex; flex-direction: column;
+  animation: drawer-in .22s cubic-bezier(.2, .7, .3, 1);
+}
+.master-modal.detail-panel { width: min(760px, 100vw); overflow-y: auto; }
+@keyframes drawer-in { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+.modal-heading {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+  padding: 1.4rem 1.6rem;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.modal-heading h3 { font-size: 1.15rem; margin: .25rem 0 0; }
+.modal-heading .icon-action { margin-top: .15rem; }
+
+.master-modal-form {
+  display: flex; flex-direction: column; gap: 1.4rem;
+  padding: 1.5rem 1.6rem;
+  overflow-y: auto;
+  flex: 1;
+}
+.master-modal-form label { display: grid; gap: .5rem; font-size: .92rem; font-weight: 600; color: var(--text); }
+.master-modal-form input, .master-modal-form select, .master-modal-form textarea { width: 100%; box-sizing: border-box; }
+
+/* Top-level fields (school code, name, city, GSTIN, credit terms, status)
+   flow in a 2-col grid; direct <label> children only, so nested fieldsets are unaffected. */
+.master-modal-form .field-grid { display: grid; grid-template-columns: 1fr; gap: 1.4rem; }
+
+/* Grouped sections (SCHOOL DETAILS, ADVANCE DETAILS, etc.) — real <fieldset>s,
+   not repurposed .modal-actions divs, so they can't inherit flex-end/justify rules. */
+.modal-fieldset {
+  grid-column: 1 / -1;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.1rem 1.2rem;
+  margin: 0;
+}
+.modal-fieldset legend {
+  padding: 0 .4rem;
+  margin-left: -.4rem;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.modal-fieldset .fieldset-grid {
+  display: grid; grid-template-columns: 1fr; gap: 1.2rem;
+  margin-top: .3rem;
+}
+
+.master-modal .data-table-wrap { margin: 0 1.6rem 1.4rem; width: auto; }
+.master-modal > input[type='text'], .master-modal > input:not([type]) { margin: 0 1.6rem 1rem; width: calc(100% - 3.2rem); }
+
+.modal-actions {
+  display: flex; justify-content: flex-end; gap: .6rem;
+  padding: 1.1rem 1.6rem;
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+  flex: none;
+}
+
+@media (max-width: 640px) {
+  .modal-fieldset .fieldset-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .master-modal, .master-modal.detail-panel { width: 100vw; }
+  .master-modal-form .field-grid { grid-template-columns: 1fr; }
+}
+/* ── Lead Pipeline — premium CRM additions ── */
+
+.demo-data-banner {
+  display: flex; align-items: center; gap: .6rem;
+  background: var(--amber-soft); color: var(--amber-strong);
+  border-radius: var(--radius); padding: .6rem .9rem;
+  font-size: .85rem; font-weight: 600; margin-bottom: .9rem;
+}
+
+.lead-kpi-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .lead-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .lead-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.client-kpi-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .client-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .client-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.sort-select { display: flex; align-items: center; gap: .4rem; font-size: .84rem; font-weight: 600; color: var(--text-muted); }
+.sort-select select { min-width: 140px; }
+
+/* Pipeline stage bar: New → Contacted → Qualified → Follow-up → Won → Lost */
+.lead-pipeline-bar { display: flex; align-items: stretch; gap: 1.3rem; margin: 1.1rem 0; overflow-x: auto; padding-bottom: .2rem; }
+.lead-pipeline-stage { flex: 1; min-width: 110px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: .7rem .85rem; position: relative; }
+.lead-pipeline-stage::after { content: '→'; position: absolute; right: -1.1rem; top: 50%; transform: translateY(-50%); color: var(--text-faint); font-size: .95rem; }
+.lead-pipeline-stage:last-child::after { display: none; }
+.lead-pipeline-stage span { display: block; font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); margin-bottom: .3rem; }
+.lead-pipeline-stage strong { font-family: var(--font-mono); font-size: 1.2rem; color: var(--text); }
+.lead-pipeline-stage.stage-converted strong { color: var(--green); }
+.lead-pipeline-stage.stage-lost strong { color: var(--red); }
+@media (max-width: 720px) { .lead-pipeline-stage::after { display: none; } }
+
+/* Lead status badges (new/contacted/qualified/unqualified/converted/lost) */
+.status-badge.status-new { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-contacted { background: var(--amber-soft); color: var(--amber-strong); }
+.status-badge.status-qualified { background: var(--accent-teal-soft); color: var(--accent-teal); }
+.status-badge.status-unqualified { background: var(--paper); color: var(--text-faint); }
+.status-badge.status-converted { background: var(--green-soft); color: var(--green); }
+.status-badge.status-lost { background: var(--red-soft); color: var(--red); }
+.status-badge.status-rejected { background: var(--red-soft); color: var(--red); }
+.status-badge.status-expired { background: var(--paper); color: var(--text-faint); }
+
+.quotation-workflow-strip {
+  display: flex; align-items: center; gap: .5rem;
+  font-size: .85rem; color: var(--text-muted);
+  margin: 0 0 .9rem;
+}
+.quotation-workflow-strip span { font-weight: 700; text-transform: uppercase; letter-spacing: .04em; font-size: .72rem; color: var(--text-faint); }
+.quotation-workflow-strip strong { color: var(--text); font-weight: 600; }
+.status-badge.status-open { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-dropped { background: var(--red-soft); color: var(--red); }
+
+/* Lead priority badges (low/normal/high/critical) */
+.status-badge.status-low { background: var(--paper); color: var(--text-faint); }
+.status-badge.status-normal { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-high { background: var(--amber-soft); color: var(--amber-strong); }
+.status-badge.status-critical { background: var(--red-soft); color: var(--red); }
+
+/* Row "⋯" action menu */
+.row-menu-backdrop { position: fixed; inset: 0; z-index: 1099; }
+.row-menu {
+  position: fixed; z-index: 1100; min-width: 160px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(16, 21, 31, .16);
+  padding: .35rem; display: flex; flex-direction: column;
+}
+.row-menu button {
+  text-align: left; background: none; border: none; padding: .5rem .6rem;
+  border-radius: 6px; font-size: .86rem; color: var(--text); cursor: pointer;
+}
+.row-menu button:hover:not(:disabled) { background: var(--paper); }
+.row-menu button:disabled { color: var(--text-faint); cursor: not-allowed; }
+
+/* Activity timeline in the lead detail drawer */
+.lead-activity-timeline { list-style: none; margin: 0; padding: 0; }
+.lead-activity-timeline li { display: flex; gap: .8rem; padding: 0 0 1rem; position: relative; }
+.lead-activity-timeline li::before {
+  content: ''; position: absolute; left: 5px; top: 16px; bottom: -4px; width: 2px; background: var(--line);
+}
+.lead-activity-timeline li:last-child::before { display: none; }
+.timeline-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--ink); margin-top: 3px; }
+.lead-activity-timeline strong { display: block; font-size: .88rem; }
+.lead-activity-timeline p { margin: .2rem 0 0; font-size: .85rem; color: var(--text-muted); }
+.lead-activity-timeline small { color: var(--text-faint); font-size: .76rem; }
+/* ── Sales Orders — premium redesign additions ── */
+
+.kpi-icon-blue { background: var(--accent-blue-soft); color: var(--accent-blue); }
+
+.status-badge.status-confirmed { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-cancelled { background: var(--red-soft); color: var(--red); }
+.status-badge.status-packed { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-dispatched { background: var(--amber-soft); color: var(--amber-strong); }
+.status-badge.status-delivered { background: var(--green-soft); color: var(--green); }
+
+/* Visit → Order step indicator */
+.workflow-steps { display: flex; align-items: center; gap: .75rem; margin: 1.1rem 0; flex-wrap: wrap; }
+.workflow-steps-label { font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); margin-right: .2rem; }
+.workflow-step { display: inline-flex; align-items: center; gap: .5rem; padding: .5rem .95rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); font-weight: 600; font-size: .85rem; color: var(--text-muted); }
+.workflow-step.is-current { border-color: var(--ink); background: var(--ink); color: #f5f3ec; }
+.workflow-step-icon { font-size: .95rem; line-height: 1; }
+.workflow-arrow { color: var(--text-faint); font-size: 1rem; }
+
+/* Larger empty state used when there is no data at all (vs. "no filter matches") */
+.empty-state-lg { padding: 3rem 1rem; }
+.empty-state-lg .empty-state-icon { width: 3.4rem; height: 3.4rem; font-size: 1.6rem; }
+.empty-state-lg h3 { margin: .3rem 0 0; font-size: 1.15rem; color: var(--text); }
+.empty-state-lg p { max-width: 360px; }
+.empty-state-lg .primary-action { margin-top: .5rem; }
+.empty-state-explainer { display: flex; align-items: center; justify-content: center; gap: .6rem; flex-wrap: wrap; margin: 1.1rem 0; padding: .9rem 1rem; }
+.empty-state-explainer-step { display: flex; flex-direction: column; align-items: center; gap: .3rem; font-size: .82rem; color: var(--text-muted); max-width: 110px; text-align: center; }
+.empty-state-explainer-step.is-highlighted { color: var(--text); font-weight: 600; }
+.empty-state-explainer-icon { font-size: 1.3rem; }
+.empty-state-explainer-arrow { color: var(--text-faint); font-size: 1.1rem; }
+
+/* Key-value strip at the top of the order details drawer */
+.detail-dl { display: grid; grid-template-columns: max-content 1fr; gap: .55rem 1.2rem; margin: 1.1rem 1.6rem 1.3rem; font-size: .9rem; align-items: start; } 
+.detail-dl dt { color: var(--text-faint); font-weight: 700; font-size: .74rem; text-transform: uppercase; letter-spacing: .03em; margin: 0; white-space: nowrap; }
+.detail-dl dd { margin: 0; color: var(--text); }
+@media (max-width: 640px) { .detail-dl { grid-template-columns: 1fr; } }
+/* ── Follow-ups — premium redesign additions ── */
+
+.priority-badge {
+  display: inline-flex; align-items: center;
+  padding: .28rem .62rem; border-radius: 20px;
+  font-size: .74rem; font-weight: 700; text-transform: capitalize;
+}
+.priority-badge.priority-low { background: var(--paper); color: var(--text-faint); }
+.priority-badge.priority-normal { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.priority-badge.priority-high { background: var(--amber-soft); color: var(--amber-strong); }
+.priority-badge.priority-critical { background: var(--red-soft); color: var(--red); }
+
+.due-flag {
+  display: inline-block; margin-left: .5rem;
+  padding: .1rem .45rem; border-radius: 6px;
+  font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+}
+.due-flag-overdue { background: var(--red-soft); color: var(--red); }
+.due-flag-today { background: var(--amber-soft); color: var(--amber-strong); }
+
+.data-table-wrap tr.row-overdue td:first-child { box-shadow: inset 3px 0 0 var(--red); }
+.data-table-wrap tr.row-due-today td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+/* ── Representative Workspace — premium dashboard additions ── */
+
+.admin-view-banner {
+  display: flex; align-items: center; gap: .7rem;
+  background: var(--accent-blue-soft); border: 1px solid rgba(52, 87, 213, .18);
+  border-radius: var(--radius); padding: .6rem .9rem; margin-bottom: 1rem;
+  font-size: .85rem; color: var(--text-muted);
+}
+.admin-view-badge {
+  flex: none; background: var(--accent-blue); color: #fff;
+  font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  padding: .2rem .55rem; border-radius: 20px;
+}
+.admin-view-banner p { margin: 0; }
+
+.activity-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .1rem; }
+.activity-timeline li {
+  display: flex; align-items: center; gap: .8rem;
+  padding: .75rem .2rem; border-bottom: 1px solid var(--line);
+}
+.activity-timeline li:last-child { border-bottom: none; }
+.activity-timeline li > div { flex: 1; min-width: 0; }
+.activity-timeline strong { display: block; font-size: .9rem; }
+.activity-timeline p { margin: .1rem 0 0; font-size: .85rem; color: var(--text-muted); }
+.activity-timeline small { color: var(--text-faint); font-size: .76rem; }
+.timeline-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; margin-top: 2px; }
+.timeline-dot.dot-live { background: var(--amber); box-shadow: 0 0 0 4px var(--amber-soft); }
+.timeline-dot.dot-done { background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); }
+/* ── Products — premium catalog redesign additions ── */
+
+.product-kpi-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .product-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .product-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.products-page .data-table-wrap td small { display: block; margin-top: .2rem; }
+.products-page .data-table-wrap td .status-badge { margin-top: .35rem; }
+/* Client pipeline-stage badge colors */
+.status-badge.stage-new { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.stage-requirement { background: var(--amber-soft); color: var(--amber-strong); }
+.status-badge.stage-quotation { background: var(--accent-teal-soft); color: var(--accent-teal); }
+.status-badge.stage-order { background: var(--green-soft); color: var(--green); }
+.status-badge.stage-repeat { background: var(--accent-violet-soft); color: var(--accent-violet); }
+
+/* Client detail drawer tab bar */
+.master-tab-bar { display: flex; flex-wrap: wrap; gap: .2rem; margin: 0 1.6rem 1.2rem; border-bottom: 1px solid var(--line); }
+.master-tab-bar button.master-tab-bar-item { border: none; background: transparent; padding: .6rem .85rem; font-size: .85rem; font-weight: 600; color: var(--text-faint); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.master-tab-bar button.master-tab-bar-item:hover { color: var(--text); background: transparent; }
+.master-tab-bar button.master-tab-bar-item.active { color: #ffffff; background: var(--ink); border-radius: 8px 8px 0 0; border-bottom-color: var(--ink); }
+/* Quotation status colors */
+.status-badge.status-sent { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-accepted { background: var(--green-soft); color: var(--green); } 
+/* Quotation detail drawer — give body content the same inset as detail-dl */
+.master-modal.order-detail > p,
+.master-modal.order-detail > .text-faint-inline,
+.master-modal.order-detail > .data-table-wrap,
+.master-modal.order-detail > .order-total { margin-left: 1.6rem; margin-right: 1.6rem; }
+.master-modal.order-detail > .data-table-wrap { width: auto; flex-shrink: 0; }
+.master-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem 1.4rem;
+  margin: 1rem 0;
+}
+.master-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #4b5563;
+}
+.master-form label input,
+.master-form label select,
+.master-form label textarea {
+  font-weight: 400;
+  color: #111827;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+}
+.master-form .modal-actions {
+  grid-column: 1 / -1;
+}
+.sales-summary { display: flex; flex-wrap: wrap; gap: 1.4rem 2.4rem; margin: 1rem 0; }
+.sales-summary > div { display: flex; flex-direction: column; gap: .3rem; min-width: 150px; }
+.sales-summary span { color: var(--text-faint); font-weight: 700; font-size: .74rem; text-transform: uppercase; letter-spacing: .03em; }
+.sales-summary strong { color: var(--text); font-size: .95rem; }
+
+.master-modal.order-detail > .sales-summary,
+.master-modal.order-detail > .master-form { margin-left: 1.6rem; margin-right: 1.6rem; }
+/* ── Segmented toggle — for an explicit either/or choice inside a form
+   row (e.g. catalog product vs. custom item), so the two options read
+   as a deliberate choice rather than one being buried in a dropdown. */
+.segmented-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-lg, 8px); overflow: hidden; width: fit-content; }
+.segmented-toggle button { background: var(--surface); color: var(--text); border: none; font-weight: 500; font-size: .84rem; padding: .5rem .85rem; cursor: pointer; }
+.segmented-toggle button + button { border-left: 1px solid var(--line); }
+.segmented-toggle button:hover:not(.segmented-toggle-active) { background: var(--paper); }
+.segmented-toggle-active { background: var(--ink) !important; color: #f5f3ec !important; }
+/* ── Sales Order automation — banner, Ready-for-Sales-Order cards,
+   source badges, and the Order Source trace card. Additive only;
+   nothing above is touched. */
+
+.automation-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: .65rem;
+  background: var(--accent-blue-soft);
+  border: 1px solid rgba(52, 87, 213, .18);
+  border-radius: var(--radius);
+  padding: .7rem .95rem;
+  margin: 1rem 0;
+}
+.automation-banner-icon { font-size: 1rem; line-height: 1.4; flex: none; color: var(--accent-blue); }
+.automation-banner strong { display: block; font-size: .86rem; color: var(--text); }
+.automation-banner span { display: block; font-size: .82rem; color: var(--text-muted); margin-top: .1rem; }
+
+.order-created-banner { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; }
+.order-created-summary { display: flex; flex-wrap: wrap; gap: .5rem 1.2rem; margin-top: .45rem; font-size: .84rem; color: var(--text); }
+.order-created-summary strong { color: var(--text); }
+.order-created-banner .icon-action { flex: none; }
+
+.ready-for-order-section { margin: 1.3rem 0; }
+.ready-for-order-heading h3 { margin: 0 0 .2rem; font-size: 1.02rem; color: var(--text); }
+.ready-for-order-heading p { margin: 0 0 .8rem; font-size: .85rem; color: var(--text-muted); }
+
+.ready-order-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+.ready-order-card {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--green);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+}
+.ready-order-card-top { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.ready-order-card-top strong { font-size: .95rem; color: var(--text); }
+.ready-order-trace { margin: 0; font-size: .74rem; color: var(--text-faint); }
+.ready-order-quote-no { margin: 0; font-size: .82rem; color: var(--text-muted); font-family: var(--font-mono); }
+.ready-order-items { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .2rem; font-size: .84rem; color: var(--text); }
+.ready-order-value { font-family: var(--font-mono); font-size: 1.05rem; color: var(--text); margin-top: .1rem; }
+.ready-order-card .primary-action { align-self: flex-start; margin-top: .2rem; }
+.ready-empty-state { border: 1px dashed var(--line); border-radius: var(--radius); background: var(--paper); }
+
+/* Already-converted quotation, shown instead of a "Create Sales Order"
+   button — the duplicate-prevention state described in the brief. */
+.ready-order-created { display: flex; align-items: center; gap: .5rem; font-size: .84rem; color: var(--green); font-weight: 600; }
+
+.source-badge-quotation { background: var(--green-soft); color: var(--green); }
+.source-badge-manual { background: var(--paper); color: var(--text-faint); }
+
+.order-source-card {
+  margin: 0 1.6rem 1rem;
+  padding: .75rem .9rem;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.order-source-label { display: block; font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); margin-bottom: .3rem; }
+.order-source-trace { margin: 0; font-size: .88rem; color: var(--text); }
+
+@media (max-width: 640px) {
+  .ready-order-grid { grid-template-columns: 1fr; }
+}
+/* Leads table: fixed column widths so every column fits on screen at once —
+   no horizontal scrollbar. Overflowing text truncates with an ellipsis
+   instead of forcing the table wider or wrapping headers onto two lines.
+   Headers keep the same bold weight/size as every other master-data table. */
+.leads-table-wrap { overflow-x: auto; }
+.leads-table-wrap table { table-layout: fixed; width: 100%; }
+.leads-table-wrap table th,
+.leads-table-wrap table td {
+  padding: .6rem .5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.leads-table-wrap table td:first-child {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+.leads-table-wrap table td:first-child strong { display: block; overflow: hidden; text-overflow: ellipsis; }
+/* Headers need their own (smaller, tighter) type scale so the full word
+   fits inside its column instead of getting clipped mid-word. */
+.leads-table-wrap th {
+  font-size: .66rem;
+  letter-spacing: 0;
+  padding-left: .45rem;
+  padding-right: .45rem;
+}
+.leads-table-wrap th:nth-child(1) { width: 10%; }
+.leads-table-wrap th:nth-child(2) { width: 9%; }
+.leads-table-wrap th:nth-child(3) { width: 8%; }
+.leads-table-wrap th:nth-child(4) { width: 11%; }
+.leads-table-wrap th:nth-child(5) { width: 9%; }
+.leads-table-wrap th:nth-child(6) { width: 10%; }
+.leads-table-wrap th:nth-child(7) { width: 11%; }
+.leads-table-wrap th:nth-child(8) { width: 8%; }
+.leads-table-wrap th:nth-child(9) { width: 6%; }
+.leads-table-wrap th:nth-child(10) { width: 11%; }
+.leads-table-wrap th:nth-child(11) { width: 7%; }
+.leads-table-wrap td.master-actions { overflow: visible; text-overflow: clip; }
+.leads-table-wrap td span,
+.leads-table-wrap td small { display: block; overflow: hidden; text-overflow: ellipsis; }
+/* Next follow-up cell: the generic ellipsis/nowrap rules above clip the
+   overdue date to "Overdue: 01/0…", hiding the date entirely. This cell
+   needs to wrap onto two lines (label, then date) instead — the class
+   selector here outranks the plain "td span" rule above so it wins. */
+.leads-table-wrap td .followup-cell {
+  display: flex;
+  flex-direction: column;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.3;
+}

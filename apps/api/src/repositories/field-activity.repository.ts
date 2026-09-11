@@ -1,5 +1,7 @@
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
+import { assertRecordInScope } from '../lib/industry-scope.js';
+import type { IndustryScope } from '../lib/industry-scope.js';
 
 const fail = (error: unknown): never => { throw error; };
 const distanceMeters = (latitudeA: number, longitudeA: number, latitudeB: number, longitudeB: number) => {
@@ -61,21 +63,43 @@ export async function checkOut(organizationId: string, representativeId: string,
   const distance = client?.latitude != null && client.longitude != null ? Math.round(distanceMeters(location.latitude, location.longitude, Number(client.latitude), Number(client.longitude))) : null;
   const withinGeofence = distance === null ? null : distance <= Number(client?.gps_radius_meters ?? 150);
   const { data, error } = await supabaseAdmin.from('field_visits').update({ check_out_lat: location.latitude, check_out_lng: location.longitude, check_out_accuracy_meters: location.accuracyMeters, check_out_distance_meters: distance, check_out_within_geofence: withinGeofence, check_out_time: new Date().toISOString(), notes: input.notes, outcome: input.outcome, status: 'checked_out' }).eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).in('status', ['checked_in', 'in_progress']).select('*, clients(client_code, client_name)').maybeSingle();
-  if (error) fail(error); if (!data) throw new AppError(404, 'ACTIVE_VISIT_NOT_FOUND', 'An active visit was not found.'); return data;
+  if (error) fail(error); if (!data) throw new AppError(404, 'ACTIVE_VISIT_NOT_FOUND', 'An active visit was not found.');
+  // Automatic follow-up: only when the rep explicitly flagged the visit as
+  // needing one, and only if this visit doesn't already have one (avoids
+  // duplicates if checkout is ever retried).
+  if (data.outcome === 'follow_up_needed' && data.client_id) {
+    const { data: existingFollowUp } = await supabaseAdmin.from('follow_ups').select('id').eq('visit_id', visitId).eq('organization_id', organizationId).maybeSingle();
+    if (!existingFollowUp) {
+      const clientName = (data.clients as { client_name?: string } | null)?.client_name ?? 'client';
+      const dueAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+      const { error: followUpError } = await supabaseAdmin.from('follow_ups').insert({ organization_id: organizationId, representative_id: representativeId, client_id: data.client_id, visit_id: visitId, title: `Follow up with ${clientName}`, due_at: dueAt, priority: 'high', notes: input.notes ?? null });
+      if (followUpError) console.error('Auto follow-up creation failed for visit', visitId, followUpError);
+    }
+  }
+  return data;
 }
 
-export async function listVisits(organizationId: string, representativeId?: string) {
-  let query = supabaseAdmin.from('field_visits').select('*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))').eq('organization_id', organizationId).order('check_in_time', { ascending: false }).limit(100);
+export async function listVisits(organizationId: string, representativeId?: string, industryTypeId?: string | null) {
+  const select = industryTypeId
+    ? '*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))'
+    : '*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))';
+  let query = supabaseAdmin.from('field_visits').select(select).eq('organization_id', organizationId).order('check_in_time', { ascending: false }).limit(100);
   if (representativeId) query = query.eq('representative_id', representativeId);
+  if (industryTypeId) query = query.eq('clients.industry_type_id', industryTypeId);
   const { data, error } = await query; return error ? fail(error) : data;
 }
-
-export async function listVisitActivities(organizationId: string, visitId: string, representativeId?: string) {
+export async function listVisitActivities(organizationId: string, visitId: string, representativeId?: string, scope?: IndustryScope) {
+  if (scope) {
+    const { data: visit, error: visitError } = await supabaseAdmin.from('field_visits').select('id, clients(industry_type_id)').eq('id', visitId).eq('organization_id', organizationId).maybeSingle();
+    if (visitError) fail(visitError);
+    if (!visit) throw new AppError(404, 'VISIT_NOT_FOUND', 'Visit not found in this organization.');
+    const clientIndustryTypeId = (visit.clients as { industry_type_id?: string | null } | null)?.industry_type_id;
+    assertRecordInScope(scope, clientIndustryTypeId, new AppError(404, 'VISIT_NOT_FOUND', 'Visit not found in this organization.'));
+  }
   let query = supabaseAdmin.from('visit_activities').select('*').eq('organization_id', organizationId).eq('visit_id', visitId).order('created_at', { ascending: false });
   if (representativeId) query = query.eq('representative_id', representativeId);
   const { data, error } = await query; return error ? fail(error) : data;
 }
-
 export async function createVisitActivity(organizationId: string, representativeId: string, visitId: string, input: Record<string, unknown>) {
   const map = { personMet: 'person_met', expectedQuantity: 'expected_quantity', expectedValue: 'expected_value', photoUrl: 'photo_url' } as Record<string, string>;
   const payload = Object.fromEntries(Object.entries(input).map(([key, value]) => [map[key] ?? key, value]));
@@ -83,8 +107,13 @@ export async function createVisitActivity(organizationId: string, representative
   return error ? fail(error) : data;
 }
 
-export async function listLiveVisits(organizationId: string) {
-  const { data: visits, error } = await supabaseAdmin.from('field_visits').select('id, status, check_in_time, check_in_lat, check_in_lng, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))').eq('organization_id', organizationId).in('status', ['checked_in', 'in_progress']).order('check_in_time', { ascending: false });
+export async function listLiveVisits(organizationId: string, industryTypeId?: string | null) {
+  const select = industryTypeId
+    ? 'id, status, check_in_time, check_in_lat, check_in_lng, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))'
+    : 'id, status, check_in_time, check_in_lat, check_in_lng, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))';
+  let query = supabaseAdmin.from('field_visits').select(select).eq('organization_id', organizationId).in('status', ['checked_in', 'in_progress']).order('check_in_time', { ascending: false });
+  if (industryTypeId) query = query.eq('clients.industry_type_id', industryTypeId);
+  const { data: visits, error } = await query;
   if (error) fail(error);
   const ids = (visits ?? []).map((visit) => visit.id);
   if (!ids.length) return [];

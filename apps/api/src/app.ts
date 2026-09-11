@@ -14,7 +14,9 @@ app.use((req, res, next) => { req.id = req.header('x-request-id') ?? crypto.rand
 app.use(pinoHttp({ logger, genReqId: (req: express.Request) => req.id }));
 app.use(helmet());
 app.use(cors({ origin: env.ALLOWED_ORIGINS.split(',').map((item) => item.trim()), credentials: false }));
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false }));
+if (env.NODE_ENV === 'production') {
+  app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false }));
+}
 app.use(express.json({ limit: '1mb' }));
 app.use('/api', apiRouter);
 app.use(notFound);

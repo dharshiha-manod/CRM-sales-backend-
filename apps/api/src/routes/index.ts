@@ -10,9 +10,14 @@ import { productsRouter } from './products.routes.js';
 import { ordersRouter } from './orders.routes.js';
 import { followUpsRouter } from './follow-ups.routes.js';
 import { telephonyRouter } from './telephony.routes.js';
+import { telephonyWebhookRouter } from './telephony-webhook.routes.js'; // NEW
 import { collectionsRouter } from './collections.routes.js';
 import { reportsRouter } from './reports.routes.js';
 import { industryTypesRouter } from './industry-types.routes.js';
+import { leadsRouter } from './leads.routes.js';
+import { requirementsRouter } from './requirements.routes.js';
+import { quotationsRouter } from './quotations.routes.js';
+import { tradingRouter } from './trading.routes.js';
 export const apiRouter = Router();
 apiRouter.get('/health', health);
 apiRouter.use('/auth', authRouter);
@@ -27,6 +32,11 @@ apiRouter.use(productsRouter);
 apiRouter.use(ordersRouter);
 apiRouter.use(followUpsRouter);
 apiRouter.use(telephonyRouter);
+apiRouter.use(telephonyWebhookRouter); // NEW — public, no `authenticate` (see file for why)
 apiRouter.use(collectionsRouter);
 apiRouter.use(reportsRouter);
 apiRouter.use(industryTypesRouter);
+apiRouter.use(leadsRouter);
+apiRouter.use(requirementsRouter);
+apiRouter.use(quotationsRouter);
+apiRouter.use(tradingRouter);
