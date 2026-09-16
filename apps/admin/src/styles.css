@@ -72,6 +72,7 @@ html, body, #root { min-height: 100%; overflow-x: hidden; max-width: 100vw; }
 .topbar .breadcrumb { font-size: .72rem; }
 .breadcrumb, .eyebrow { margin: 0; color: var(--text-faint); font-size: .68rem; font-weight: 700; letter-spacing: .07em; font-family: var(--font-sans); text-transform: uppercase; }
 .account { display: flex; align-items: center; gap: .8rem; font-size: .78rem; color: var(--text-muted); font-family: var(--font-mono); }
+.active-industry-badge { padding: 6px 16px; border-radius: 999px; font-size: .95rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #fff; background: var(--amber); }
 .content { max-width: 1600px; margin: 0 auto; padding: 1.6rem 1.8rem 2rem; }
 .content > section { margin-bottom: 1.25rem; }
 .toolbar, .form-grid { display: flex; gap: .6rem; flex-wrap: wrap; margin: 1rem 0; }

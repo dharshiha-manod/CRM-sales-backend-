@@ -18,11 +18,16 @@ export const representatives: Record<string, RequestHandler> = {
 export const clients: Record<string, RequestHandler> = {
   list: async (req, res) => res.json({ data: await clientService.list(org(req), req.query.search as string | undefined, req.query.type as string | undefined, req.query.status as string | undefined, req.query.industryTypeId as string | undefined, scope(req)) }),
   get: async (req, res) => res.json({ data: await clientService.get(org(req), id(req.params.id), scope(req)) }),
+  tradingSnapshot: async (req, res) => res.json({ data: await clientService.tradingSnapshot(org(req), id(req.params.id), scope(req)) }),
   create: async (req, res) => res.status(201).json({ data: await clientService.create(org(req), clientCreateSchema.parse(req.body), scope(req)) }),
   update: async (req, res) => res.json({ data: await clientService.update(org(req), id(req.params.id), clientUpdateSchema.parse(req.body), scope(req)) }),
   status: async (req, res) => res.json({ data: await clientService.update(org(req), id(req.params.id), clientStatusSchema.parse(req.body), scope(req)) }),
   contacts: async (req, res) => res.json({ data: await clientService.contacts.list(org(req), id(req.params.clientId)) }),
   createContact: async (req, res) => res.status(201).json({ data: await clientService.contacts.create(org(req), id(req.params.clientId), contactCreateSchema.parse(req.body)) }),
   updateContact: async (req, res) => res.json({ data: await clientService.contacts.update(org(req), id(req.params.clientId), id(req.params.contactId), contactUpdateSchema.parse(req.body)) }),
-  deleteContact: async (req, res) => { await clientService.contacts.remove(org(req), id(req.params.clientId), id(req.params.contactId)); res.status(204).send(); }
+  deleteContact: async (req, res) => { await clientService.contacts.remove(org(req), id(req.params.clientId), id(req.params.contactId)); res.status(204).send(); },
+  // NEW — GET /clients/:id/trading-snapshot. Feeds the Deal form's customer
+  // auto-fill: this client's open requirement(s) and accepted quotation(s)
+  // in one response, so the frontend doesn't need three separate round trips.
+  tradingSnapshot: async (req, res) => res.json({ data: await clientService.tradingSnapshot(org(req), id(req.params.id), scope(req)) }),
 };

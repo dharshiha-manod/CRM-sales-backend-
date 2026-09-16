@@ -17,7 +17,7 @@ const config: TradingModuleConfig = {
     { key: 'enquiry_number', label: 'Enquiry number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'ENQ' },
     { key: 'enquiry_date', label: 'Enquiry date', type: 'date', listColumn: true },
     { key: 'required_by_date', label: 'Required by date', type: 'date', listColumn: true },
-    { key: 'product_name', label: 'Product', type: 'lookup', required: true, lookupResource: '/products?status=active', lookupLabelKey: 'product_code', listColumn: true, group: 'Requirement' },
+   { key: 'product_name', label: 'Product', type: 'lookup', required: true, lookupResource: '/products?status=active', lookupLabelKey: 'product_code', listColumn: true, group: 'Requirement', autoFillMap: { unit: 'unit' } },
     { key: 'quantity', label: 'Quantity', type: 'number', group: 'Requirement' },
     { key: 'unit', label: 'Unit', type: 'text', group: 'Requirement' },
     { key: 'specification', label: 'Specification', type: 'textarea', group: 'Requirement' },

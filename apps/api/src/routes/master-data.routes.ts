@@ -19,6 +19,10 @@ masterDataRouter.delete('/sales-representatives/:id/clients/:clientId', represen
 masterDataRouter.get('/clients', clients.list);
 masterDataRouter.post('/clients', clients.create);
 masterDataRouter.get('/clients/:id', clients.get);
+masterDataRouter.get('/clients/:id/trading-snapshot', clients.tradingSnapshot);
+masterDataRouter.get('/clients/:id/trading-snapshot', clients.tradingSnapshot);
+// NEW — feeds Trading > Deal Management's customer auto-fill (see clientService.tradingSnapshot)
+masterDataRouter.get('/clients/:id/trading-snapshot', clients.tradingSnapshot);
 masterDataRouter.patch('/clients/:id', clients.update);
 masterDataRouter.patch('/clients/:id/status', clients.status);
 masterDataRouter.get('/clients/:clientId/contacts', clients.contacts);

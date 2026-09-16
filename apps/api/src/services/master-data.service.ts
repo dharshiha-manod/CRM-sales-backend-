@@ -3,6 +3,8 @@ import { assertRecordInScope, isGlobalRole, resolveIndustryTypeId, type Industry
 import { validateIndustryDetails } from '../lib/industry-profile.js';
 import { getIndustryType } from '../repositories/industry-types.repository.js';
 import * as repo from '../repositories/master-data.repository.js';
+import { listRequirements } from '../repositories/requirements.repository.js';
+import { listQuotations } from '../repositories/quotations.repository.js';
 
 const clientNotFound = () => new AppError(404, 'CLIENT_NOT_FOUND', 'Client was not found');
 
@@ -50,5 +52,24 @@ export const clientService = {
     return repo.updateClient(org, id, { ...input, industryDetails: cleanIndustryDetails(code, input.industryDetails) });
   },
   contacts: { list: repo.listContacts, create: repo.createContact, update: repo.updateContact, remove: repo.deleteContact },
-  assignments: { list: repo.listAssignedClients, assign: repo.assignClient, remove: repo.unassignClient }
+  assignments: { list: repo.listAssignedClients, assign: repo.assignClient, remove: repo.unassignClient },
+  /**
+   * NEW — powers Trading > Deal Management's "select a customer, auto-fill
+   * the rest" flow. Reuses the existing requirements/quotations repository
+   * functions as-is (no new tables, no new duplicate logic) and just shapes
+   * their output for the Deal form. Priority, per the Deal auto-fill spec:
+   * an accepted quotation first, then the customer's latest open
+   * requirement, so the frontend can auto-select when there's exactly one
+   * candidate and otherwise offer a picker.
+   */
+  async tradingSnapshot(org: string, id: string, scope: IndustryScope) {
+    const client = await clientService.get(org, id, scope); // also enforces industry scope / 404
+    const [requirements, quotations] = await Promise.all([
+      listRequirements(org, { clientId: id }),
+      listQuotations(org, { clientId: id }),
+    ]);
+    const openRequirements = (requirements ?? []).filter((r: any) => r.status === 'open' || r.status === 'quoted');
+    const acceptedQuotations = (quotations ?? []).filter((q: any) => q.status === 'accepted');
+    return { client, requirements: openRequirements, quotations: acceptedQuotations };
+  },
 };

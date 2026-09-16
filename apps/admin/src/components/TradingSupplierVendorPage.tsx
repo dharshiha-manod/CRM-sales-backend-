@@ -25,7 +25,7 @@ const config: TradingModuleConfig = {
     { key: 'country', label: 'Country', type: 'text', group: 'Contact' },
     { key: 'tax_number', label: 'Tax / GST / VAT number', type: 'text', group: 'Commercial' },
     { key: 'supplier_category', label: 'Supplier category', type: 'text', listColumn: true, group: 'Commercial' },
-    { key: 'products_supplied', label: 'Products supplied', type: 'textarea', group: 'Commercial' },
+    { key: 'products_supplied', label: 'Products supplied', type: 'multi-lookup', lookupResource: '/products?status=active', lookupValueKey: 'product_name', lookupLabelKey: 'product_code', group: 'Commercial' },
     { key: 'payment_terms', label: 'Payment terms', type: 'text', group: 'Commercial' },
     { key: 'credit_limit', label: 'Credit limit', type: 'number', group: 'Commercial' },
     { key: 'bank_details', label: 'Bank details', type: 'textarea', group: 'Commercial' },

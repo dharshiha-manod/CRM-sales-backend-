@@ -10,7 +10,7 @@ const fail = (error: unknown): never => {
 type QuotationItemInput = { productId: string; quantity: number; discountPercent: number };
 type QuotationCreateInput = { items: QuotationItemInput[]; validUntil?: string | null; notes?: string | null };
 const SELECT_WITH_RELATIONS =
-  '*, clients(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name))';
+  '*, clients(id, client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, category, cost_price, selling_price))';
 function priceLines(items: QuotationItemInput[], productById: Map<string, { id: string; selling_price: number }>) {
   const lines = items.map((item) => {
     const product = productById.get(item.productId)!;
@@ -114,7 +114,6 @@ export async function getQuotation(organizationId: string, id: string, scope?: I
   }
   return data;
 }
-
 export async function listQuotations(
   organizationId: string,
   filters: { representativeId?: string; status?: string; clientId?: string; industryTypeId?: string } = {},
@@ -162,7 +161,7 @@ export async function updateQuotation(
     throw new AppError(422, 'QUOTATION_ALREADY_CONVERTED', 'A converted quotation cannot change status.');
   }
 
-  const update: Record<string, unknown> = { status: input.status };
+   const update: Record<string, unknown> = { status: input.status };
   if (input.notes !== undefined) update.notes = input.notes;
   const { data, error } = await supabaseAdmin
     .from('quotations')
@@ -172,6 +171,40 @@ export async function updateQuotation(
     .select()
     .maybeSingle();
   if (error) fail(error);
+  if (!data) throw new AppError(404, 'QUOTATION_NOT_FOUND', 'Quotation not found in this organization.');
+
+  // NEW — automation: the moment a quotation is accepted, auto-create the
+  // Trading deal from it, so the rep never has to manually re-pick the
+  // same customer/product/quantity that's already sitting on this
+  // quotation. Manual "Add deal" stays available for deals with no prior
+  // quotation (walk-in/phone deals).
+  if (input.status === 'accepted') {
+    const full = await getQuotation(organizationId, id);
+    const client = (full as { clients?: { client_name?: string } }).clients;
+    const items = (full as { quotation_items?: Array<{ quantity: number; unit_price: number; products?: { product_name?: string; category?: string; cost_price?: number } }> }).quotation_items ?? [];
+    const item = items[0];
+       if (client?.client_name && item) {
+      const dealNumber = `DEAL-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+      const clientRecord = client as { client_name?: string; id?: string; industry_type_id?: string | null };
+      const { error: dealError } = await supabaseAdmin.from('trading_deals').insert({
+        organization_id: organizationId,
+        deal_number: dealNumber,
+        deal_name: `Deal — ${client.client_name}`,
+        customer_name: client.client_name,
+        customer_id: clientRecord.id ?? null,
+        industry_type_id: clientRecord.industry_type_id ?? null,
+        product_name: item.products?.product_name ?? null,
+        product_category: item.products?.category ?? null,
+        product_id: item.product_id ?? null,
+        quantity: item.quantity,
+        purchase_rate: item.products?.cost_price ?? null,
+        selling_rate: item.unit_price,
+        status: 'Confirmed',
+      });
+      if (dealError) console.error('[updateQuotation] failed to auto-create trading deal:', dealError);
+    }
+  }
+
   return data;
 }
 export async function convertToOrder(organizationId: string, representativeId: string | null, id: string, scope?: IndustryScope) {

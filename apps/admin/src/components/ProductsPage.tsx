@@ -9,8 +9,9 @@ type Product = {
   id: string;
   product_code: string;
   product_name: string;
-  category?: string | null;
+ category?: string | null;
   selling_price: number;
+  cost_price?: number | null;
   stock_quantity?: number | null;
   status: 'active' | 'inactive';
   // Resolved server-side from the product_industry_types join table (see
@@ -131,9 +132,10 @@ function generateProductCode(category: string, productName: string): string {
 type ProductForm = { 
   productCode: string;
   productName: string;
-  category: string;
+ category: string;
   sellingPrice: string;
-  stockQuantity: string;
+  costPrice: string;
+  stockQuantity: string;  
   status: 'active' | 'inactive';
   industryTypeId: string;
 } & FmcgMeta;
@@ -141,8 +143,9 @@ type ProductForm = {
 const blankForm: ProductForm = {
   productCode: '',
   productName: '',
-  category: '',
+ category: '',
   sellingPrice: '',
+  costPrice: '',
   stockQuantity: '',
   status: 'active',
   industryTypeId: '',
@@ -294,11 +297,13 @@ export function ProductsPage() {
       productCode: product.product_code,
       productName: product.product_name,
       category: product.category ?? categoryOptions[0] ?? '',
-      sellingPrice: String(product.selling_price),
+     sellingPrice: String(product.selling_price),
+      costPrice: product.cost_price == null ? '' : String(product.cost_price),
       stockQuantity: product.stock_quantity == null ? '' : String(product.stock_quantity),
       status: product.status,
       industryTypeId: product.industry_type_id ?? activeIndustryTypeId ?? '',
       ...loadFmcgMeta(product.id),
+      unit: product.unit ?? 'pcs',
     });
     setMessage('');
     setModalOpen(true);
@@ -334,9 +339,11 @@ export function ProductsPage() {
       productCode: form.productCode,
       productName: form.productName,
       category: form.category || null,
-      sellingPrice: Number(form.sellingPrice),
+         sellingPrice: Number(form.sellingPrice),
+      costPrice: form.costPrice === '' ? null : Number(form.costPrice),
       stockQuantity: form.stockQuantity === '' ? null : Number(form.stockQuantity),
       status: form.status,
+      unit: form.unit || null,
       industryTypeIds: [form.industryTypeId || activeIndustryTypeId || ''].filter(Boolean),
     };
     try {
@@ -600,6 +607,7 @@ export function ProductsPage() {
 <label>MRP (₹)<input min="0" type="number" step="0.01" value={form.mrp} onChange={(event) => { const mrp = event.target.value; setForm((current) => ({ ...current, mrp, sellingPrice: computeSellingPrice(mrp, current.discountPercent) || current.sellingPrice })); }} /></label>
 <label>Discount (%)<input min="0" max="100" type="number" step="0.01" value={form.discountPercent} onChange={(event) => { const discountPercent = event.target.value; setForm((current) => ({ ...current, discountPercent, sellingPrice: computeSellingPrice(current.mrp, discountPercent) || current.sellingPrice })); }} /></label>
 <label>Selling price (₹) — auto from MRP &amp; Discount<input required min="0" type="number" step="0.01" value={form.sellingPrice} readOnly disabled={Boolean(form.mrp)} onChange={(event) => setForm({ ...form, sellingPrice: event.target.value })} /></label>
+                 <label>Purchase price (₹)<input min="0" type="number" step="0.01" value={form.costPrice} onChange={(event) => setForm({ ...form, costPrice: event.target.value })} /></label>
                 <label>Tax / GST (%)<input min="0" max="100" type="number" step="0.01" value={form.taxPercent} onChange={(event) => setForm({ ...form, taxPercent: event.target.value })} /></label>
                 <label>Final price incl. GST (₹)<input readOnly disabled value={form.sellingPrice && form.taxPercent ? (Number(form.sellingPrice) + (Number(form.sellingPrice) * Number(form.taxPercent)) / 100).toFixed(2) : form.sellingPrice} /></label>
                 <label>Opening stock<input min="0" type="number" step="1" value={form.stockQuantity} onChange={(event) => setForm({ ...form, stockQuantity: event.target.value })} /></label>
@@ -632,7 +640,8 @@ export function ProductsPage() {
                 <dt>Brand</dt><dd>{meta.brand || 'Not recorded'}</dd>
                 <dt>Category</dt><dd>{viewing.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</dd>
                 <dt>Unit / Pack size</dt><dd>{meta.unit}{meta.packSize ? ` · ${meta.packSize}` : ''}</dd>
-                <dt>Selling price</dt><dd>{formatMoney(Number(viewing.selling_price))}</dd>
+             <dt>Selling price</dt><dd>{formatMoney(Number(viewing.selling_price))}</dd>
+                <dt>Purchase price</dt><dd>{viewing.cost_price == null ? 'Not recorded' : formatMoney(Number(viewing.cost_price))}</dd>
                 <dt>MRP</dt><dd>{meta.mrp ? formatMoney(Number(meta.mrp)) : 'Not recorded'}</dd>
                          <dt>Discount / Tax</dt><dd>{meta.discountPercent || 0}% / {meta.taxPercent || 0}%</dd>
                 <dt>Price incl. GST</dt><dd>{formatMoney(Number(viewing.selling_price) + (Number(viewing.selling_price) * Number(meta.taxPercent || 0)) / 100)}</dd>

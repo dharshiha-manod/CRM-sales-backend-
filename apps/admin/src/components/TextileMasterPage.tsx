@@ -1,7 +1,7 @@
-
 import { CSSProperties, FormEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { useIndustry } from '../industry/IndustryContext';
 import './MasterDataPages.css';
 /**
  * One config-driven page powers every Textile module (Design & Pattern,
@@ -11,7 +11,7 @@ import './MasterDataPages.css';
  * migration under apps/api), not localStorage or jsonb blobs.
  */
 
-export type FieldType = 'text' | 'number' | 'select' | 'date' | 'textarea' | 'lookup';
+export type FieldType = 'text' | 'number' | 'select' | 'date' | 'textarea' | 'lookup' | 'multi-lookup';
 export interface FieldDef {
   key: string;
   label: string;
@@ -50,6 +50,19 @@ export interface FieldDef {
    * e.g. { customer_name: 'customer_name', product_name: 'product_name' }
    */
   autoFillMap?: Record<string, string>;
+  /**
+   * for type: 'lookup' — optional extra async auto-fill step, beyond the
+   * simple same-list copy that autoFillMap does. Fires after the user picks
+   * a value (and after autoFillMap has already run). Receives the matched
+   * looked-up record and a setForm updater; use it to fetch related data
+   * (e.g. Trading > Deal's Customer field pulling in that customer's open
+   * requirement/quotation to fill Product, Rates, etc.) and merge it into
+   * the form. Optional — existing configs that don't set this are
+   * unaffected.
+   */
+onLookupChange?: (matched: TextileRecord, setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void) => void;
+  visibleIf?: (form: Record<string, string>) => boolean;
+  onValueChange?: (value: string, form: Record<string, string>) => Record<string, string> | void;
 }
 
 export interface KpiDef {
@@ -109,10 +122,12 @@ function dateLabel(value: unknown): string {
   if (Number.isNaN(d.getTime())) return String(value);
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(d);
 }
-// NEW
+
 export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
   const { resource, eyebrowModule, title, description, icon, emptyIcon, codeField, nameField, statusOptions, fields, searchableKeys, kpis, statusFilterable = true, sampleRecords } = config;
   const { activeIndustry, activeIndustryTypeId } = useIndustryScope();
+  const { config: activeIndustryConfig } = useIndustry();
+  const industryLabel = activeIndustryConfig.label.toUpperCase();
 
   const [records, setRecords] = useState<TextileRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -132,21 +147,28 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
   const [deleting, setDeleting] = useState<TextileRecord | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState('');
-
-  useEffect(() => {
-    const lookupFields = fields.filter((f) => f.type === 'lookup' && f.lookupResource);
+ useEffect(() => {
+    const lookupFields = fields.filter((f) => (f.type === 'lookup' || f.type === 'multi-lookup') && f.lookupResource);
     lookupFields.forEach(async (f) => {
       try {
-        const res = await api<{ data: TextileRecord[] }>(f.lookupResource!);
+        // Scope client/customer lookups (e.g. Trading's "Customer" field
+        // pointing at /clients) to the active industry, exactly like the
+        // main record load() below already does — otherwise every industry's
+        // lookup dropdown shows every other industry's clients too.
+        const base = f.lookupResource!;
+        const needsIndustryScope = base.startsWith('/clients');
+        const separator = base.includes('?') ? '&' : '?';
+        const query = needsIndustryScope && activeIndustryTypeId ? `${separator}industryTypeId=${activeIndustryTypeId}` : '';
+        const res = await api<{ data: TextileRecord[] }>(`${base}${query}`);
         setLookupData((prev) => ({ ...prev, [f.key]: res.data ?? [] }));
       } catch {
         // lookup options are a convenience — leave the field usable even if this fails
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resource]);
+  }, [resource, activeIndustryTypeId]);
 
-// NEW
+
   async function load() {
     setLoading(true);
     setError(null);
@@ -245,16 +267,16 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
       setDeleteBusy(false);
     }
   }
-
+ const formFields = useMemo(() => fields.filter((f) => !f.visibleIf || f.visibleIf(form)), [fields, form]);
   const groups = useMemo(() => {
     const map = new Map<string | undefined, FieldDef[]>();
-    for (const f of fields) {
+    for (const f of formFields) {
       const key = f.group;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(f);
     }
     return map;
-  }, [fields]);
+  }, [formFields]);
   const ungrouped = groups.get(undefined) ?? [];
   const groupNames = [...groups.keys()].filter((k): k is string => Boolean(k));
 
@@ -264,7 +286,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     <section className="page-panel master-page">
       <div className="page-panel-heading">
         <div>
-          <p className="eyebrow">TEXTILE · {eyebrowModule}</p>
+        <p className="eyebrow">{industryLabel} · {eyebrowModule}</p>
           <h2>{title}</h2>
           <p>{description}</p>
         </div>
@@ -369,9 +391,9 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
       {viewing && (
         <div className="modal-backdrop" onMouseDown={() => setViewing(null)}>
           <div className="master-modal detail-panel" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
-            <div className="modal-heading">
+               <div className="modal-heading">
               <div>
-                <p className="eyebrow">{eyebrowModule}</p>
+                <p className="eyebrow">{industryLabel} · {eyebrowModule}</p>
                 <h3>{String(viewing[nameField] ?? viewing[codeField] ?? 'Record')}</h3>
               </div>
               <button className="icon-action" type="button" aria-label="Close" onClick={() => setViewing(null)}>×</button>
@@ -401,7 +423,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
           <div className="master-modal" role="dialog" aria-modal="true" aria-labelledby="textile-modal-title" onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-heading">
               <div>
-                <p className="eyebrow">TEXTILE · {eyebrowModule}</p>
+           <p className="eyebrow">{industryLabel} · {eyebrowModule}</p>
                 <h3 id="textile-modal-title">{editing ? `Edit ${title.toLowerCase().replace(/ management$/i, '')}` : `Add ${title.toLowerCase().replace(/ management$/i, '')}`}</h3>
               </div>
               <button className="icon-action" type="button" aria-label="Close" onClick={() => setModal(false)}>×</button>
@@ -443,7 +465,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
           <div className="master-modal master-modal--center" role="dialog" aria-modal="true" aria-labelledby="textile-delete-title" onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-heading">
               <div>
-                <p className="eyebrow">TEXTILE · {eyebrowModule}</p>
+              <p className="eyebrow">{industryLabel} · {eyebrowModule}</p>
                 <h3 id="textile-delete-title">Delete {title.toLowerCase().replace(/ management$/i, '')}?</h3>
               </div>
               <button className="icon-action" type="button" aria-label="Close" onClick={() => !deleteBusy && setDeleting(null)}>×</button>
@@ -469,27 +491,62 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
 }
 
 function renderInput(f: FieldDef, form: Record<string, string>, setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void, lookupData: Record<string, TextileRecord[]> = {}) {
-  const value = form[f.key] ?? '';
-  const onChange = (v: string) => setForm((prev) => ({ ...prev, [f.key]: v }));
+ const value = form[f.key] ?? '';
+  const onChange = (v: string) => setForm((prev) => {
+    const next = { ...prev, [f.key]: v };
+    if (f.onValueChange) {
+      const patch = f.onValueChange(v, next);
+      if (patch) Object.assign(next, patch);
+    }
+    return next;
+  });
   if (f.readOnly) {
     return <input type="text" value={value} readOnly disabled />;
+  }
+  if (f.type === 'multi-lookup') {
+    const options = lookupData[f.key] ?? [];
+    const selected = new Set(value.split(',').map((s) => s.trim()).filter(Boolean));
+    const toggle = (v: string) => {
+      const next = new Set(selected);
+      if (next.has(v)) next.delete(v); else next.add(v);
+      onChange(Array.from(next).join(', '));
+    };
+    return (
+      <div style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid #ddd', borderRadius: 6, padding: 8 }}>
+        {options.length === 0 && <div style={{ opacity: 0.6, fontSize: 13 }}>No options available.</div>}
+        {options.map((o) => {
+          const optionValue = String(o[f.lookupValueKey ?? f.key] ?? o.id);
+          const optionLabel = f.lookupLabelKey ? `${optionValue} — ${String(o[f.lookupLabelKey] ?? '')}` : optionValue;
+          return (
+            <label key={String(o.id)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
+              <input type="checkbox" checked={selected.has(optionValue)} onChange={() => toggle(optionValue)} />
+              {optionLabel}
+            </label>
+          );
+        })}
+      </div>
+    );
   }
   if (f.type === 'lookup') {
     const options = lookupData[f.key] ?? [];
     const handleLookupChange = (v: string) => {
+      let matchedForCallback: TextileRecord | undefined;
       setForm((prev) => {
         const next = { ...prev, [f.key]: v };
-        if (f.autoFillMap) {
-          const matched = options.find((o) => String(o[f.lookupValueKey ?? f.key] ?? o.id) === v);
-          if (matched) {
-            for (const [sourceKey, destKey] of Object.entries(f.autoFillMap)) {
-              const sourceValue = matched[sourceKey];
-              if (sourceValue !== undefined && sourceValue !== null && sourceValue !== '') next[destKey] = String(sourceValue);
-            }
+        const matched = options.find((o) => String(o[f.lookupValueKey ?? f.key] ?? o.id) === v);
+        matchedForCallback = matched;
+        if (f.autoFillMap && matched) {
+          for (const [sourceKey, destKey] of Object.entries(f.autoFillMap)) {
+            const sourceValue = matched[sourceKey];
+            if (sourceValue !== undefined && sourceValue !== null && sourceValue !== '') next[destKey] = String(sourceValue);
           }
         }
         return next;
       });
+      // Runs after the synchronous autoFillMap copy above. Kept outside
+      // setForm's updater since it may be async (e.g. an API call) and
+      // updaters must stay synchronous and pure.
+      if (f.onLookupChange && matchedForCallback) f.onLookupChange(matchedForCallback, setForm);
     };
     return (
       <select required={f.required} value={value} onChange={(e) => handleLookupChange(e.target.value)}>

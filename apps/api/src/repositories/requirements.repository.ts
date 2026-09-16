@@ -23,7 +23,7 @@ type RequirementCreateInput = {
   items: RequirementItemInput[];
 };
 const SELECT_WITH_RELATIONS =
-  '*, clients(client_name, client_code, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), requirement_items(*, products(product_name, product_code))';
+  '*, clients(client_name, client_code, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), requirement_items(*, products(product_name, product_code, category, cost_price, selling_price))';
 export async function createRequirement(organizationId: string, representativeId: string, input: RequirementCreateInput) {
   const { data: requirement, error } = await supabaseAdmin
     .from('requirements')

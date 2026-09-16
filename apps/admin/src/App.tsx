@@ -203,10 +203,13 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
         </nav>
         <div className="sidebar-footer"><span className="online-dot" />Secure organization workspace</div>
       </aside>
-      <div className="workspace">
+         <div className="workspace">
         <header className="topbar">
-          <p className="breadcrumb">SALES CRM / {pageLabel.toUpperCase()}</p>
-          <div className="account"><span>{session.user.email}</span><button onClick={() => void signOut()}>Sign out</button></div>
+                    <span className="active-industry-badge" data-industry={activeIndustry}>{INDUSTRY_CONFIGS[activeIndustry].label}</span>
+               <div className="account">
+            <span>{session.user.email}</span>
+            <button onClick={() => void signOut()}>Sign out</button>
+          </div>
         </header>
         <main className="content">{content[page]}</main>
       </div>

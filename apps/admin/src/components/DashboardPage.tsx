@@ -212,7 +212,7 @@ export function DashboardPage() {
     for (let d = 1; d <= daysInMonth; d += 1) cells.push(new Date(year, month, d));
     while (cells.length % 7 !== 0) cells.push(null);
     return cells;
-  }, [calendarMonth]);;
+  }, [calendarMonth]);
 
   const followUpsByDay = useMemo(() => {
     const map: Record<string, number> = {};
