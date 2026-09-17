@@ -1,6 +1,14 @@
+// FILE: admin/src/components/TradingShipmentPage.tsx
 import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
+import { GenerateDocumentButton } from './GenerateDocumentButton';
+import { ShipmentDocumentsChecklist } from './ShipmentDocumentsChecklist';
+import { buildDraftFromShipment } from '../lib/tradeDocumentHandoff';
+import { LinkedRecords } from './LinkedRecords';
+import { TRADING_HASH } from '../lib/recordFocus';
+
 const SHIPPING_MODES = ['Road', 'Air', 'Sea', 'Rail', 'Courier'];
 const STATUSES = ['Planned', 'Ready to Ship', 'Dispatched', 'In Transit', 'At Destination', 'Delivered', 'Delayed', 'Cancelled'];
+const SHIPMENT_DOC_TYPES = ['Packing List', 'Commercial Invoice', 'Delivery Note', 'Bill of Lading', 'Airway Bill', 'Certificate of Origin', 'Insurance Certificate', 'Inspection Certificate', 'Shipping Instructions', 'Transport Document', 'Other'];
 
 const AUTO_MANAGED_STATUSES = new Set(['', 'Planned', 'Ready to Ship', 'Dispatched', 'In Transit', 'At Destination', 'Delayed']);
 
@@ -29,7 +37,7 @@ const config: TradingModuleConfig = {
   fields: [
     { key: 'shipment_number', label: 'Shipment number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'SHP' },
   { key: 'deal_number', label: 'Deal', type: 'lookup', lookupResource: '/trading/deals', lookupLabelKey: 'deal_name', autoFillMap: { customer_name: 'customer_name', supplier_name: 'supplier_name', product_name: 'product_name', quantity: 'quantity', unit: 'unit', currency: 'currency' }, listColumn: true },
-    { key: 'customer_name', label: 'Customer', type: 'text', listColumn: true, group: 'Goods' },
+    { key: 'customer_name', label: 'Customer', type: 'lookup', lookupResource: '/clients', lookupValueKey: 'client_name', lookupLabelKey: 'client_code', listColumn: true, group: 'Goods' },
     { key: 'supplier_name', label: 'Supplier', type: 'lookup', lookupResource: '/trading/suppliers', lookupLabelKey: 'supplier_name', group: 'Goods' },
     { key: 'product_name', label: 'Product', type: 'text', group: 'Goods' },
     { key: 'quantity', label: 'Quantity', type: 'number', group: 'Goods' },
@@ -65,7 +73,31 @@ const config: TradingModuleConfig = {
       },
     },
   ],
- 
+  rowActions: (r) => (
+    <GenerateDocumentButton docTypes={SHIPMENT_DOC_TYPES} buildDraft={(documentType) => buildDraftFromShipment(r, documentType)} />
+  ),
+  detailActions: (r) => (
+    <GenerateDocumentButton docTypes={SHIPMENT_DOC_TYPES} buildDraft={(documentType) => buildDraftFromShipment(r, documentType)} />
+  ),
+  // The documents checklist stays as-is; the chain panel below it is new —
+  // a shipment is the hub of the Trading flow, so its logistics, trade
+  // transaction, customs clearance and any claims should be reachable from
+  // here rather than by searching each module in turn.
+  detailExtra: (r) => (
+    <>
+      <ShipmentDocumentsChecklist shipment={r} />
+      <LinkedRecords
+        heading={`Chain for ${String(r.shipment_number ?? '')}`}
+        links={[
+          { title: 'Deal', resource: '/trading/deals', matchField: 'deal_number', matchValue: String(r.deal_number ?? ''), hash: TRADING_HASH.deal, codeField: 'deal_number', subField: 'deal_name' },
+          { title: 'Logistics', resource: '/trading/logistics', matchField: 'shipment_number', matchValue: String(r.shipment_number ?? ''), hash: TRADING_HASH.logistics, codeField: 'logistics_number', subField: 'status', emptyLabel: 'No logistics movement recorded for this shipment yet.' },
+          { title: 'Import / export', resource: '/trading/import-export', matchField: 'shipment_number', matchValue: String(r.shipment_number ?? ''), hash: TRADING_HASH.importExport, codeField: 'transaction_number', subField: 'status', emptyLabel: 'No import/export transaction for this shipment yet.' },
+          { title: 'Customs', resource: '/trading/customs', matchField: 'shipment_number', matchValue: String(r.shipment_number ?? ''), hash: TRADING_HASH.customs, codeField: 'customs_reference', subField: 'clearance_status', emptyLabel: 'No customs declaration for this shipment yet.' },
+          { title: 'Claims', resource: '/trading/claims', matchField: 'shipment_number', matchValue: String(r.shipment_number ?? ''), hash: TRADING_HASH.claims, codeField: 'claim_number', subField: 'status', emptyLabel: 'No claims raised against this shipment.' },
+        ]}
+      />
+    </>
+  ),
 };
 
 export function TradingShipmentPage() {

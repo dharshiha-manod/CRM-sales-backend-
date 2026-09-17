@@ -6,7 +6,7 @@ const org = (req: Parameters<RequestHandler>[0]) => { const value = req.header('
 const id = (value: string | string[] | undefined) => uuid.parse(Array.isArray(value) ? value[0] : value);
 const scope = (req: Parameters<RequestHandler>[0]) => { if (!req.industryScope) throw new AppError(500, 'INDUSTRY_SCOPE_MISSING', 'Industry scope was not resolved for this request.'); return req.industryScope; };
 export const representatives: Record<string, RequestHandler> = {
-  list: async (req, res) => res.json({ data: await representativeService.list(org(req), req.query.search as string | undefined, req.query.status as string | undefined) }),
+  list: async (req, res) => res.json({ data: await representativeService.list(org(req), req.query.search as string | undefined, req.query.status as string | undefined, req.query.industryTypeId as string | undefined) }),
   get: async (req, res) => res.json({ data: await representativeService.get(org(req), id(req.params.id)) }),
   create: async (req, res) => res.status(201).json({ data: await representativeService.create(org(req), representativeCreateSchema.parse(req.body)) }),
   update: async (req, res) => res.json({ data: await representativeService.update(org(req), id(req.params.id), representativeUpdateSchema.parse(req.body)) }),
@@ -26,8 +26,5 @@ export const clients: Record<string, RequestHandler> = {
   createContact: async (req, res) => res.status(201).json({ data: await clientService.contacts.create(org(req), id(req.params.clientId), contactCreateSchema.parse(req.body)) }),
   updateContact: async (req, res) => res.json({ data: await clientService.contacts.update(org(req), id(req.params.clientId), id(req.params.contactId), contactUpdateSchema.parse(req.body)) }),
   deleteContact: async (req, res) => { await clientService.contacts.remove(org(req), id(req.params.clientId), id(req.params.contactId)); res.status(204).send(); },
-  // NEW — GET /clients/:id/trading-snapshot. Feeds the Deal form's customer
-  // auto-fill: this client's open requirement(s) and accepted quotation(s)
-  // in one response, so the frontend doesn't need three separate round trips.
-  tradingSnapshot: async (req, res) => res.json({ data: await clientService.tradingSnapshot(org(req), id(req.params.id), scope(req)) }),
+
 };

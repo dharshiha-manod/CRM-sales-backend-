@@ -85,7 +85,7 @@ export const telephonyService = {
 
 async function tryAutoCreateLead(organizationId: string, event: NormalizedCallEvent, settings: Awaited<ReturnType<typeof getTelephonySettings>>) {
   if (!settings) return null;
-  const industryTypeId = resolveIndustryForIvrPath(settings, event.ivrDigits);
+  const industryTypeId = resolveIndustryForIvrPath(settings, event.ivrDigits ?? undefined);
   if (!industryTypeId) return null; // Can't guess an industry — leave unmatched.
 
   const representativeId = settings.default_representative_id ?? null;
@@ -118,7 +118,7 @@ async function tryAutoCreateLead(organizationId: string, event: NormalizedCallEv
     // A 409 DUPLICATE_LEAD here just means another call/webhook retry beat
     // us to it a moment earlier — not a real failure, so don't crash the
     // whole webhook because of it.
-    if (error instanceof AppError && error.statusCode === 409) return await telephonyRepository.findLeadByPhone(organizationId, event.customerNumber);
+    if (error instanceof AppError && error.statusCode === 409 && event.customerNumber) return await telephonyRepository.findLeadByPhone(organizationId, event.customerNumber);
     throw error;
   }
 }

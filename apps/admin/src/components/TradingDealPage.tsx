@@ -1,8 +1,14 @@
+// FILE: admin/src/components/TradingDealPage.tsx
 import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { api } from '../lib/api';
+import { applyPriceListRates } from '../lib/priceListLookup';
+import { GenerateDocumentButton } from './GenerateDocumentButton';
+import { DealLinkedRecords } from './DealLinkedRecords';
+import { buildDraftFromDeal } from '../lib/tradeDocumentHandoff';
 
 const STATUSES = ['Draft', 'Enquiry', 'Negotiation', 'Quotation', 'Confirmed', 'In Progress', 'Completed', 'Cancelled', 'Lost'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'];
+const DEAL_DOC_TYPES = ['Proforma Invoice', 'Commercial Invoice', 'Sales Order', 'Purchase Order', 'Certificate of Origin', 'Insurance Certificate', 'Other'];
 
 // NEW — shape returned by GET /clients/:id/trading-snapshot (see
 // clientService.tradingSnapshot on the backend). Only the fields this form
@@ -45,6 +51,21 @@ function fillFromRequirementAndQuotation(
 // requirement. When more than one candidate exists, this stores the
 // snapshot and lets the "Requirement / Quotation" lookup field below act
 // as the picker instead of guessing.
+// NEW — client_contacts is a nested list on the /clients record (one client
+// can have several contacts). We want the PRIMARY one, falling back to the
+// first contact if none is marked primary. This runs synchronously off the
+// already-fetched lookup record — no extra network call needed.
+function fillPrimaryContact(matched: Record<string, unknown>, setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void, prefix: 'customer' | 'supplier') {
+  const contacts = (matched.client_contacts as Array<Record<string, unknown>> | undefined) ?? [];
+  const primary = contacts.find((c) => c.is_primary) ?? contacts[0];
+  if (!primary) return;
+  setForm((prev) => ({
+    ...prev,
+    [`${prefix}_contact_person`]: String(primary.name ?? prev[`${prefix}_contact_person`] ?? ''),
+    [`${prefix}_phone`]: String(primary.phone ?? prev[`${prefix}_phone`] ?? ''),
+  }));
+}
+
 async function autoFillFromCustomer(matched: Record<string, unknown>, setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void) {
   const clientId = matched.id as string | undefined;
   if (!clientId) return;
@@ -78,6 +99,53 @@ function purchaseValue(r: Record<string, unknown>) {
   return (Number(r.purchase_rate) || 0) * (Number(r.quantity) || 0);
 }
 
+// NEW — Step 7 of the Trading connectivity plan. Mirrors Step 5's
+// convertEnquiryToDeal in TradingPurchaseEnquiryPage.tsx: saving a Deal
+// with status "Confirmed" creates the matching Sales Order automatically
+// and links back to it. Guarded the same way (only fires once, checked
+// via the absent order_number) so re-saving an already-converted Deal
+// never creates a second Sales Order.
+async function convertDealToSalesOrder(deal: Record<string, unknown>, reload: () => Promise<void>) {
+  try {
+    const ordersRes = await api<{ data: Array<Record<string, unknown>> }>('/trading/sales-orders');
+    const year = new Date().getFullYear();
+    const seq = String((ordersRes.data?.length ?? 0) + 1).padStart(4, '0');
+    const orderNumber = `SO-${year}-${seq}`;
+    await api('/trading/sales-orders', {
+      method: 'POST',
+      body: JSON.stringify({
+        order_number: orderNumber,
+        deal_number: deal.deal_number ?? '',
+        customer_name: deal.customer_name ?? '',
+        product_name: deal.product_name ?? '',
+        quantity: deal.quantity,
+        unit: deal.unit,
+        currency: deal.currency,
+        selling_rate: deal.selling_rate,
+        order_date: new Date().toISOString().slice(0, 10),
+        expected_delivery_date: deal.expected_delivery_date,
+        payment_terms: deal.payment_terms,
+        delivery_terms: deal.delivery_terms,
+      }),
+    });
+    // Link back: this Deal now shows which Sales Order it became.
+    await api(`/trading/deals/${deal.id}`, { method: 'PATCH', body: JSON.stringify({ order_number: orderNumber }) });
+    await reload();
+  } catch {
+    // Best-effort automation — the Deal itself already saved fine; the
+    // user can retry (edit status again) if this part fails.
+  }
+}
+
+function handleAfterSave(saved: Record<string, unknown>, reload: () => Promise<void>) {
+  // Only fire the moment status BECOMES "Confirmed" — not on every later
+  // save of an already-converted Deal — so we never create a second
+  // Sales Order for the same Deal.
+  if (saved.status === 'Confirmed' && !saved.order_number) {
+    void convertDealToSalesOrder(saved, reload);
+  }
+}
+
 const config: TradingModuleConfig = {
   resource: '/trading/deals',
   eyebrowModule: 'DEAL MANAGEMENT',
@@ -106,8 +174,11 @@ const config: TradingModuleConfig = {
       // switched on for Deals). Requirement/quotation-level fields (product,
       // quantity, supplier, rates) fill a moment later via onLookupChange,
       // since those need a backend call.
-      autoFillMap: { client_name: 'customer_name', id: 'customer_id' },
-      onLookupChange: (matched, setForm) => { void autoFillFromCustomer(matched, setForm); },
+      autoFillMap: { client_name: 'customer_name', id: 'customer_id', address: 'customer_address', city: 'customer_city', gstin: 'customer_gstin' },
+      onLookupChange: (matched, setForm) => {
+        fillPrimaryContact(matched, setForm, 'customer');
+        void autoFillFromCustomer(matched, setForm);
+      },
     },
     {
       key: 'requirement_id',
@@ -116,8 +187,44 @@ const config: TradingModuleConfig = {
       group: 'Product & quantity',
       placeholder: 'Auto-fills after Customer is selected; only shown when the customer has more than one open requirement',
     },
-    { key: 'supplier_name', label: 'Supplier', type: 'lookup', lookupResource: '/trading/suppliers', lookupLabelKey: 'supplier_name', listColumn: true },
-{ key: 'product_name', label: 'Product', type: 'lookup', lookupResource: '/products?status=active', lookupLabelKey: 'product_code', autoFillMap: { unit: 'unit', cost_price: 'purchase_rate', selling_price: 'selling_rate' }, listColumn: true, group: 'Product & quantity' },
+    { key: 'customer_address', label: 'Customer address', type: 'text', group: 'Customer details', placeholder: 'Auto-fills from the selected customer' },
+    { key: 'customer_city', label: 'Customer city', type: 'text', group: 'Customer details' },
+    { key: 'customer_gstin', label: 'Customer GSTIN', type: 'text', group: 'Customer details' },
+    { key: 'customer_contact_person', label: 'Customer contact person', type: 'text', group: 'Customer details' },
+    { key: 'customer_phone', label: 'Customer phone', type: 'text', group: 'Customer details' },
+    {
+      key: 'supplier_name',
+      label: 'Supplier',
+      type: 'lookup',
+      lookupResource: '/trading/suppliers',
+      lookupLabelKey: 'supplier_name',
+      listColumn: true,
+      // trading_suppliers stores these as flat columns (unlike clients,
+      // there's no nested contacts table), so a plain autoFillMap covers
+      // everything — no onLookupChange needed here.
+      autoFillMap: { id: 'supplier_id', address: 'supplier_address', phone: 'supplier_phone', contact_person: 'supplier_contact_person', tax_number: 'supplier_tax_number' },
+    },
+    { key: 'supplier_address', label: 'Supplier address', type: 'text', group: 'Supplier details', placeholder: 'Auto-fills from the selected supplier' },
+    { key: 'supplier_phone', label: 'Supplier phone', type: 'text', group: 'Supplier details' },
+    { key: 'supplier_contact_person', label: 'Supplier contact person', type: 'text', group: 'Supplier details' },
+    { key: 'supplier_tax_number', label: 'Supplier tax number', type: 'text', group: 'Supplier details' },
+{
+  key: 'product_name',
+  label: 'Product',
+  type: 'lookup',
+  lookupResource: '/products?status=active',
+  lookupLabelKey: 'product_code',
+  // Standard product price fills first, instantly (existing behaviour —
+  // this is the fallback the spec calls "the flat product price"). The
+  // Price List lookup below then overwrites it a moment later IF a more
+  // specific active rate exists, per Step 3 of the plan.
+  autoFillMap: { unit: 'unit', cost_price: 'purchase_rate', selling_price: 'selling_rate' },
+  listColumn: true,
+  group: 'Product & quantity',
+  onLookupChange: (matched, setForm) => {
+    void applyPriceListRates(String(matched.product_name ?? ''), setForm, { selling: 'selling_rate', purchase: 'purchase_rate', currency: 'currency' });
+  },
+},
     { key: 'product_category', label: 'Product category', type: 'text', group: 'Product & quantity' },
     { key: 'quantity', label: 'Quantity', type: 'number', group: 'Product & quantity' },
     { key: 'unit', label: 'Unit', type: 'text', group: 'Product & quantity' },
@@ -169,8 +276,10 @@ const config: TradingModuleConfig = {
     { key: 'delivery_terms', label: 'Delivery terms', type: 'text', group: 'Schedule & terms' },
     { key: 'priority', label: 'Priority', type: 'select', options: PRIORITIES, listColumn: true, group: 'Schedule & terms' },
     { key: 'status', label: 'Deal status', type: 'select', options: STATUSES, listColumn: true, group: 'Schedule & terms' },
+    { key: 'order_number', label: 'Sales order (once confirmed)', type: 'text', readOnly: true, listColumn: true, placeholder: 'Fills in automatically when status is set to "Confirmed"', group: 'Schedule & terms' },
     { key: 'notes', label: 'Notes', type: 'textarea', group: 'Schedule & terms' },
   ],
+  afterSave: handleAfterSave,
   kpis: [
     { icon: '◆', iconClass: 'kpi-icon-ink', label: 'Total deals', value: (r) => String(r.length) },
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Open deals', value: (r) => String(r.filter((x) => !['Completed', 'Cancelled', 'Lost'].includes(String(x.status))).length) },
@@ -178,6 +287,13 @@ const config: TradingModuleConfig = {
     { icon: '₹', iconClass: 'kpi-icon-school', label: 'Deal value', value: (r) => `₹${r.reduce((sum, x) => sum + sellingValue(x), 0).toLocaleString()}` },
     { icon: '↗', iconClass: 'kpi-icon-green', label: 'Expected margin', value: (r) => `₹${r.reduce((sum, x) => sum + (sellingValue(x) - purchaseValue(x)), 0).toLocaleString()}` },
   ],
+  rowActions: (r) => (
+    <GenerateDocumentButton docTypes={DEAL_DOC_TYPES} buildDraft={(documentType) => buildDraftFromDeal(r, documentType)} />
+  ),
+  detailExtra: (r) => <DealLinkedRecords deal={r} />,
+  detailActions: (r) => (
+    <GenerateDocumentButton docTypes={DEAL_DOC_TYPES} buildDraft={(documentType) => buildDraftFromDeal(r, documentType)} />
+  ),
 };
 
 export function TradingDealPage() {

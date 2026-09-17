@@ -1,7 +1,9 @@
-import { CSSProperties, FormEvent, useEffect, useMemo, useState } from 'react';
+// FILE: admin/src/components/TextileMasterPage.tsx
+import { CSSProperties, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
+import { consumeRecordFocus } from '../lib/recordFocus';
 import './MasterDataPages.css';
 /**
  * One config-driven page powers every Textile module (Design & Pattern,
@@ -27,8 +29,22 @@ export interface FieldDef {
   format?: (value: unknown, record: TextileRecord) => string;
   /** shown but not editable — pairs with autoGenerate */
   readOnly?: boolean;
-  /** prefix used to auto-generate this field's value on create, e.g. 'DSN' -> DSN-2026-0007 */
-  autoGenerate?: string;
+  /**
+   * prefix used to auto-generate this field's value on create, e.g. 'DSN' ->
+   * DSN-2026-0007. Can also be a function of the in-progress form when the
+   * prefix (or the whole value) depends on another field the user hasn't
+   * necessarily filled in yet, e.g. a document's prefix depending on
+   * `document_type`. Called once at create time and again whenever
+   * `regenerateOn` fields change.
+   */
+  autoGenerate?: string | ((form: Record<string, string>, sequenceLabel: string) => string);
+  /**
+   * for fields with `autoGenerate` — when any of these OTHER field keys
+   * change, recompute this field's value from `autoGenerate` again (keeping
+   * the same running sequence number, just re-deriving the prefix/shape).
+   * Omit for fields that only generate once, at create time.
+   */
+  regenerateOn?: string[];
   /** for type: 'lookup' — API resource to fetch options from, e.g. '/textile/designs' */
   lookupResource?: string;
   /** for type: 'lookup' — which field on the looked-up record to show as the label */
@@ -63,6 +79,19 @@ export interface FieldDef {
 onLookupChange?: (matched: TextileRecord, setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void) => void;
   visibleIf?: (form: Record<string, string>) => boolean;
   onValueChange?: (value: string, form: Record<string, string>) => Record<string, string> | void;
+  /**
+   * Like `onValueChange`, but for work that has to be async (e.g. fetching
+   * today's exchange rate from Currency Management before writing the
+   * converted value back). Receives setForm instead of returning a patch,
+   * since the update lands after the fetch resolves. Runs after the
+   * synchronous `onValueChange` above. Optional — existing configs are
+   * unaffected.
+   */
+  onValueChangeAsync?: (
+    value: string,
+    form: Record<string, string>,
+    setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void,
+  ) => void;
 }
 
 export interface KpiDef {
@@ -89,13 +118,48 @@ export interface TextileModuleConfig {
   fields: FieldDef[];
   searchableKeys: string[];
   kpis: KpiDef[];
-  statusFilterable?: boolean;
+statusFilterable?: boolean;
+  // Optional: hide the generic Status column entirely. Off by default for
+  // every existing module. Use when a page has no manual `status` field
+  // and shows its own computed status column instead (e.g. Price List's
+  // live-derived "Validity" column) so the table doesn't show a permanently
+  // empty/stale Status badge.
+  hideStatusColumn?: boolean;
   /**
    * Front-end-only preview rows shown when there's nothing real to display yet
    * (empty table, or the API/route isn't wired up). Never sent to the API —
    * View works, Edit is disabled. Give each an id starting with 'demo-'.
    */
   sampleRecords?: TextileRecord[];
+  /** extra buttons rendered in the list table's Actions cell, alongside View/Edit/Delete */
+  rowActions?: (record: TextileRecord) => ReactNode;
+  /** extra buttons rendered in the View modal's action row, alongside Edit/Done */
+  detailActions?: (record: TextileRecord) => ReactNode;
+  /** extra content rendered inside the View modal, after the field list and before the action row */
+  detailExtra?: (record: TextileRecord) => ReactNode;
+  /** extra panel rendered between the KPI cards and the search/filter toolbar */
+  renderInsights?: (rows: TextileRecord[]) => ReactNode;
+  /**
+   * Called after a create/update save succeeds, with the saved record and
+   * a reload() to refresh the list afterwards. Optional — every existing
+   * module leaves this unset and behaves exactly as before. Added for
+   * Purchase Enquiry's "Converted to Deal" automation (Step 5 of the
+   * Trading connectivity plan): when status is saved as that value, it
+   * creates the matching Deal automatically instead of the dropdown
+   * option silently doing nothing.
+   */
+  afterSave?: (saved: TextileRecord, reload: () => Promise<void>) => void;
+  /**
+   * Checked once, right after the first successful load — lets another page
+   * hand this page a set of values to open the Add form pre-filled with
+   * (e.g. "Generate document" from a Deal or Shipment). Return null when
+   * there's nothing pending.
+   */
+  consumePendingDraft?: () => Record<string, string> | null;
+  /** called every time `load()` finishes successfully, with the freshly-fetched rows */
+  onRecordsLoaded?: (rows: TextileRecord[]) => void;
+  /** handed this page's own `load()` so an outside action (e.g. a status-change button) can force a refresh after writing */
+  registerReload?: (reload: () => void) => void;
 }
 
 const GOOD_STATUSES = new Set(['active', 'in-stock', 'pass', 'approved', 'completed', 'in stock']);
@@ -116,6 +180,19 @@ function blankFormFrom(fields: FieldDef[]): Record<string, string> {
   return out;
 }
 
+function resolveAutoGenerate(f: FieldDef, form: Record<string, string>, sequenceLabel: string): string {
+  if (typeof f.autoGenerate === 'function') return f.autoGenerate(form, sequenceLabel);
+  return `${f.autoGenerate}-${sequenceLabel}`;
+}
+
+function applyRegenerateOn(changedKey: string, next: Record<string, string>, fields: FieldDef[]): void {
+  for (const g of fields) {
+    if (g.autoGenerate && g.regenerateOn?.includes(changedKey)) {
+      next[g.key] = resolveAutoGenerate(g, next, next.__seq ?? '');
+    }
+  }
+}
+
 function dateLabel(value: unknown): string {
   if (!value || typeof value !== 'string') return '—';
   const d = new Date(value);
@@ -124,7 +201,7 @@ function dateLabel(value: unknown): string {
 }
 
 export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
-  const { resource, eyebrowModule, title, description, icon, emptyIcon, codeField, nameField, statusOptions, fields, searchableKeys, kpis, statusFilterable = true, sampleRecords } = config;
+ const { resource, eyebrowModule, title, description, icon, emptyIcon, codeField, nameField, statusOptions, fields, searchableKeys, kpis, statusFilterable = true, hideStatusColumn = false, sampleRecords, afterSave } = config;
   const { activeIndustry, activeIndustryTypeId } = useIndustryScope();
   const { config: activeIndustryConfig } = useIndustry();
   const industryLabel = activeIndustryConfig.label.toUpperCase();
@@ -143,6 +220,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
   const [form, setForm] = useState<Record<string, string>>(blankFormFrom(fields));
   const [saving, setSaving] = useState(false);
   const [formMessage, setFormMessage] = useState('');
+  const [formNotice, setFormNotice] = useState('');
   const [lookupData, setLookupData] = useState<Record<string, TextileRecord[]>>({});
   const [deleting, setDeleting] = useState<TextileRecord | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -175,7 +253,12 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     try {
       const query = activeIndustryTypeId ? `?industryTypeId=${activeIndustryTypeId}` : '';
       const res = await api<{ data: TextileRecord[] }>(`${resource}${query}`);
-      setRecords(res.data ?? []);
+      const rows = res.data ?? [];
+      setRecords(rows);
+      // Keep an already-open View modal in sync with the fresh data instead
+      // of showing a stale snapshot after a status-change action refreshes.
+      setViewing((prev) => (prev ? rows.find((row) => row.id === prev.id) ?? prev : prev));
+      config.onRecordsLoaded?.(rows);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : `Unable to load ${title.toLowerCase()}.`);
     } finally {
@@ -189,6 +272,63 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     // sitting in the table after a switch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resource, activeIndustry, activeIndustryTypeId]);
+  // Hand this page's own reload to the config every render, so a detail
+  // action (e.g. a status-change button defined in the config) can refresh
+  // the list after writing, without the engine needing to know about it.
+  useEffect(() => {
+    config.registerReload?.(load);
+  });
+  // One-time cross-page handoff: another page (e.g. a Deal or Shipment's
+  // "Generate document" action) may have queued values for this page to
+  // open its Add form pre-filled with. Checked once, after the first real
+  // load, so the auto-generated fields below have real records to count.
+  const draftHandledRef = useRef(false);
+  useEffect(() => {
+    if (loading || draftHandledRef.current) return;
+    draftHandledRef.current = true;
+    const draft = config.consumePendingDraft?.();
+    if (!draft) return;
+    openCreate();
+    setForm((prev) => {
+      let next: Record<string, string> = { ...prev, ...draft };
+      for (const f of fields) {
+        if (f.onValueChange && Object.prototype.hasOwnProperty.call(draft, f.key)) {
+          const patch = f.onValueChange(draft[f.key], next);
+          if (patch) next = { ...next, ...patch };
+        }
+      }
+      for (const key of Object.keys(draft)) {
+        applyRegenerateOn(key, next, fields);
+      }
+      return next;
+    });
+    setFormNotice('Pre-filled from the linked record — review and save.');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+  // Cross-module record links (LinkedRecords / DealLinkedRecords) hand over
+  // a record to OPEN, not a draft to create — see lib/recordFocus.ts. This
+  // is what makes "Open →" land on the actual record instead of dropping
+  // the user on a list with the reference copied to their clipboard, which
+  // is what it used to do. Runs after every load so a link followed while
+  // already on this module still works.
+  const focusHandledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading) return;
+    const focus = consumeRecordFocus(resource);
+    if (!focus || focusHandledRef.current === `${focus.field}:${focus.value}`) return;
+    focusHandledRef.current = `${focus.field}:${focus.value}`;
+    const match = records.find((r) => String(r[focus.field] ?? '') === focus.value);
+    if (match) {
+      setViewing(match);
+    } else {
+      // Not in this industry's records (or filtered out) — fall back to
+      // surfacing it in the list rather than silently doing nothing.
+      setSearch(focus.value);
+      setStatusFilter('all');
+      setMessage(`Showing results for ${focus.value}.`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, records, resource]);
   // Only kicks in once loading is done and there's truly nothing real to show
   // (including when the API route errors out) — never masks real data.
   const usingDemoData = !loading && records.length === 0 && (sampleRecords?.length ?? 0) > 0;
@@ -206,15 +346,16 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
    function openCreate() {
     setEditing(null);
     const blank = blankFormFrom(fields);
+    const year = new Date().getFullYear();
+    const seq = String(records.length + 1).padStart(4, '0');
+    const sequenceLabel = `${year}-${seq}`;
+    blank.__seq = sequenceLabel;
     for (const f of fields) {
-      if (f.autoGenerate) {
-        const year = new Date().getFullYear();
-        const seq = String(records.length + 1).padStart(4, '0');
-        blank[f.key] = `${f.autoGenerate}-${year}-${seq}`;
-      }
+      if (f.autoGenerate) blank[f.key] = resolveAutoGenerate(f, blank, sequenceLabel);
     }
     setForm(blank);
     setFormMessage('');
+    setFormNotice('');
     setModal(true);
   }
   function openEdit(record: TextileRecord) {
@@ -223,6 +364,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     for (const f of fields) next[f.key] = record[f.key] != null ? String(record[f.key]) : '';
     setForm(next);
     setFormMessage('');
+    setFormNotice('');
     setModal(true);
   }
 
@@ -231,6 +373,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     event.preventDefault();
     setSaving(true);
     setFormMessage('');
+    setFormNotice('');
     try {
       const payload: Record<string, unknown> = {};
       for (const f of fields) {
@@ -242,10 +385,11 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
       // never a user-editable field, so a locked user can't tag a record
       // into another industry even by tampering with the form payload.
       if (!editing && activeIndustryTypeId) payload.industry_type_id = activeIndustryTypeId;
-      await api(editing ? `${resource}/${editing.id}` : resource, { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
+      const res = await api<{ data: TextileRecord }>(editing ? `${resource}/${editing.id}` : resource, { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
       setModal(false);
       setMessage(editing ? `${title} record updated successfully.` : `${title} record added successfully.`);
       await load();
+      afterSave?.(res.data, load);
     } catch (caught) {
       setFormMessage(caught instanceof Error ? caught.message : 'Unable to save this record.');
     } finally {
@@ -307,6 +451,8 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
         </div>
       )}
 
+      {config.renderInsights?.(records)}
+
       <div className="master-toolbar">
         <div className="master-search">
           <input type="search" placeholder={`Search ${title.toLowerCase()}…`} value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -325,16 +471,15 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
             {error && !usingDemoData && <p className="error-message">{error}</p>}
       {usingDemoData && <p className="demo-data-banner">Showing sample data for preview — this is a UI-only demo, nothing here is saved.</p>}
       {message && <p className={message.includes('successfully') ? 'success-message' : 'error-message'}>{message}</p>}
-
-      {loading ? (
+  {loading ? (
         <div className="data-table-wrap">
           <table>
-            <thead><tr>{listColumns.map((c) => <th key={c.key}>{c.label}</th>)}<th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr>{listColumns.map((c) => <th key={c.key}>{c.label}</th>)}{!hideStatusColumn && <th>Status</th>}<th>Actions</th></tr></thead>
             <tbody>
               {[0, 1, 2].map((i) => (
                 <tr key={i} className="skeleton-row">
                   {listColumns.map((c) => <td key={c.key}><span className="skeleton-block" style={{ width: '60%' }} /></td>)}
-                  <td><span className="skeleton-block" style={{ width: '50%' }} /></td>
+                  {!hideStatusColumn && <td><span className="skeleton-block" style={{ width: '50%' }} /></td>}
                   <td><span className="skeleton-block" style={{ width: '40%' }} /></td>
                 </tr>
               ))}
@@ -344,17 +489,18 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
       ) : (
         <div className="data-table-wrap">
           <table>
-            <thead><tr>{listColumns.map((c) => <th key={c.key}>{c.label}</th>)}<th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr>{listColumns.map((c) => <th key={c.key}>{c.label}</th>)}{!hideStatusColumn && <th>Status</th>}<th>Actions</th></tr></thead>
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.id}>
                   {listColumns.map((c) => (
                     <td key={c.key}>{c.format ? c.format(r[c.key], r) : (r[c.key] != null && r[c.key] !== '' ? String(r[c.key]) : '—')}</td>
                   ))}
-                  <td><span className={statusBadgeClass(r.status)}>{r.status ?? '—'}</span></td>
+                  {!hideStatusColumn && <td><span className={statusBadgeClass(r.status)}>{r.status ?? '—'}</span></td>}
                   <td className="master-actions">
                     <button type="button" className="icon-action" title="View" aria-label={`View ${String(r[nameField] ?? r[codeField] ?? '')}`} onClick={() => setViewing(r)}>◉</button>
                     <button type="button" className="icon-action" title="Edit" aria-label={`Edit ${String(r[nameField] ?? r[codeField] ?? '')}`} onClick={() => openEdit(r)}>✎</button>
+                    {config.rowActions?.(r)}
                     <button
                       type="button"
                       className="icon-action icon-action--danger"
@@ -410,8 +556,10 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
               <dt>Added on</dt>
               <dd>{dateLabel(viewing.created_at)}</dd>
             </dl>
+            {config.detailExtra?.(viewing)}
             <div className="modal-actions">
               <button type="button" className="quiet-button" onClick={() => { const r = viewing; setViewing(null); openEdit(r); }}>Edit</button>
+              {config.detailActions?.(viewing)}
               <button type="button" className="primary-action" onClick={() => setViewing(null)}>Done</button>
             </div>
           </div>
@@ -429,11 +577,12 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
               <button className="icon-action" type="button" aria-label="Close" onClick={() => setModal(false)}>×</button>
             </div>
             <form className="master-modal-form" onSubmit={submit}>
+              {formNotice && <p className="success-message">{formNotice}</p>}
               <div className="field-grid">
                           {ungrouped.map((f) => (
                   <label key={f.key}>
                     {f.label}{f.required ? ' *' : ''}
-                    {renderInput(f, form, setForm, lookupData)}
+                    {renderInput(f, form, setForm, lookupData, fields)}
                   </label>
                 ))}
               </div>
@@ -444,7 +593,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
                                  {groups.get(g)!.map((f) => (
                       <label key={f.key}>
                         {f.label}{f.required ? ' *' : ''}
-                        {renderInput(f, form, setForm, lookupData)}
+                        {renderInput(f, form, setForm, lookupData, fields)}
                       </label>
                     ))}
                   </div>
@@ -490,16 +639,33 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
   );
 }
 
-function renderInput(f: FieldDef, form: Record<string, string>, setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void, lookupData: Record<string, TextileRecord[]> = {}) {
+function dedupeByValue(rows: TextileRecord[], f: FieldDef): TextileRecord[] {
+  const seen = new Set<string>();
+  const out: TextileRecord[] = [];
+  for (const r of rows) {
+    const value = String(r[f.lookupValueKey ?? f.key] ?? r.id);
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(r);
+  }
+  return out;
+}
+
+function renderInput(f: FieldDef, form: Record<string, string>, setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void, lookupData: Record<string, TextileRecord[]> = {}, fields: FieldDef[] = []) {
  const value = form[f.key] ?? '';
-  const onChange = (v: string) => setForm((prev) => {
-    const next = { ...prev, [f.key]: v };
-    if (f.onValueChange) {
-      const patch = f.onValueChange(v, next);
-      if (patch) Object.assign(next, patch);
-    }
-    return next;
-  });
+  const onChange = (v: string) => {
+    setForm((prev) => {
+      const next = { ...prev, [f.key]: v };
+      if (f.onValueChange) {
+        const patch = f.onValueChange(v, next);
+        if (patch) Object.assign(next, patch);
+      }
+      applyRegenerateOn(f.key, next, fields);
+      return next;
+    });
+    // Kept outside the updater — updaters must stay synchronous and pure.
+    f.onValueChangeAsync?.(v, form, setForm);
+  };
   if (f.readOnly) {
     return <input type="text" value={value} readOnly disabled />;
   }
@@ -528,7 +694,11 @@ function renderInput(f: FieldDef, form: Record<string, string>, setForm: (update
     );
   }
   if (f.type === 'lookup') {
-    const options = lookupData[f.key] ?? [];
+    // De-duplicated by the stored value: a resource can legitimately hold
+    // many rows sharing one code (Currency Management keeps a row per dated
+    // rate, so USD appears once per rate change) and the dropdown should
+    // still offer USD once.
+    const options = dedupeByValue(lookupData[f.key] ?? [], f);
     const handleLookupChange = (v: string) => {
       let matchedForCallback: TextileRecord | undefined;
       setForm((prev) => {
@@ -541,12 +711,14 @@ function renderInput(f: FieldDef, form: Record<string, string>, setForm: (update
             if (sourceValue !== undefined && sourceValue !== null && sourceValue !== '') next[destKey] = String(sourceValue);
           }
         }
+        applyRegenerateOn(f.key, next, fields);
         return next;
       });
       // Runs after the synchronous autoFillMap copy above. Kept outside
       // setForm's updater since it may be async (e.g. an API call) and
       // updaters must stay synchronous and pure.
       if (f.onLookupChange && matchedForCallback) f.onLookupChange(matchedForCallback, setForm);
+      f.onValueChangeAsync?.(v, form, setForm);
     };
     return (
       <select required={f.required} value={value} onChange={(e) => handleLookupChange(e.target.value)}>

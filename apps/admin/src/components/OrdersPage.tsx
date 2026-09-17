@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { GenerateDocumentButton } from './GenerateDocumentButton';
+import { buildDraftFromOrder } from '../lib/tradeDocumentHandoff';
 import './MasterDataPages.css';
+
+const ORDER_DOC_TYPES = ['Commercial Invoice', 'Packing List', 'Delivery Note', 'Bill of Lading', 'Other'];
 
 type OrderItem = {
   quantity: number;
@@ -123,7 +127,7 @@ function saveOrderMeta(orderId: string, meta: OrderMeta) {
 }
 
 export function OrdersPage() {
-  const { clientMatchesActiveIndustry } = useIndustryScope();
+  const { clientMatchesActiveIndustry, activeIndustry } = useIndustryScope();
 
   const [items, setItems] = useState<Order[]>([]);
   const [collected, setCollected] = useState<Record<string, number>>({});
@@ -685,6 +689,15 @@ export function OrdersPage() {
               <div className="order-total">
                 Order total <strong>{currency(selected.total_amount)}</strong>
               </div>
+              {activeIndustry === 'trading' && (
+                <div className="modal-actions">
+                  <GenerateDocumentButton
+                    label="Generate Trade Document"
+                    docTypes={ORDER_DOC_TYPES}
+                    buildDraft={(documentType) => buildDraftFromOrder(selected, documentType)}
+                  />
+                </div>
+              )}
               {notesText && <p>{notesText}</p>}
 
               <div className="master-filter-bar">

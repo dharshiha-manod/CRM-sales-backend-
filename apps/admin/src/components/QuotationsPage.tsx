@@ -1,6 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { GenerateDocumentButton } from './GenerateDocumentButton';
+import { buildDraftFromQuotation } from '../lib/tradeDocumentHandoff';
+
+const QUOTATION_DOC_TYPES = ['Proforma Invoice', 'Commercial Invoice', 'Other'];
 import { QuotationPipelineStepper } from './QuotationPipelineStepper';
 import './MasterDataPages.css';
 
@@ -45,7 +49,7 @@ const currency = (value: number) =>
 const dateLabel = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 
 export function QuotationsPage() {
-  const { clientMatchesActiveIndustry } = useIndustryScope();
+  const { clientMatchesActiveIndustry, activeIndustry } = useIndustryScope();
   const [items, setItems] = useState<Quotation[]>([]);
   const [selected, setSelected] = useState<Quotation | null>(null);
   const [search, setSearch] = useState('');
@@ -429,6 +433,15 @@ export function QuotationsPage() {
               Quotation total <strong>{currency(selected.total_amount)}</strong>
             </div>
             {selected.notes && <p>{selected.notes}</p>}
+            {activeIndustry === 'trading' && (
+              <div className="modal-actions">
+                <GenerateDocumentButton
+                  label="Generate Trade Document"
+                  docTypes={QUOTATION_DOC_TYPES}
+                  buildDraft={(documentType) => buildDraftFromQuotation(selected, documentType)}
+                />
+              </div>
+            )}
          {selected.status === 'sent' && (
               <div className="modal-actions">
                 <button type="button" className="quiet-button" disabled={statusUpdatingId === selected.id} onClick={() => void markStatus(selected, 'rejected')}>

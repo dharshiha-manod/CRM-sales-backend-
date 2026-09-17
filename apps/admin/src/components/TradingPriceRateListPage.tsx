@@ -22,6 +22,8 @@ const config: TradingModuleConfig = {
   codeField: 'product_code',
   nameField: 'product_name',
   statusOptions: STATUSES,
+  statusFilterable: false,
+  hideStatusColumn: true,
   searchableKeys: ['product_name', 'product_code', 'supplier_name', 'customer_name'],
   fields: [
      { key: 'product_name', label: 'Product', type: 'lookup', required: true, lookupResource: '/products?status=active', lookupLabelKey: 'product_code', autoFillMap: { product_code: 'product_code', unit: 'unit', cost_price: 'purchase_rate', selling_price: 'selling_rate' }, listColumn: true },
@@ -47,7 +49,6 @@ const config: TradingModuleConfig = {
       format: (_v, r) => rateStatus(r),
       group: 'Validity',
     },
-    { key: 'status', label: 'Status', type: 'select', options: STATUSES, group: 'Validity' },
     { key: 'notes', label: 'Notes', type: 'textarea', group: 'Validity' },
   ],
   kpis: [

@@ -357,8 +357,10 @@ export function LeadsPage() {
   const [selected, setSelected] = useState<Lead | null>(null);
   const [activities, setActivities] = useState<LeadActivity[]>([]);
   const [activitiesLoading, setActivitiesLoading] = useState(false);
-  const [noteDraft, setNoteDraft] = useState('');
-  const [savingNote, setSavingNote] = useState(false);
+ const [noteDraft, setNoteDraft] = useState('');
+const [savingNote, setSavingNote] = useState(false);
+const [calling, setCalling] = useState(false);
+const [callError, setCallError] = useState<string | null>(null);
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
@@ -691,10 +693,11 @@ function openCreate() {
   }
 
   async function openDetail(lead: Lead) {
-    setSelected(lead);
-    setMenuFor(null);
-    setDetailError(null);
-    setNoteDraft('');
+  setSelected(lead);
+setMenuFor(null);
+setDetailError(null);
+setCallError(null);
+setNoteDraft('');
     setNextActionDraft(lead.next_action ?? '');
     setNextActionDueDraft(lead.next_action_due_at ? lead.next_action_due_at.slice(0, 16) : '');
 
@@ -783,8 +786,26 @@ async function changeStatus(newStatus: Lead['status']) {
       setSavingNextAction(false);
     }
   }
+async function callLead() {
+  if (!selected?.phone) return;
+  setCalling(true);
+  setCallError(null);
+  try {
+    await api<{ data: unknown }>('/telephony/calls', {
+      method: 'POST',
+      body: JSON.stringify({
+        toNumber: selected.phone,
+        representativeId: selected.sales_representatives?.id ?? null,
+      }),
+    });
+  } catch (caught) {
+    setCallError(caught instanceof Error ? caught.message : 'Unable to place the call.');
+  } finally {
+    setCalling(false);
+  }
+}
 
-  async function suggestRep() {
+async function suggestRep() {
     if (!form.industryTypeId) return;
     setSuggestingRep(true);
     try {
@@ -1148,8 +1169,28 @@ async function changeStatus(newStatus: Lead['status']) {
               <dd>{unpackFmcgMeta(selected.notes).meta.expectedOrderValue ? `₹${unpackFmcgMeta(selected.notes).meta.expectedOrderValue}` : '—'}</dd>
               <dt>Contact</dt>
               <dd>{selected.contact_name ?? '—'}</dd>
-              <dt>Phone</dt>
-              <dd>{selected.phone ?? '—'}</dd>
+           <dt>Phone</dt>
+<dd>
+  {selected.phone ?? '—'}
+  {selected.phone && (
+    <button
+      type="button"
+      className="quiet-button"
+      style={{ marginLeft: '0.6rem' }}
+      disabled={calling}
+      onClick={() => void callLead()}
+      title={`Call ${selected.phone}`}
+    >
+      {calling ? 'Calling…' : '📞 Call'}
+    </button>
+  )}
+</dd>
+{callError && (
+  <>
+    <dt />
+    <dd className="error-message">{callError}</dd>
+  </>
+)}
               <dt>Email</dt>
               <dd>{selected.email ?? '—'}</dd>
               <dt>Location</dt>
