@@ -121,10 +121,10 @@ export function TargetsPage() {
     setLoading(true); setError(null);
     try {
       const params = new URLSearchParams({ industryTypeId: activeIndustryTypeId, periodStart: range.start, periodEnd: range.end });
-      const [targetsRes, repsRes] = await Promise.all([
-        api<{ data: TargetApiRow[] }>(`/targets?${params.toString()}`),
-        api<{ data: RepOption[] }>(`/sales-representatives?industryTypeId=${activeIndustryTypeId}&status=active`),
-      ]);
+   const [targetsRes, repsRes] = await Promise.all([
+  api<{ data: TargetApiRow[] }>(`/targets?${params.toString()}`),
+  api<{ data: RepOption[] }>(`/sales-representatives?status=active`),
+]);
       setTargets(targetsRes.data ?? []);
       setReps(repsRes.data ?? []);
     } catch (caught) {

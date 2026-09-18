@@ -24,6 +24,51 @@ function clientConflictError(error: { code?: string; message?: string; details?:
 }
 export async function createClient(org: string, input: Record<string, unknown>) { const payload = Object.fromEntries(Object.entries(input).map(([key, value]) => [clientColumnMap[key] ?? key, value])); const { data, error } = await supabaseAdmin.from('clients').insert({ ...payload, organization_id: org }).select().single(); if (error) throw clientConflictError(error as { code?: string; message?: string; details?: string }); return data; }
 export async function updateClient(org: string, id: string, input: Record<string, unknown>) { const payload = Object.fromEntries(Object.entries(input).map(([key, value]) => [clientColumnMap[key] ?? key, value])); const { data, error } = await supabaseAdmin.from('clients').update(payload).eq('organization_id', org).eq('id', id).select().maybeSingle(); if (error) throw clientConflictError(error as { code?: string; message?: string; details?: string }); if (!data) throw new AppError(404, 'CLIENT_NOT_FOUND', 'Client was not found'); return data; }
+export async function syncClientAddressFromLead(org: string, clientId: string) {
+  // A client links back to its source through leads.converted_client_id.
+  // Select the original conversion if historical data contains multiple links.
+  const { data: lead, error: leadError } = await supabaseAdmin
+    .from('leads')
+    .select('street_address, city, state')
+    .eq('organization_id', org)
+    .eq('converted_client_id', clientId)
+    .order('converted_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (leadError) fail(leadError);
+  if (!lead) throw new AppError(404, 'SOURCE_LEAD_NOT_FOUND', 'This client is not linked to a converted lead.');
+
+  return updateClient(org, clientId, {
+    address: [lead.street_address, lead.city, lead.state].filter(Boolean).join(', ') || null,
+    city: lead.city,
+    state: lead.state,
+  });
+}
+export async function clientAddressSyncStatus(
+  org: string,
+  clientId: string,
+  client: { address?: string | null; city?: string | null; state?: string | null },
+) {
+  const { data: lead, error } = await supabaseAdmin
+    .from('leads')
+    .select('street_address, city, state')
+    .eq('organization_id', org)
+    .eq('converted_client_id', clientId)
+    .order('converted_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) fail(error);
+  if (!lead) return { linked: false, differs: false };
+
+  const normalize = (value: string | null | undefined) => (value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const sourceAddress = [lead.street_address, lead.city, lead.state].filter(Boolean).join(', ');
+  return {
+    linked: true,
+    differs: normalize(client.address) !== normalize(sourceAddress)
+      || normalize(client.city) !== normalize(lead.city)
+      || normalize(client.state) !== normalize(lead.state),
+  };
+}
 export async function listContacts(org: string, clientId: string) { await getClient(org, clientId); const { data, error } = await supabaseAdmin.from('client_contacts').select('*').eq('organization_id', org).eq('client_id', clientId).order('is_primary', { ascending: false }).order('name'); return error ? fail(error) : data; }
 export async function createContact(org: string, clientId: string, input: Record<string, unknown>) { const { data, error } = await supabaseAdmin.from('client_contacts').insert({ organization_id: org, client_id: clientId, name: input.name, designation: input.designation, department: input.department, phone: input.phone, alternate_phone: input.alternatePhone, email: input.email, is_primary: input.isPrimary, notes: input.notes }).select().single(); return error ? fail(error) : data; }
 export async function updateContact(org: string, clientId: string, contactId: string, input: Record<string, unknown>) { const map = { alternatePhone: 'alternate_phone', isPrimary: 'is_primary' } as Record<string, string>; const payload = Object.fromEntries(Object.entries(input).map(([key, value]) => [map[key] ?? key, value])); const { data, error } = await supabaseAdmin.from('client_contacts').update(payload).eq('organization_id', org).eq('client_id', clientId).eq('id', contactId).select().maybeSingle(); if (error) fail(error); if (!data) throw new AppError(404, 'CONTACT_NOT_FOUND', 'Client contact was not found'); return data; }

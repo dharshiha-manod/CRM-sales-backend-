@@ -23,6 +23,8 @@ masterDataRouter.get('/clients/:id/trading-snapshot', clients.tradingSnapshot);
 // NEW — feeds Trading > Deal Management's customer auto-fill (see clientService.tradingSnapshot)
 masterDataRouter.get('/clients/:id/trading-snapshot', clients.tradingSnapshot);
 masterDataRouter.patch('/clients/:id', clients.update);
+masterDataRouter.patch('/clients/:id/sync-address-from-lead', clients.syncAddressFromLead);
+masterDataRouter.get('/clients/:id/address-sync-status', clients.addressSyncStatus);
 masterDataRouter.patch('/clients/:id/status', clients.status);
 masterDataRouter.get('/clients/:clientId/contacts', clients.contacts);
 masterDataRouter.post('/clients/:clientId/contacts', clients.createContact);

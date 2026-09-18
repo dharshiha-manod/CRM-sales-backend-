@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import L from 'leaflet';
+import { MapContainer, Marker, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import { api } from '../lib/api';
 import { useIndustry } from '../industry/IndustryContext';
 import { useIndustryScope } from '../industry/useIndustryScope';
@@ -20,6 +22,7 @@ import './MasterDataPages.css';
 
 const LIVE_POLL_MS = 20000;
 const MISMATCH_REVIEW_KEY = 'fs-gps-mismatch-reviews';
+const GEOCODER_URL = import.meta.env.VITE_GEOCODER_URL ?? 'https://nominatim.openstreetmap.org/search';
 
 // ---- Shapes returned by the existing API (mirrors DashboardPage/FieldActivityPage) ----
 type ClientRef = { client_code?: string; client_name?: string } | null;
@@ -37,6 +40,8 @@ type Visit = {
   // numbers instead of breaking.
   check_in_lat?: number | null;
   check_in_lng?: number | null;
+  check_in_distance_meters?: number | null;
+  check_in_within_geofence?: boolean | null;
   check_out_lat?: number | null;
   check_out_lng?: number | null;
   clients?: ClientRef;
@@ -132,6 +137,7 @@ export function GpsTrackingPage() {
 
   const [tab, setTab] = useState<Tab>('dashboard');
   const [selectedRepId, setSelectedRepId] = useState<string | null>(null);
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<TrackingSession | null>(null);
 
   const [visits, setVisits] = useState<Visit[]>([]);
@@ -141,6 +147,10 @@ export function GpsTrackingPage() {
   const [error, setError] = useState('');
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [savingClientId, setSavingClientId] = useState<string | null>(null);
+  const [manualLocation, setManualLocation] = useState<{ clientId: string; address: string; latitude: string; longitude: string } | null>(null);
+  const [lookingUpClientId, setLookingUpClientId] = useState<string | null>(null);
+  const lastGeocodeAt = useRef(0);
+  const geocodeCache = useRef(new Map<string, { latitude: string; longitude: string }>());
   const [reviews, setReviews] = useState<Record<string, ReviewDecision>>(loadReviews);
 
   async function load() {
@@ -170,7 +180,6 @@ export function GpsTrackingPage() {
     return () => window.clearInterval(id);
   }, []);
 
-  // Everything below is scoped to the active Industry Type via the same
   // client-industry mapping ClientsPage/FieldActivityPage already use —
   // switching Industry Type swaps every dataset on this page.
   const scopedClients = useMemo(() => clients.filter((c) => matchesActiveIndustry(c.industry_type_id)), [clients, matchesActiveIndustry]);
@@ -285,6 +294,20 @@ export function GpsTrackingPage() {
 
   const mappableReps = useMemo(() => repRows.filter((r): r is RepRow & { latitude: number; longitude: number } => r.latitude != null && r.longitude != null), [repRows]);
   const selectedRep = repRows.find((r) => r.repId === selectedRepId) ?? null;
+  const selectedClient = scopedClients.find((client) => client.id === selectedClientId) ?? null;
+
+  // Use the persisted field_visits verification values in both the client
+  // panel and Location Mismatches, so their distance and outcome agree.
+  const checkInVerifications = useMemo(() => [...scopedVisits]
+    .sort((a, b) => b.check_in_time.localeCompare(a.check_in_time))
+    .map((visit) => ({
+      visit,
+      distance: visit.check_in_distance_meters,
+      withinGeofence: visit.check_in_within_geofence,
+    })), [scopedVisits]);
+  const latestSelectedClientCheckIn = useMemo(() => selectedClient
+    ? checkInVerifications.find(({ visit }) => visit.clients?.client_code === selectedClient.client_code) ?? null
+    : null, [selectedClient, checkInVerifications]);
 
   // Tracking History: group each rep's real visits by calendar day and
   // connect their actual check-in/check-out coordinates — a real path
@@ -335,11 +358,9 @@ export function GpsTrackingPage() {
     return result.sort((a, b) => b.startTime.localeCompare(a.startTime));
   }, [scopedVisits, clientByCode]);
 
-  // Location Mismatches: every one of today's check-ins that fell outside
-  // the verification radius, computed live — not a fixed seeded list.
-  const mismatches = useMemo(() => todaysScopedVisits
-    .map((v) => ({ visit: v, ...matchStatus(pointCoords(v.check_in_lat, v.check_in_lng), clientCoordsFrom(clientByCode, v.clients?.client_code)) }))
-    .filter((m) => m.status === 'mismatch')
+  // Location Mismatches: today's persisted outside-geofence check-ins.
+  const mismatches = useMemo(() => checkInVerifications
+    .filter((m) => isToday(m.visit.check_in_time) && m.withinGeofence === false)
     .map((m) => ({
       id: m.visit.id,
       repName: m.visit.sales_representatives?.user_profiles?.display_name ?? m.visit.sales_representatives?.employee_code ?? 'Unassigned rep',
@@ -347,7 +368,7 @@ export function GpsTrackingPage() {
       distance: m.distance ?? 0,
       checkInTime: m.visit.check_in_time,
       decision: reviews[m.visit.id],
-    })), [todaysScopedVisits, clientByCode, reviews]);
+    })), [checkInVerifications, reviews]);
 
   function reviewMismatch(id: string, decision: ReviewDecision) {
     setReviews((current) => {
@@ -367,6 +388,93 @@ export function GpsTrackingPage() {
       const position = await new Promise<GeolocationPosition>((resolve, reject) =>
         navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 20000 }));
       await api(`/clients/${clientId}`, { method: 'PATCH', body: JSON.stringify({ latitude: position.coords.latitude, longitude: position.coords.longitude }) });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not update client location.');
+    } finally {
+      setSavingClientId(null);
+    }
+  }
+
+  function startManualLocation(client: Client) {
+    setError('');
+    const city = client.city?.trim();
+    const streetAddress = client.address?.trim();
+    const cityAlreadyIncluded =
+      !!city && !!streetAddress &&
+      streetAddress.toLocaleLowerCase().includes(city.toLocaleLowerCase());
+    const combinedAddress = cityAlreadyIncluded
+      ? streetAddress
+      : [streetAddress, city].filter(Boolean).join(', ');
+    setManualLocation({
+      clientId: client.id,
+      address: combinedAddress,
+      latitude: client.latitude?.toString() ?? '',
+      longitude: client.longitude?.toString() ?? '',
+    });
+  }
+
+  async function lookupAddressCoordinates() {
+    if (!manualLocation) return;
+    const address = manualLocation.address.trim();
+    if (!address) {
+      setError('Enter the client address before looking up its coordinates.');
+      return;
+    }
+
+    const cacheKey = address.toLocaleLowerCase();
+    const cached = geocodeCache.current.get(cacheKey);
+    if (cached) {
+      setManualLocation((current) => current ? { ...current, ...cached } : current);
+      return;
+    }
+    if (Date.now() - lastGeocodeAt.current < 1000) {
+      setError('Please wait one second before another address lookup.');
+      return;
+    }
+
+    setLookingUpClientId(manualLocation.clientId);
+    lastGeocodeAt.current = Date.now();
+    try {
+      const url = new URL(GEOCODER_URL);
+      url.searchParams.set('format', 'jsonv2');
+      url.searchParams.set('limit', '1');
+      url.searchParams.set('q', address);
+      const response = await fetch(url, { headers: { accept: 'application/json' } });
+      if (!response.ok) throw new Error(`Address lookup failed (${response.status}).`);
+      const matches = await response.json() as { lat: string; lon: string }[];
+      const match = matches[0];
+      const latitude = Number(match?.lat);
+      const longitude = Number(match?.lon);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        throw new Error('No location found for this address — try a more specific address.');
+      }
+      const coordinates = { latitude: String(latitude), longitude: String(longitude) };
+      geocodeCache.current.set(cacheKey, coordinates);
+      setManualLocation((current) => current ? { ...current, ...coordinates } : current);
+      setError('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not look up the address.');
+    } finally {
+      setLookingUpClientId(null);
+    }
+  }
+
+  async function saveManualLocation() {
+    if (!manualLocation) return;
+    const latitudeText = manualLocation.latitude.trim();
+    const longitudeText = manualLocation.longitude.trim();
+    const latitude = Number(latitudeText);
+    const longitude = Number(longitudeText);
+    if (!latitudeText || !longitudeText || !Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      setError('Enter a latitude from -90 to 90 and a longitude from -180 to 180.');
+      return;
+    }
+
+    setSavingClientId(manualLocation.clientId);
+    try {
+      await api(`/clients/${manualLocation.clientId}`, { method: 'PATCH', body: JSON.stringify({ latitude, longitude }) });
+      setManualLocation(null);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not update client location.');
@@ -461,7 +569,14 @@ export function GpsTrackingPage() {
             <div><p className="eyebrow">LIVE MAP</p><h2>Field Map View</h2></div>
           </div>
           <div className="gps-map-shell">
-            <MapCanvas reps={mappableReps} clientLocations={scopedClients} selectedRepId={selectedRepId} onSelect={setSelectedRepId} />
+            <MapCanvas
+              reps={mappableReps}
+              clientLocations={scopedClients}
+              selectedRepId={selectedRepId}
+              selectedClientId={selectedClientId}
+              onSelect={(id) => { setSelectedRepId(id); setSelectedClientId(null); }}
+              onSelectClient={(id) => { setSelectedClientId(id); setSelectedRepId(null); }}
+            />
             {selectedRep ? (
               <div className="gps-marker-detail">
                 <h3>{selectedRep.repName}</h3>
@@ -473,6 +588,26 @@ export function GpsTrackingPage() {
                   <dt>GPS Status</dt><dd>{gpsBadgeLabel(selectedRep.gpsStatus)}</dd>
                   <dt>Distance from client</dt><dd>{selectedRep.distanceFromClient != null ? formatDistance(selectedRep.distanceFromClient) : '—'}</dd>
                 </dl>
+              </div>
+            ) : selectedClient ? (
+              <div className="gps-marker-detail">
+                <h3>{selectedClient.client_name}</h3>
+                <span className="gps-badge" data-kind="verified">Client location</span>
+                <dl>
+                  <dt>Address</dt><dd>{selectedClient.address ?? selectedClient.city ?? 'Not recorded'}</dd>
+                  <dt>Coordinates</dt><dd>{selectedClient.latitude != null ? `${selectedClient.latitude.toFixed(4)}, ${selectedClient.longitude!.toFixed(4)}` : 'No GPS data'}</dd>
+                </dl>
+                <section aria-label="Most recent rep check-in">
+                  <h4>Most recent rep check-in</h4>
+                  {latestSelectedClientCheckIn ? (
+                    <dl>
+                      <dt>Sales Rep</dt><dd>{latestSelectedClientCheckIn.visit.sales_representatives?.user_profiles?.display_name ?? latestSelectedClientCheckIn.visit.sales_representatives?.employee_code ?? 'Unassigned rep'}</dd>
+                      <dt>Check-in time</dt><dd>{new Date(latestSelectedClientCheckIn.visit.check_in_time).toLocaleString()}</dd>
+                      <dt>Check-in distance</dt><dd>{latestSelectedClientCheckIn.distance != null ? formatDistance(latestSelectedClientCheckIn.distance) : 'No GPS data'}</dd>
+                      <dt>Geofence status</dt><dd><span className="gps-badge" data-kind={latestSelectedClientCheckIn.withinGeofence === true ? 'verified' : latestSelectedClientCheckIn.withinGeofence === false ? 'mismatch' : 'unavailable'}>{latestSelectedClientCheckIn.withinGeofence === true ? 'Within geofence' : latestSelectedClientCheckIn.withinGeofence === false ? 'Mismatch' : 'No GPS data'}</span></dd>
+                    </dl>
+                  ) : <p>No recent visits recorded</p>}
+                </section>
               </div>
             ) : (
               <div className="gps-marker-detail"><div className="gps-marker-empty">Select a marker or a row from the Sales Rep Tracking list to see details here.</div></div>
@@ -545,7 +680,8 @@ export function GpsTrackingPage() {
               <thead><tr><th>Client</th><th>Coordinates</th><th>Address</th><th>GPS Status</th><th /></tr></thead>
               <tbody>
                 {scopedClients.map((c) => (
-                  <tr key={c.id}>
+                  <Fragment key={c.id}>
+                  <tr>
                     <td><strong>{c.client_name}</strong></td>
                     <td>{c.latitude != null ? `${c.latitude.toFixed(4)}, ${c.longitude!.toFixed(4)}` : '—'}</td>
                     <td>{c.address ?? c.city ?? '—'}</td>
@@ -554,13 +690,34 @@ export function GpsTrackingPage() {
                       <button type="button" className="text-action" disabled={savingClientId === c.id} onClick={() => void setClientLocation(c.id)}>
                         {savingClientId === c.id ? 'Getting location…' : c.latitude != null ? 'Update location' : 'Set Client Location'}
                       </button>
+                      <button type="button" className="text-action" disabled={savingClientId === c.id} onClick={() => startManualLocation(c)}>
+                        Enter coordinates
+                      </button>
                     </td>
                   </tr>
+                  {manualLocation?.clientId === c.id && (
+                    <tr>
+                      <td colSpan={5}>
+                        <form className="gps-manual-location-form" onSubmit={(event) => { event.preventDefault(); void saveManualLocation(); }}>
+                          <label className="gps-manual-location-address">Address to look up<input value={manualLocation.address} onChange={(event) => setManualLocation((current) => current ? { ...current, address: event.target.value } : current)} placeholder="e.g. 12 Main Street, Chennai" /></label>
+                          <button type="button" className="secondary-action" disabled={lookingUpClientId === c.id} onClick={() => void lookupAddressCoordinates()}>
+                            {lookingUpClientId === c.id ? 'Finding...' : 'Find coordinates'}
+                          </button>
+                          <label>Latitude<input type="number" step="any" min="-90" max="90" value={manualLocation.latitude} onChange={(event) => setManualLocation((current) => current ? { ...current, latitude: event.target.value } : current)} required /></label>
+                          <label>Longitude<input type="number" step="any" min="-180" max="180" value={manualLocation.longitude} onChange={(event) => setManualLocation((current) => current ? { ...current, longitude: event.target.value } : current)} required /></label>
+                          <button type="submit" disabled={savingClientId === c.id}>{savingClientId === c.id ? 'Saving...' : 'Save coordinates'}</button>
+                          <button type="button" className="secondary-action" disabled={savingClientId === c.id} onClick={() => setManualLocation(null)}>Cancel</button>
+                          {error && <p className="gps-lookup-error" role="alert">{error}</p>}
+                        </form>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
           </div>
-          <p className="text-faint-inline" style={{ marginTop: '.6rem' }}>Uses this device's current GPS position. Stand at the client's premises before setting or updating a location.</p>
+          <p className="text-faint-inline" style={{ marginTop: '.6rem' }}>Use device GPS, enter coordinates, or look up a business address. Confirm the returned pin before saving. Address lookup powered by <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>.</p>
         </section>
       )}
 
@@ -595,12 +752,52 @@ export function GpsTrackingPage() {
   );
 }
 
-function MapCanvas({ reps, clientLocations, selectedRepId, onSelect }: {
+const mapMarkerIcon = (kind: 'verified' | 'mismatch' | 'client') => L.divIcon({
+  className: 'gps-leaflet-marker-icon',
+  html: `<span class="gps-leaflet-marker-pin gps-leaflet-marker-pin--${kind}"></span>`,
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
+  popupAnchor: [0, -14],
+});
+
+const MAP_MARKER_ICONS = {
+  verified: mapMarkerIcon('verified'),
+  mismatch: mapMarkerIcon('mismatch'),
+  client: mapMarkerIcon('client'),
+};
+
+function FitMapBounds({ points }: { points: { lat: number; lng: number }[] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (points.length === 1) {
+      map.setView([points[0].lat, points[0].lng], 15);
+      return;
+    }
+    map.fitBounds(L.latLngBounds(points.map((point) => [point.lat, point.lng])), { padding: [36, 36], maxZoom: 15 });
+  }, [map, points]);
+  return null;
+}
+
+function EnableScrollWheelZoom({ onEnabled }: { onEnabled: () => void }) {
+  const map = useMap();
+  useMapEvents({
+    click: () => {
+      map.scrollWheelZoom.enable();
+      onEnabled();
+    },
+  });
+  return null;
+}
+
+function MapCanvas({ reps, clientLocations, selectedRepId, selectedClientId, onSelect, onSelectClient }: {
   reps: { repId: string; repName: string; latitude: number; longitude: number; gpsStatus: GpsMatchStatus }[];
   clientLocations: Client[];
   selectedRepId: string | null;
+  selectedClientId: string | null;
   onSelect: (id: string) => void;
+  onSelectClient: (id: string) => void;
 }) {
+  const [scrollZoomEnabled, setScrollZoomEnabled] = useState(false);
   const points = [
     ...reps.map((r) => ({ lat: r.latitude, lng: r.longitude })),
     ...clientLocations.filter((c) => c.latitude != null).map((c) => ({ lat: c.latitude as number, lng: c.longitude as number })),
@@ -617,29 +814,48 @@ function MapCanvas({ reps, clientLocations, selectedRepId, onSelect }: {
     const y = (1 - (lat - minLat) / (maxLat - minLat || 1)) * 400 + 20;
     return [x, y] as const;
   };
+  const markerPositions = [
+    ...clientLocations.filter((client) => client.latitude != null).map((client) => {
+      const [x, y] = project(client.latitude as number, client.longitude as number);
+      return { key: `client-${client.id}`, x, y };
+    }),
+    ...reps.map((rep) => {
+      const [x, y] = project(rep.latitude, rep.longitude);
+      return { key: `rep-${rep.repId}`, x, y };
+    }),
+  ];
+  // Separate labels for points that land in nearly the same part of the map.
+  const labelOffset = new Map<string, number>();
+  markerPositions.forEach((marker, index) => {
+    const nearbyEarlierLabels = markerPositions.slice(0, index).filter((other) => Math.abs(marker.x - other.x) <= 15 && Math.abs(marker.y - other.y) <= 15);
+    labelOffset.set(marker.key, nearbyEarlierLabels.length * 14);
+  });
   return (
     <div className="gps-map-canvas">
-      <svg viewBox="0 0 680 440">
+      <MapContainer center={[points[0].lat, points[0].lng]} zoom={13} scrollWheelZoom={false} className="gps-leaflet-map">
+        <FitMapBounds points={points} />
+        <EnableScrollWheelZoom onEnabled={() => setScrollZoomEnabled(true)} />
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
         {clientLocations.filter((c) => c.latitude != null).map((c) => {
-          const [x, y] = project(c.latitude as number, c.longitude as number);
           return (
-            <g key={c.id} className="gps-map-marker" data-status="client" transform={`translate(${x},${y})`}>
-              <circle className="marker-dot" r={5} />
-              <text x={9} y={4}>{c.client_name}</text>
-            </g>
+            <Marker key={c.id} position={[c.latitude as number, c.longitude as number]} icon={MAP_MARKER_ICONS.client} zIndexOffset={0} eventHandlers={{ click: () => onSelectClient(c.id) }} opacity={selectedClientId === c.id ? 1 : 0.82}>
+              <Tooltip permanent direction="right" offset={[10, 4 + (labelOffset.get(`client-${c.id}`) ?? 0)]}>{c.client_name}</Tooltip>
+            </Marker>
           );
         })}
         {reps.map((rep) => {
-          const [x, y] = project(rep.latitude, rep.longitude);
+          const kind = rep.gpsStatus === 'mismatch' ? 'mismatch' : 'verified';
           return (
-            <g key={rep.repId} className="gps-map-marker" data-status={rep.gpsStatus === 'mismatch' ? 'mismatch' : 'verified'} transform={`translate(${x},${y})`} onClick={() => onSelect(rep.repId)}>
-              <circle className="marker-halo" r={12} />
-              <circle className="marker-dot" r={selectedRepId === rep.repId ? 8 : 6} />
-              <text x={11} y={4}>{rep.repName}</text>
-            </g>
+            <Marker key={rep.repId} position={[rep.latitude, rep.longitude]} icon={MAP_MARKER_ICONS[kind]} zIndexOffset={1000} eventHandlers={{ click: () => onSelect(rep.repId) }} opacity={selectedRepId === rep.repId ? 1 : 0.82}>
+              <Tooltip permanent direction="right" offset={[11, 4 + (labelOffset.get(`rep-${rep.repId}`) ?? 0)]}>{rep.repName}</Tooltip>
+            </Marker>
           );
         })}
-      </svg>
+      </MapContainer>
+      {!scrollZoomEnabled && <div className="gps-map-zoom-hint" aria-live="polite">Click to enable zoom</div>}
       <div className="gps-map-legend">
         <span><i style={{ background: 'var(--green)' }} /> Verified rep location</span>
         <span><i style={{ background: 'var(--red)' }} /> Location mismatch</span>

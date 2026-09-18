@@ -39,7 +39,7 @@ export const TRADING_RESOURCES: TradingResource[] = [
     table: 'trading_shipments',
     codeField: 'shipment_number',
     requiredFields: ['shipment_number'],
-    columns: ['shipment_number', 'deal_number', 'customer_name', 'supplier_name', 'product_name', 'quantity', 'unit', 'batch_serial', 'shipment_date', 'expected_delivery_date', 'actual_delivery_date', 'origin', 'destination', 'transporter', 'tracking_number', 'vehicle_container_number', 'shipping_mode', 'freight_cost', 'notes', 'industry_type_id'],
+    columns: ['shipment_number', 'deal_number', 'order_number', 'customer_name', 'supplier_name', 'product_name', 'quantity', 'unit', 'batch_serial', 'shipment_date', 'expected_delivery_date', 'actual_delivery_date', 'origin', 'destination', 'transporter', 'tracking_number', 'vehicle_container_number', 'shipping_mode', 'freight_cost', 'notes', 'industry_type_id'],
   },
   {
     path: 'suppliers',
@@ -70,7 +70,7 @@ export const TRADING_RESOURCES: TradingResource[] = [
     table: 'trading_sales_orders',
     codeField: 'order_number',
     requiredFields: ['order_number'],
-    columns: ['order_number', 'deal_number', 'customer_name', 'product_name', 'quantity', 'unit', 'currency', 'selling_rate', 'total_amount', 'order_date', 'expected_delivery_date', 'payment_terms', 'delivery_terms', 'notes', 'industry_type_id'],
+    columns: ['order_number', 'deal_number', 'shipment_number', 'customer_name', 'product_name', 'quantity', 'unit', 'currency', 'selling_rate', 'total_amount', 'order_date', 'expected_delivery_date', 'payment_terms', 'delivery_terms', 'notes', 'industry_type_id'],
   },
   {
     path: 'documents',

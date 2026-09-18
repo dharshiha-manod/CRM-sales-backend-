@@ -9,9 +9,63 @@
 import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { GenerateDocumentButton } from './GenerateDocumentButton';
 import { buildDraftFromDeal } from '../lib/tradeDocumentHandoff';
+import { api } from '../lib/api';
 
 const STATUSES = ['Confirmed', 'In Production', 'Ready to Ship', 'Shipped', 'Completed', 'Cancelled'];
 const ORDER_DOC_TYPES = ['Sales Order', 'Proforma Invoice', 'Commercial Invoice', 'Packing List', 'Other'];
+const convertingOrderIds = new Set<string>();
+
+// NEW — Step 8 of the Trading connectivity plan. Mirrors the Deal -> Sales
+// Order conversion: confirming an order creates one matching shipment and
+// records the generated shipment number back on the order. The in-flight
+// guard also prevents two quick saves from creating duplicate shipments.
+async function convertSalesOrderToShipment(order: Record<string, unknown>, reload: () => Promise<void>) {
+  const orderId = String(order.id ?? '');
+  if (!orderId || convertingOrderIds.has(orderId)) return;
+  convertingOrderIds.add(orderId);
+  try {
+    const shipmentsRes = await api<{ data: Array<Record<string, unknown>> }>('/trading/shipments');
+    const existingShipment = shipmentsRes.data?.find((shipment) => shipment.order_number === order.order_number);
+    if (existingShipment?.shipment_number) {
+      await api(`/trading/sales-orders/${order.id}`, { method: 'PATCH', body: JSON.stringify({ shipment_number: existingShipment.shipment_number }) });
+      await reload();
+      return;
+    }
+    const year = new Date().getFullYear();
+    const seq = String((shipmentsRes.data?.length ?? 0) + 1).padStart(4, '0');
+    const shipmentNumber = `SHP-${year}-${seq}`;
+    await api('/trading/shipments', {
+      method: 'POST',
+      body: JSON.stringify({
+        shipment_number: shipmentNumber,
+        order_number: order.order_number ?? '',
+        deal_number: order.deal_number ?? '',
+        customer_name: order.customer_name ?? '',
+        product_name: order.product_name ?? '',
+        quantity: order.quantity,
+        unit: order.unit ?? '',
+        shipment_date: new Date().toISOString().slice(0, 10),
+        status: 'Ready to Ship',
+      }),
+    });
+    // Link back: this Sales Order now shows which Shipment it became.
+    await api(`/trading/sales-orders/${order.id}`, { method: 'PATCH', body: JSON.stringify({ shipment_number: shipmentNumber }) });
+    await reload();
+  } catch {
+    // Best-effort automation — the order itself already saved fine; the
+    // user can retry (edit status again) if this part fails.
+  } finally {
+    convertingOrderIds.delete(orderId);
+  }
+}
+
+function handleAfterSave(saved: Record<string, unknown>, reload: () => Promise<void>) {
+  // Only fire when a Confirmed order has no linked shipment, so later saves
+  // cannot create a second Shipment for the same Sales Order.
+  if (saved.status === 'Confirmed' && !saved.shipment_number) {
+    void convertSalesOrderToShipment(saved, reload);
+  }
+}
 
 function orderValue(r: Record<string, unknown>) {
   return (Number(r.selling_rate) || 0) * (Number(r.quantity) || 0);
@@ -61,8 +115,10 @@ const config: TradingModuleConfig = {
     { key: 'payment_terms', label: 'Payment terms', type: 'text', group: 'Schedule & terms' },
     { key: 'delivery_terms', label: 'Delivery terms', type: 'text', group: 'Schedule & terms' },
     { key: 'status', label: 'Order status', type: 'select', options: STATUSES, listColumn: true, group: 'Schedule & terms' },
+    { key: 'shipment_number', label: 'Shipment (once confirmed)', type: 'text', readOnly: true, listColumn: true, placeholder: 'Fills in automatically when status is set to "Confirmed"', group: 'Schedule & terms' },
     { key: 'notes', label: 'Notes', type: 'textarea', group: 'Schedule & terms' },
   ],
+  afterSave: handleAfterSave,
   kpis: [
     { icon: '🧾', iconClass: 'kpi-icon-ink', label: 'Total sales orders', value: (r) => String(r.length) },
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Open orders', value: (r) => String(r.filter((x) => !['Completed', 'Cancelled'].includes(String(x.status))).length) },

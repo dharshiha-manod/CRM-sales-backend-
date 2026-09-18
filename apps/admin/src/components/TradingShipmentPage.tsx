@@ -37,6 +37,7 @@ const config: TradingModuleConfig = {
   fields: [
     { key: 'shipment_number', label: 'Shipment number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'SHP' },
   { key: 'deal_number', label: 'Deal', type: 'lookup', lookupResource: '/trading/deals', lookupLabelKey: 'deal_name', autoFillMap: { customer_name: 'customer_name', supplier_name: 'supplier_name', product_name: 'product_name', quantity: 'quantity', unit: 'unit', currency: 'currency' }, listColumn: true },
+    { key: 'order_number', label: 'Sales order', type: 'text', readOnly: true, listColumn: true, group: 'Goods' },
     { key: 'customer_name', label: 'Customer', type: 'lookup', lookupResource: '/clients', lookupValueKey: 'client_name', lookupLabelKey: 'client_code', listColumn: true, group: 'Goods' },
     { key: 'supplier_name', label: 'Supplier', type: 'lookup', lookupResource: '/trading/suppliers', lookupLabelKey: 'supplier_name', group: 'Goods' },
     { key: 'product_name', label: 'Product', type: 'text', group: 'Goods' },
@@ -76,9 +77,11 @@ const config: TradingModuleConfig = {
   rowActions: (r) => (
     <GenerateDocumentButton docTypes={SHIPMENT_DOC_TYPES} buildDraft={(documentType) => buildDraftFromShipment(r, documentType)} />
   ),
-  detailActions: (r) => (
-    <GenerateDocumentButton docTypes={SHIPMENT_DOC_TYPES} buildDraft={(documentType) => buildDraftFromShipment(r, documentType)} />
-  ),
+  // Documents remain a manual action. They become available on the detail
+  // view once delivery is confirmed; no document is generated automatically.
+  detailActions: (r) => r.status === 'Delivered' ? (
+    <GenerateDocumentButton label="Generate delivery document" docTypes={SHIPMENT_DOC_TYPES} buildDraft={(documentType) => buildDraftFromShipment(r, documentType)} />
+  ) : null,
   // The documents checklist stays as-is; the chain panel below it is new —
   // a shipment is the hub of the Trading flow, so its logistics, trade
   // transaction, customs clearance and any claims should be reachable from

@@ -35,9 +35,9 @@ const OUTLET_TYPES = [['wholesaler', 'Wholesaler'], ['retailer', 'Retailer'], ['
 type IndustryType = { id: string; code: string; name: string; status: string };
 type Contact = { id: string; name: string; designation?: string | null; is_primary: boolean; email?: string | null; phone?: string | null };
 type Assignment = { id: string; status: string; sales_representatives?: { employee_code: string; user_profiles?: { display_name?: string | null } | null } | null };
-type Client = { id: string; client_name: string; client_code: string; status: 'active' | 'inactive'; priority: 'low' | 'normal' | 'high' | 'critical'; current_stage?: string | null; created_at?: string | null; address?: string | null; city?: string | null; latitude?: number | null; longitude?: number | null; gstin?: string | null; pan?: string | null; outlet_type?: string | null; credit_limit?: number | null; credit_days?: number | null; industry_type_id?: string | null; industry_details?: Record<string, unknown> | null; industry_types?: { id: string; code: string; name: string } | null; client_contacts?: Contact[]; sales_representative_client_assignments?: Assignment[]; client_type: string };
-type ClientForm = { clientCode: string; clientName: string; clientType: string; industryTypeId: string; outletType: string; gstin: string; pan: string; creditLimit: string; creditDays: string; industryDetails: Record<string, string>; priority: Client['priority']; status: Client['status'] };
-const blank: ClientForm = { clientCode: '', clientName: '', clientType: 'School', industryTypeId: '', outletType: '', gstin: '', pan: '', creditLimit: '', creditDays: '', industryDetails: {}, priority: 'normal', status: 'active' };
+type Client = { id: string; client_name: string; client_code: string; status: 'active' | 'inactive'; priority: 'low' | 'normal' | 'high' | 'critical'; current_stage?: string | null; created_at?: string | null; address?: string | null; city?: string | null; state?: string | null; latitude?: number | null; longitude?: number | null; gstin?: string | null; pan?: string | null; outlet_type?: string | null; credit_limit?: number | null; credit_days?: number | null; industry_type_id?: string | null; industry_details?: Record<string, unknown> | null; industry_types?: { id: string; code: string; name: string } | null; client_contacts?: Contact[]; sales_representative_client_assignments?: Assignment[]; client_type: string };
+type ClientForm = { clientCode: string; clientName: string; clientType: string; industryTypeId: string; outletType: string; gstin: string; pan: string; creditLimit: string; creditDays: string; streetAddress: string; city: string; state: string; industryDetails: Record<string, string>; priority: Client['priority']; status: Client['status'] };
+const blank: ClientForm = { clientCode: '', clientName: '', clientType: 'School', industryTypeId: '', outletType: '', gstin: '', pan: '', creditLimit: '', creditDays: '', streetAddress: '', city: '', state: '', industryDetails: {}, priority: 'normal', status: 'active' };
 const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
 
 type TabOrder = { id: string; order_number: string; status: string; total_amount: number; created_at: string; client_id?: string };
@@ -62,7 +62,7 @@ const clientTabs: { key: ClientTab; label: string }[] = [
 export function ClientsPage() {
   const { activeIndustry, config } = useIndustry();
 
-  const [items, setItems] = useState<Client[]>([]); const [industryTypes, setIndustryTypes] = useState<IndustryType[]>([]); const [form, setForm] = useState<ClientForm>(blank); const [search, setSearch] = useState(''); const [type, setType] = useState(''); const [priority, setPriority] = useState<'' | Client['priority']>(''); const [status, setStatus] = useState<'all' | Client['status']>('all'); const [editing, setEditing] = useState<Client | null>(null); const [viewing, setViewing] = useState<Client | null>(null); const [modal, setModal] = useState(false); const [message, setMessage] = useState(''); const [saving, setSaving] = useState(false);
+  const [items, setItems] = useState<Client[]>([]); const [industryTypes, setIndustryTypes] = useState<IndustryType[]>([]); const [form, setForm] = useState<ClientForm>(blank); const [search, setSearch] = useState(''); const [type, setType] = useState(''); const [priority, setPriority] = useState<'' | Client['priority']>(''); const [status, setStatus] = useState<'all' | Client['status']>('all'); const [editing, setEditing] = useState<Client | null>(null); const [viewing, setViewing] = useState<Client | null>(null); const [modal, setModal] = useState(false); const [message, setMessage] = useState(''); const [saving, setSaving] = useState(false); const [syncingAddress, setSyncingAddress] = useState(false); const [leadAddressOutOfSync, setLeadAddressOutOfSync] = useState(false);
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
   const [allOrders, setAllOrders] = useState<TabOrder[]>([]); const [allCollections, setAllCollections] = useState<TabCollection[]>([]);
   const [allRequirements, setAllRequirements] = useState<TabRequirement[]>([]); const [allQuotations, setAllQuotations] = useState<TabQuotation[]>([]);
@@ -114,7 +114,7 @@ const stageOf = (clientId: string): string => {
     } catch { /* non-fatal */ }
   };
   useEffect(() => { void load(); void loadIndustryTypes(); void loadFinancials(); }, []);
-   const openEdit = (item: Client) => { setEditing(item); setForm({ clientCode: item.client_code, clientName: item.client_name, clientType: item.client_type, industryTypeId: item.industry_type_id ?? '', outletType: item.outlet_type ?? '', gstin: item.gstin ?? '', pan: item.pan ?? '', creditLimit: item.credit_limit != null ? String(item.credit_limit) : '', creditDays: item.credit_days != null ? String(item.credit_days) : '', industryDetails: Object.fromEntries(Object.entries(item.industry_details ?? {}).map(([k, v]) => [k, String(v)])), priority: item.priority, status: item.status }); setMessage(''); setModal(true); };
+   const openEdit = async (item: Client) => { setEditing(item); setForm({ clientCode: item.client_code, clientName: item.client_name, clientType: item.client_type, industryTypeId: item.industry_type_id ?? '', outletType: item.outlet_type ?? '', gstin: item.gstin ?? '', pan: item.pan ?? '', creditLimit: item.credit_limit != null ? String(item.credit_limit) : '', creditDays: item.credit_days != null ? String(item.credit_days) : '', streetAddress: item.address ?? '', city: item.city ?? '', state: item.state ?? '', industryDetails: Object.fromEntries(Object.entries(item.industry_details ?? {}).map(([k, v]) => [k, String(v)])), priority: item.priority, status: item.status }); setLeadAddressOutOfSync(false); setMessage(''); setModal(true); try { const status = await api<{ data: { differs: boolean } }>(`/clients/${item.id}/address-sync-status`); setLeadAddressOutOfSync(status.data.differs); } catch { /* The edit form remains usable if sync-status lookup is unavailable. */ } };
   const view = async (id: string) => {
     try {
       setViewing((await api<{ data: Client }>(`/clients/${id}`)).data);
@@ -158,7 +158,7 @@ const stageOf = (clientId: string): string => {
 // NEW — only send industryTypeId on edit if it actually changed, so the
 // server doesn't needlessly re-run industry resolution/validation on every
 // unrelated field edit (this is what was tripping the 500).
-          const payload = { clientCode: form.clientCode, clientName: form.clientName, clientType: form.clientType, ...(editing && form.industryTypeId === (editing.industry_type_id ?? '') ? {} : { industryTypeId: form.industryTypeId || null }), outletType: form.outletType || null, gstin: gstinValue || null, pan: panValue || null, creditLimit: form.creditLimit ? Number(form.creditLimit) : null, creditDays: form.creditDays ? Number(form.creditDays) : null, industryDetails: Object.fromEntries(Object.entries(form.industryDetails).filter(([, v]) => v !== '')), priority: form.priority, status: form.status };
+          const payload = { clientCode: form.clientCode, clientName: form.clientName, clientType: form.clientType, ...(editing && form.industryTypeId === (editing.industry_type_id ?? '') ? {} : { industryTypeId: form.industryTypeId || null }), outletType: form.outletType || null, gstin: gstinValue || null, pan: panValue || null, address: form.streetAddress.trim() || null, city: form.city.trim() || null, state: form.state.trim() || null, creditLimit: form.creditLimit ? Number(form.creditLimit) : null, creditDays: form.creditDays ? Number(form.creditDays) : null, industryDetails: Object.fromEntries(Object.entries(form.industryDetails).filter(([, v]) => v !== '')), priority: form.priority, status: form.status };
        await api(editing ? `/clients/${editing.id}` : '/clients', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });      setModal(false); setEditing(null); setMessage(editing ? 'Client updated successfully.' : 'Client created successfully.'); await load();
     } catch (e) {
       const err = e as Error & { details?: { fieldErrors?: Record<string, string[]> } };
@@ -168,6 +168,18 @@ const stageOf = (clientId: string): string => {
     } finally { setSaving(false); }
   }
   async function toggle(item: Client) { try { await api(`/clients/${item.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: item.status === 'active' ? 'inactive' : 'active' }) }); setMessage('Client status updated successfully.'); await load(); } catch (e) { setMessage((e as Error).message); } }
+  async function syncAddressFromLead() {
+    if (!editing) return;
+    setSyncingAddress(true); setMessage('');
+    try {
+      const synced = (await api<{ data: Client }>(`/clients/${editing.id}/sync-address-from-lead`, { method: 'PATCH' })).data;
+      setForm((current) => ({ ...current, streetAddress: synced.address ?? '', city: synced.city ?? '', state: synced.state ?? '' }));
+      setEditing(synced);
+      setLeadAddressOutOfSync(false);
+      setMessage('Address synchronized from the original lead.');
+      await load();
+    } catch (e) { setMessage((e as Error).message); } finally { setSyncingAddress(false); }
+  }
   const clearFilters = () => { setType(''); setStatus('all'); setPriority(''); };
   function toggleMenu(event: React.MouseEvent<HTMLButtonElement>, clientId: string) {
     if (menuFor?.id === clientId) { setMenuFor(null); return; }
@@ -297,6 +309,21 @@ const stageOf = (clientId: string): string => {
         <div className="field-grid">
           <label>Client code<input required value={form.clientCode} onChange={(e) => setForm({ ...form, clientCode: e.target.value })} /></label>
           <label>Client name<input required value={form.clientName} onChange={(e) => setForm({ ...form, clientName: e.target.value })} /></label>
+          <label>Street Address<input placeholder="Door number, street, landmark" value={form.streetAddress} onChange={(e) => setForm({ ...form, streetAddress: e.target.value })} /></label>
+          {editing && leadAddressOutOfSync && (
+            <aside className="lead-address-sync-card" role="status" aria-label="A newer address is available from the original lead">
+              <span className="lead-address-sync-icon" aria-hidden="true">↻</span>
+              <div className="lead-address-sync-copy">
+                <strong>Address update available</strong>
+                <span>The original lead has a newer address.</span>
+              </div>
+              <button type="button" className="lead-address-sync-action" onClick={() => void syncAddressFromLead()} disabled={saving || syncingAddress}>
+                {syncingAddress ? 'Syncing…' : 'Sync from lead'}
+              </button>
+            </aside>
+          )}
+          <label>City<input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></label>
+          <label>State<input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} /></label>
           <label>Industry<select value={form.industryTypeId} onChange={(e) => setForm({ ...form, industryTypeId: e.target.value, industryDetails: {} })}><option value="">Not set</option>{industryTypes.map((it) => <option key={it.id} value={it.id}>{it.name}</option>)}</select></label>
           <label>Client type<select value={form.clientType} onChange={(e) => setForm({ ...form, clientType: e.target.value })}>{[...new Set(['School', ...clientTypes])].map((value) => <option key={value}>{value}</option>)}</select></label>
           <label>GSTIN<input value={form.gstin} maxLength={15} placeholder="22AAAAA0000A1Z5" onChange={(e) => setForm({ ...form, gstin: e.target.value.toUpperCase() })} />

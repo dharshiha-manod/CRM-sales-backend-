@@ -24,6 +24,7 @@ const leadFieldsSchema = z.object({
   contactName: optionalText,
   phone,
   email,
+  streetAddress: optionalText,
   city: z.string().trim().max(120).optional().nullable(),
   state: z.string().trim().max(120).optional().nullable(),
   source: z.enum(leadSourceValues).default('other'),

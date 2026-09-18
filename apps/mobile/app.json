@@ -1,1 +1,26 @@
-{ "expo": { "name": "Field Sales", "slug": "field-sales", "version": "0.1.0", "orientation": "portrait", "scheme": "fieldsales", "userInterfaceStyle": "automatic", "plugins": ["expo-router", "expo-secure-store"], "experiments": { "typedRoutes": true } } }
+{
+  "expo": {
+    "name": "Field Sales",
+    "slug": "field-sales",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "fieldsales",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      ["expo-location", {
+        "locationWhenInUsePermission": "Allow Field Sales to use your location for visit check-ins, check-outs, and active visit updates."
+      }]
+    ],
+    "ios": {
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Allow Field Sales to use your location for visit check-ins, check-outs, and active visit updates."
+      }
+    },
+    "android": {
+      "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]
+    },
+    "experiments": { "typedRoutes": true }
+  }
+}

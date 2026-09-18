@@ -58,7 +58,7 @@ async function autoConvertQualifiedLead(organizationId: string, lead: Record<str
     const converted = await convertLeadToClient(organizationId, lead.id, actorId, {
       clientCode,
       clientType: meta.customerType || 'retailer',
-      address: [lead.city, lead.state].filter(Boolean).join(', ') || null,
+      address: [lead.street_address, lead.city, lead.state].filter(Boolean).join(', ') || null,
     });
     clientId = (converted as any).converted_client_id ?? (converted as any).clients?.id;
   } catch (err) {
@@ -142,6 +142,7 @@ type LeadInput = {
   contactName?: string | null;
   phone?: string | null;
   email?: string | null;
+  streetAddress?: string | null;
   city?: string | null;
   state?: string | null;
   source?: string;
@@ -158,6 +159,7 @@ const columnMap: Record<string, string> = {
   representativeId: 'representative_id',
   companyName: 'company_name',
   contactName: 'contact_name',
+  streetAddress: 'street_address',
   nextAction: 'next_action',
   nextActionDueAt: 'next_action_due_at',
 };  
@@ -288,8 +290,7 @@ export async function createLead(
   createdBy: string,
   // leadCode is intentionally optional here -- the DB trigger auto-generates
   // it when omitted (Automatic Lead ID).
-  input: Required<Omit<LeadInput, 'representativeId' | 'notes' | 'leadCode' | 'score' | 'nextAction' | 'nextActionDueAt'>> &
-    Pick<LeadInput, 'representativeId' | 'notes' | 'leadCode' | 'score' | 'nextAction' | 'nextActionDueAt'>,
+  input: LeadInput & Required<Pick<LeadInput, 'industryTypeId' | 'companyName' | 'source' | 'priority'>>,
 ) {
     
   const duplicates = await findDuplicateLeads(organizationId, { phone: input.phone, email: input.email, companyName: input.companyName });

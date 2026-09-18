@@ -51,6 +51,16 @@ export const clientService = {
     const code = await resolveIndustryCode(org, industryTypeId);
     return repo.updateClient(org, id, { ...input, industryDetails: cleanIndustryDetails(code, input.industryDetails) });
   },
+  async syncAddressFromLead(org: string, id: string, scope: IndustryScope) {
+    const client = await repo.getClient(org, id);
+    assertRecordInScope(scope, (client as { industry_type_id?: string | null }).industry_type_id, clientNotFound());
+    return repo.syncClientAddressFromLead(org, id);
+  },
+  async addressSyncStatus(org: string, id: string, scope: IndustryScope) {
+    const client = await repo.getClient(org, id);
+    assertRecordInScope(scope, (client as { industry_type_id?: string | null }).industry_type_id, clientNotFound());
+    return repo.clientAddressSyncStatus(org, id, client);
+  },
   contacts: { list: repo.listContacts, create: repo.createContact, update: repo.updateContact, remove: repo.deleteContact },
   assignments: { list: repo.listAssignedClients, assign: repo.assignClient, remove: repo.unassignClient },
   /**

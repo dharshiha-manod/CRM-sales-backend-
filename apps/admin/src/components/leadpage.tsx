@@ -28,6 +28,7 @@ type Lead = {
   contact_name?: string | null;
   phone?: string | null;
   email?: string | null;
+  street_address?: string | null;
   city?: string | null;
   state?: string | null;
   source: string;
@@ -52,6 +53,7 @@ type LeadForm = {
   contactName: string;
   phone: string;
   email: string;
+  streetAddress: string;
   city: string;
   state: string;
   source: string;
@@ -75,6 +77,7 @@ const blankForm: LeadForm = {
   contactName: '',
   phone: '',
   email: '',
+  streetAddress: '',
   city: '',
   state: '',
   source: 'other',
@@ -531,6 +534,7 @@ function openCreate() {
       contactName: lead.contact_name ?? '',
       phone: lead.phone ?? '',
       email: lead.email ?? '',
+      streetAddress: lead.street_address ?? '',
       city: lead.city ?? '',
       state: lead.state ?? '',
         source: lead.source ?? 'other',
@@ -634,6 +638,7 @@ function openCreate() {
         contactName: form.contactName.trim() || null,
         phone: form.phone.trim() || null,
         email: form.email.trim() || null,
+        streetAddress: form.streetAddress.trim() || null,
         city: form.city.trim() || null,
         state: form.state.trim() || null,
                source: form.source,
@@ -820,7 +825,11 @@ async function suggestRep() {
 
   function openConvert() {
     if (!selected) return;
-    setConvertForm({ clientCode: '', clientType: '', address: '' });
+    setConvertForm({
+      clientCode: '',
+      clientType: '',
+      address: [selected.street_address, selected.city, selected.state].filter(Boolean).join(', '),
+    });
     setConvertError(null);
     setConvertOpen(true);
   }
@@ -1194,7 +1203,7 @@ async function suggestRep() {
               <dt>Email</dt>
               <dd>{selected.email ?? '—'}</dd>
               <dt>Location</dt>
-              <dd>{[selected.city, selected.state].filter(Boolean).join(', ') || '—'}</dd>
+              <dd>{[selected.street_address, selected.city, selected.state].filter(Boolean).join(', ') || '—'}</dd>
               <dt>Source</dt>
               <dd>{sourceLabels[selected.source] ?? selected.source}</dd>
               <dt>Status</dt>
@@ -1467,6 +1476,10 @@ async function suggestRep() {
                   <label>
                     Email
                     <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} onBlur={() => void checkDuplicatesNow()} />
+                  </label>
+                  <label>
+                    Street Address
+                    <input placeholder="Door number, street, landmark" value={form.streetAddress} onChange={(e) => setForm({ ...form, streetAddress: e.target.value })} />
                   </label>
                   <label>
                     City

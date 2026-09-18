@@ -61,6 +61,9 @@ export function RepresentativesPage() {
   const [status, setStatus] = useState<'all' | Representative['status']>('all');
   const [editing, setEditing] = useState<Representative | null>(null);
   const [viewing, setViewing] = useState<Representative | null>(null);
+  const [assigning, setAssigning] = useState<Representative | null>(null);
+  const [assignBusy, setAssignBusy] = useState<string | null>(null);
+  const [assignMessage, setAssignMessage] = useState('');
   const [modal, setModal] = useState(false);
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
@@ -186,6 +189,19 @@ export function RepresentativesPage() {
   }
   async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); setMessage(''); try { await api(editing ? `/sales-representatives/${editing.id}` : '/sales-representatives', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(form) }); setModal(false); setEditing(null); setMessage(editing ? 'Sales representative updated successfully.' : 'Sales representative created successfully.'); await load(); } catch (error) { setMessage((error as Error).message); } finally { setSaving(false); } }
     async function toggle(item: Representative) { try { await api(`/sales-representatives/${item.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: item.status === 'active' ? 'inactive' : 'active' }) }); setMessage('Sales representative status updated successfully.'); await load(); } catch (error) { setMessage((error as Error).message); } }
+  function openAssign(item: Representative) { setAssigning(item); setAssignMessage(''); }
+  async function toggleClientAssignment(client: RepClient, isAssigned: boolean) {
+    if (!assigning) return;
+    setAssignBusy(client.id); setAssignMessage('');
+    try {
+      await api(`/sales-representatives/${assigning.id}/clients/${client.id}`, { method: isAssigned ? 'DELETE' : 'POST' });
+      await load();
+    } catch (error) {
+      setAssignMessage((error as Error).message);
+    } finally {
+      setAssignBusy(null);
+    }
+  }
   function toggleMenu(event: React.MouseEvent<HTMLButtonElement>, repId: string) {
     if (menuFor?.id === repId) {
       setMenuFor(null);
@@ -306,6 +322,14 @@ export function RepresentativesPage() {
                     </svg>
                     <span>Edit</span>
                   </button>
+                                  <button type="button" title="Assign clients" onClick={() => { setMenuFor(null); openAssign(item); }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="9" cy="7" r="4" />
+                      <path d="M2 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2" />
+                      <path d="M19 8v6M22 11h-6" />
+                    </svg>
+                    <span>Assign clients</span>
+                  </button>
                   <button
                     type="button"
                     title={item.status === 'active' ? 'Deactivate' : 'Activate'}
@@ -324,6 +348,61 @@ export function RepresentativesPage() {
           </div>
         </>
       )}
+
+        {assigning && (() => {
+        const assignedIds = new Set(
+          scopedClients
+            .filter((c) => c.sales_representative_client_assignments?.some((a) => a.sales_representatives?.employee_code === assigning.employee_code))
+            .map((c) => c.id)
+        );
+        return (
+          <div className="modal-backdrop" onMouseDown={() => setAssigning(null)}>
+            <div className="master-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+              <div className="modal-heading">
+                <div>
+                  <p className="eyebrow">FIELD TEAM</p>
+                  <h3>Assign clients — {assigning.user_profiles?.display_name ?? assigning.employee_code}</h3>
+                </div>
+                <button className="icon-action" type="button" aria-label="Close" onClick={() => setAssigning(null)}>×</button>
+              </div>
+              {assignMessage && <p role="alert" className="error" style={{ margin: '0 1.6rem' }}>{assignMessage}</p>}
+              <p style={{ margin: '0 1.6rem .8rem', fontSize: 13, opacity: 0.75 }}>
+                {assignedIds.size} of {scopedClients.length} clients assigned. Toggle a client to assign or unassign this rep — this is what lets them check in from the mobile app.
+              </p>
+              <div className="data-table-wrap" style={{ margin: '0 1.6rem 1rem', maxHeight: 420, overflowY: 'auto' }}>
+                <table>
+                  <thead><tr><th>Client</th><th>City</th><th /></tr></thead>
+                  <tbody>
+                    {scopedClients.map((client) => {
+                      const isAssigned = assignedIds.has(client.id);
+                      return (
+                        <tr key={client.id}>
+                          <td><strong>{client.client_name}</strong></td>
+                          <td>{client.city ?? '—'}</td>
+                          <td className="master-actions">
+                            <button
+                              type="button"
+                              className={isAssigned ? 'quiet-button' : 'primary-action'}
+                              disabled={assignBusy === client.id}
+                              onClick={() => void toggleClientAssignment(client, isAssigned)}
+                            >
+                              {assignBusy === client.id ? 'Saving…' : isAssigned ? 'Unassign' : 'Assign'}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {scopedClients.length === 0 && <tr><td colSpan={3} className="empty-row">No clients found for this industry yet.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              <div className="modal-actions">
+                <button type="button" className="primary-action" onClick={() => setAssigning(null)}>Done</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {modal && (
         <div className="modal-backdrop" onMouseDown={() => !saving && setModal(false)}>

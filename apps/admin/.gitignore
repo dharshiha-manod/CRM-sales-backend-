@@ -1,0 +1,7 @@
+# Local environment and generated files
+.env
+.env.local
+node_modules/
+dist/
+.expo/
+*.log
