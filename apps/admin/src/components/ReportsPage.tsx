@@ -9,7 +9,7 @@ type RepRef = { employee_code?: string; user_profiles?: { display_name?: string 
 type ClientRef = { client_code?: string; client_name?: string | null } | null;
 type IndustryTypeOption = { id: string; code: string; name: string };
 type Client = { id: string; client_code: string; client_name: string; industry_type_id?: string | null };
-type Lead = { id: string; status: 'new' | 'contacted' | 'qualified' | 'unqualified' | 'converted' | 'lost'; created_at: string; sales_representatives?: RepRef; industry_types?: { id: string; code: string; name: string } | null };
+type Lead = { id: string; status: 'new' | 'contacted' | 'qualified' | 'unqualified' | 'converted' | 'lost'; created_at: string; next_action_due_at?: string | null; sales_representatives?: RepRef; industry_types?: { id: string; code: string; name: string } | null };
 type Quotation = { id: string; quotation_number: string; status: string; total_amount: number; created_at: string; clients?: ClientRef; sales_representatives?: RepRef };
 type OrderLine = { quantity: number; unit_price: number; subtotal: number; products?: { product_code?: string; product_name?: string } | null };
 type Order = { id: string; order_number: string; status: string; total_amount: number; created_at: string; clients?: ClientRef; sales_representatives?: RepRef; sale_order_items?: OrderLine[] };
@@ -371,13 +371,20 @@ export function ReportsPage() {
   // Whether this industry has ANY recorded activity at all, in any time range.
   // This — not the date-range filter — decides whether we show real numbers
   // or the demo dataset. Real data always wins the moment it exists.
-  const hasRealActivity = industryOrders.length > 0 || industryCollections.length > 0 || industryVisits.length > 0 || industryFollowUps.length > 0;
+  const hasRealActivity = industryOrders.length > 0 || industryCollections.length > 0 || industryVisits.length > 0 || industryFollowUps.length > 0 || industryLeads.some((lead) => Boolean(lead.next_action_due_at));
   const usingMockData = !loading && !error && hasLoadedOnce(raw) && !hasRealActivity;
 
   const rangeOrders = useMemo(() => industryOrders.filter((o) => inRange(o.created_at, rangeStart, rangeEnd)), [industryOrders, rangeStart, rangeEnd]);
   const rangeQuotations = useMemo(() => industryQuotations.filter((q) => inRange(q.created_at, rangeStart, rangeEnd)), [industryQuotations, rangeStart, rangeEnd]);
   const rangeCollections = useMemo(() => industryCollections.filter((c) => inRange(c.collected_at, rangeStart, rangeEnd)), [industryCollections, rangeStart, rangeEnd]);
   const rangeFollowUps = useMemo(() => industryFollowUps.filter((f) => inRange(f.due_at, rangeStart, rangeEnd)), [industryFollowUps, rangeStart, rangeEnd]);
+  // Lead next-follow-up dates are stored on the lead, not in the separate
+  // follow_ups table. They are real pending work and belong in report
+  // analytics alongside follow-ups created from the Follow-ups module.
+  const rangeLeadFollowUps = useMemo(
+    () => industryLeads.filter((lead) => Boolean(lead.next_action_due_at) && lead.status !== 'converted' && lead.status !== 'lost' && inRange(lead.next_action_due_at, rangeStart, rangeEnd)),
+    [industryLeads, rangeStart, rangeEnd],
+  );
   const rangeVisits = useMemo(() => industryVisits.filter((v) => inRange(v.check_in_time, rangeStart, rangeEnd)), [industryVisits, rangeStart, rangeEnd]);
   const rangeLeads = useMemo(() => industryLeads.filter((l) => inRange(l.created_at, rangeStart, rangeEnd)), [industryLeads, rangeStart, rangeEnd]);
 
@@ -416,6 +423,7 @@ export function ReportsPage() {
   const fQuotations = useMemo(() => rangeQuotations.filter((q) => matchesRep(q.sales_representatives) && matchesClient(q.clients)), [rangeQuotations, appliedFilters, appliedClient]);
   const fCollections = useMemo(() => rangeCollections.filter((c) => matchesRep(c.sales_representatives) && matchesClient(c.clients)), [rangeCollections, appliedFilters, appliedClient]);
   const fFollowUps = useMemo(() => rangeFollowUps.filter((f) => matchesRep(f.sales_representatives) && matchesClient(f.clients)), [rangeFollowUps, appliedFilters, appliedClient]);
+  const fLeadFollowUps = useMemo(() => rangeLeadFollowUps.filter((lead) => matchesRep(lead.sales_representatives)), [rangeLeadFollowUps, appliedFilters]);
   const fVisits = useMemo(() => rangeVisits.filter((v) => matchesRep(v.sales_representatives) && matchesClient(v.clients)), [rangeVisits, appliedFilters, appliedClient]);
   const fLeads = useMemo(() => rangeLeads.filter((l) => matchesRep(l.sales_representatives)), [rangeLeads, appliedFilters]);
   const filteredOrdersAllTime = useMemo(() => industryOrders.filter((o) => matchesRep(o.sales_representatives) && matchesClient(o.clients) && matchesProduct(o)), [industryOrders, appliedFilters, appliedClient]);
@@ -517,8 +525,11 @@ export function ReportsPage() {
       if (f.status === 'cancelled') return;
       if (new Date(f.due_at) < now) overdue += 1; else pending += 1;
     });
-    return { overdue, pending, done, total: fFollowUps.length };
-  }, [fFollowUps]);
+    fLeadFollowUps.forEach((lead) => {
+      if (new Date(lead.next_action_due_at!) < now) overdue += 1; else pending += 1;
+    });
+    return { overdue, pending, done, total: fFollowUps.length + fLeadFollowUps.length };
+  }, [fFollowUps, fLeadFollowUps]);
 
   // ── Real report-table rows, reshaped into the same TableRow the mock uses ──
   const realTableRows: TableRow[] = useMemo(() => fOrders.map((o) => {

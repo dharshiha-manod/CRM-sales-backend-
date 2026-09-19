@@ -11,7 +11,9 @@ type FollowUp = {
   status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
   notes?: string | null;
   client_id?: string | null;
+  lead_id?: string | null;
   clients?: { client_code?: string | null; client_name?: string | null } | null;
+  leads?: { lead_code?: string | null; company_name?: string | null; industry_type_id?: string | null } | null;
   sales_representatives?: { employee_code?: string | null; user_profiles?: { display_name?: string | null } | null } | null;
 };
 
@@ -19,6 +21,13 @@ type ClientOption = { id: string; code: string; name: string; representativeId: 
 type RepresentativeOption = { id: string; employee_code?: string; user_profiles?: { display_name?: string | null } | null };
 
 const dateLabel = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+const FMCG_META_MARKER = '<<<FMCG_META>>>';
+
+function displayFollowUpNotes(notes?: string | null): string | null {
+  if (notes == null) return null;
+  const markerIndex = notes.indexOf(FMCG_META_MARKER);
+  return markerIndex === -1 ? notes : notes.slice(0, markerIndex).trimEnd();
+}
 
 // ── Locally-tracked follow-ups (auto-generated from overdue Collections +
 // anything added manually here) — no backend field for either yet, so they
@@ -37,7 +46,7 @@ function saveLocalFollowUps(items: FollowUp[]) {
 }
 
 export function FollowUpsPage() {
-  const { clientMatchesActiveIndustry } = useIndustryScope();
+  const { clientMatchesActiveIndustry, matchesActiveIndustry } = useIndustryScope();
 
   const [items, setItems] = useState<FollowUp[]>([]);
   const [localItems, setLocalItems] = useState<FollowUp[]>(() => loadLocalFollowUps());
@@ -53,6 +62,11 @@ export function FollowUpsPage() {
   const [dueFilter, setDueFilter] = useState<'all' | 'overdue' | 'today' | 'upcoming'>('all');
 
   const [selected, setSelected] = useState<FollowUp | null>(null);
+  function viewLead(item: FollowUp) {
+    if (!item.lead_id) return;
+    sessionStorage.setItem('fs-focus-lead-id', item.lead_id);
+    window.location.hash = 'leads';
+  }
 
   // ── Add-follow-up modal ──
   const [showAdd, setShowAdd] = useState(false);
@@ -233,8 +247,10 @@ export function FollowUpsPage() {
   }, [items, localItems]);
 
   const scopedItems = useMemo(
-    () => combinedItems.filter((item) => clientMatchesActiveIndustry(item.clients?.client_code)),
-    [combinedItems, clientMatchesActiveIndustry],
+    () => combinedItems.filter((item) => item.lead_id
+      ? matchesActiveIndustry(item.leads?.industry_type_id)
+      : clientMatchesActiveIndustry(item.clients?.client_code)),
+    [combinedItems, clientMatchesActiveIndustry, matchesActiveIndustry],
   );
 
   const clientOptions = useMemo(
@@ -350,9 +366,10 @@ export function FollowUpsPage() {
                   <tr key={item.id} className={rowClass}>
                     <td>
                       <strong>{item.title}</strong>
-                      {item.notes && <small>{item.notes}</small>}
+                      {item.lead_id && <small><span className="status-badge status-unqualified">From Lead</span> {item.leads?.lead_code ?? ''} {item.leads?.company_name ?? ''}</small>}
+                      {displayFollowUpNotes(item.notes) && <small>{displayFollowUpNotes(item.notes)}</small>}
                     </td>
-                    <td>{item.clients?.client_name ?? '—'}</td>
+                    <td>{item.lead_id ? (item.leads?.company_name ?? 'Lead') : (item.clients?.client_name ?? '—')}</td>
                     <td>{item.sales_representatives?.user_profiles?.display_name ?? item.sales_representatives?.employee_code ?? '—'}</td>
                     <td>
                       {dateLabel(item.due_at)}
@@ -363,6 +380,7 @@ export function FollowUpsPage() {
                     <td><span className={`status-badge status-${item.status}`}>{item.status.replace('_', ' ')}</span></td>
                     <td className="master-actions">
                       <button type="button" className="icon-action" title="View follow-up" aria-label="View follow-up" onClick={() => setSelected(item)}>◉</button>
+                      {item.lead_id && <button type="button" className="quiet-button" onClick={() => viewLead(item)}>View Lead</button>}
                       {isOpen && (
                         <button type="button" className="icon-action" title="Mark complete" aria-label="Mark follow-up complete" disabled={updatingId === item.id} onClick={() => void updateStatus(item.id, 'completed')}>✓</button>
                       )}
@@ -395,6 +413,7 @@ export function FollowUpsPage() {
               <dl className="detail-dl">
                 <dt>Related client</dt>
                 <dd>{selected.clients?.client_name ?? '—'} {selected.clients?.client_code && <span className="text-faint-inline">({selected.clients.client_code})</span>}</dd>
+                {selected.lead_id && <><dt>Originating lead</dt><dd>{selected.leads?.lead_code ?? 'Lead'} {selected.leads?.company_name ?? ''} <button type="button" className="link-button" onClick={() => viewLead(selected)}>View Lead</button></dd></>}
                 <dt>Representative</dt>
                 <dd>{selected.sales_representatives?.user_profiles?.display_name ?? selected.sales_representatives?.employee_code ?? '—'}</dd>
                 <dt>Due date/time</dt>
@@ -408,7 +427,7 @@ export function FollowUpsPage() {
                 <dt>Status</dt>
                 <dd><span className={`status-badge status-${selected.status}`}>{selected.status.replace('_', ' ')}</span></dd>
                 <dt>Notes</dt>
-                <dd>{selected.notes ?? '—'}</dd>
+                <dd>{displayFollowUpNotes(selected.notes) ?? '—'}</dd>
               </dl>
 
               {isOpen && (

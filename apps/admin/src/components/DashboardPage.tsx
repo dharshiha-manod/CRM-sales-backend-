@@ -5,13 +5,14 @@ import './DashboardPage.css';
 type RecentVisit = { id: string; status: string; check_in_time: string; outcome?: string | null; clients?: { client_code?: string; client_name?: string } | null; sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null };
 type Data = { totalClients: number; totalRepresentatives: number; activeRepresentatives: number; visitsToday: number; completedVisitsToday: number; activeVisits: number; ordersToday: number; salesToday: number; collectionsToday: number; recentVisits: RecentVisit[] };
 type LiveVisit = { id: string; check_in_time: string; check_in_lat: number; check_in_lng: number; clients?: { client_code?: string; client_name?: string } | null; sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null; latest_ping?: { latitude: number; longitude: number } | null };
-type Lead = { id: string; company_name?: string; contact_name?: string | null; source?: string; status: 'new' | 'contacted' | 'qualified' | 'unqualified' | 'converted' | 'lost'; created_at?: string; industry_types?: { id: string } | null };
+type Lead = { id: string; company_name?: string; contact_name?: string | null; source?: string; status: 'new' | 'contacted' | 'qualified' | 'unqualified' | 'converted' | 'lost'; created_at?: string; next_action?: string | null; next_action_due_at?: string | null; industry_types?: { id: string } | null };
 type ClientRecord = { id: string; status: 'active' | 'inactive'; industry_type_id?: string | null };
 type FollowUpRecord = { id: string; due_at: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; title?: string; clients?: { client_code?: string; client_name?: string } | null };
 type OrderRecord = { id: string; order_number: string; total_amount: number; created_at: string; clients?: { client_code?: string } | null; sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null };
 type CollectionRecord = { amount: number; clients?: { client_code?: string } | null; sale_orders?: { order_number?: string } | null };
 type Call = { id: string; direction: string; phone_number: string; status: string; started_at?: string | null; clients?: { client_code?: string; client_name?: string | null } | null };
 type TradingDeal = { id: string; deal_number: string; deal_name?: string; status: string; quantity?: number | string | null; purchase_rate?: number | string | null; selling_rate?: number | string | null; industry_type_id?: string | null };
+type DashboardFollowUp = { id: string; dueAt: string; title: string; clientName?: string };
 type Extra = { leads: Lead[]; clients: ClientRecord[]; followUps: FollowUpRecord[]; orders: OrderRecord[]; collections: CollectionRecord[]; calls: Call[]; tradingDeals: TradingDeal[] };
 const empty: Data = { totalClients: 0, totalRepresentatives: 0, activeRepresentatives: 0, visitsToday: 0, completedVisitsToday: 0, activeVisits: 0, ordersToday: 0, salesToday: 0, collectionsToday: 0, recentVisits: [] };
 const emptyExtra: Extra = { leads: [], clients: [], followUps: [], orders: [], collections: [], calls: [], tradingDeals: [] };
@@ -46,7 +47,7 @@ function rangeBounds(key: RangeKey, customFrom: string, customTo: string): [Date
 }
 
 export function DashboardPage() {
-  const { matchesActiveIndustry, clientMatchesActiveIndustry, activeIndustry } = useIndustryScope();
+  const { activeIndustry, activeIndustryTypeId } = useIndustryScope();
   const [data, setData] = useState<Data>(empty); const [live, setLive] = useState<LiveVisit[]>([]); const [extra, setExtra] = useState<Extra>(emptyExtra); const [error, setError] = useState('');  
   const [range, setRange] = useState<RangeKey>('today');
   const [customFrom, setCustomFrom] = useState('');
@@ -55,16 +56,28 @@ export function DashboardPage() {
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
 
   useEffect(() => {
+    // Do not load the organisation-wide dashboard and then try to hide values
+    // in the browser. Every request below is explicitly scoped to the active
+    // industry, so a Trading dashboard cannot show another industry's leads,
+    // orders, collections, or follow-ups while the industry lookup is loading.
+    if (!activeIndustryTypeId) {
+      setData(empty);
+      setLive([]);
+      setExtra(emptyExtra);
+      return;
+    }
+
+    const industryQuery = `?industryTypeId=${encodeURIComponent(activeIndustryTypeId)}`;
     const load = () => void Promise.all([
-      api<{ data: Data }>('/dashboard'),
-      api<{ data: LiveVisit[] }>('/field-visits/live'),
-      api<{ data: Lead[] }>('/leads').catch(() => ({ data: [] })),
-      api<{ data: ClientRecord[] }>('/clients').catch(() => ({ data: [] })),
-      api<{ data: FollowUpRecord[] }>('/follow-ups').catch(() => ({ data: [] })),
-      api<{ data: OrderRecord[] }>('/orders').catch(() => ({ data: [] })),
-      api<{ data: CollectionRecord[] }>('/collections').catch(() => ({ data: [] })),
-      api<{ data: Call[] }>('/telephony/calls').catch(() => ({ data: [] })),
-      api<{ data: TradingDeal[] }>('/trading/deals').catch(() => ({ data: [] })),
+      api<{ data: Data }>(`/dashboard${industryQuery}`),
+      api<{ data: LiveVisit[] }>(`/field-visits/live${industryQuery}`),
+      api<{ data: Lead[] }>(`/leads${industryQuery}`).catch(() => ({ data: [] })),
+      api<{ data: ClientRecord[] }>(`/clients${industryQuery}`).catch(() => ({ data: [] })),
+      api<{ data: FollowUpRecord[] }>(`/follow-ups${industryQuery}`).catch(() => ({ data: [] })),
+      api<{ data: OrderRecord[] }>(`/orders${industryQuery}`).catch(() => ({ data: [] })),
+      api<{ data: CollectionRecord[] }>(`/collections${industryQuery}`).catch(() => ({ data: [] })),
+      api<{ data: Call[] }>(`/telephony/calls${industryQuery}`).catch(() => ({ data: [] })),
+      api<{ data: TradingDeal[] }>(`/trading/deals${industryQuery}`).catch(() => ({ data: [] })),
     ]).then(([dashboard, activity, leads, clients, followUps, orders, collections, calls, tradingDeals]) => {
       setData({ ...empty, ...dashboard.data });
       setLive(activity.data);
@@ -74,13 +87,15 @@ export function DashboardPage() {
     load();
     const timer = window.setInterval(load, 20000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [activeIndustryTypeId]);
 
   const [rangeStart, rangeEnd] = useMemo(() => rangeBounds(range, customFrom, customTo), [range, customFrom, customTo]);
 
   // Trading pipeline snapshot for the dashboard's Trading section — reuses
   // the same margin math as TradingDealPage.tsx so the numbers always agree.
-  const tradingDealsInScope = useMemo(() => extra.tradingDeals.filter((d) => matchesActiveIndustry(d.industry_type_id)), [extra.tradingDeals, matchesActiveIndustry]);
+  // The API request above is industry-scoped. Keeping this list untouched
+  // avoids a second, client-side approximation of the server's real scope.
+  const tradingDealsInScope = extra.tradingDeals;
   const tradingStats = useMemo(() => {
     const openStatuses = ['Completed', 'Cancelled', 'Lost'];
     const sellingValue = (d: TradingDeal) => (Number(d.selling_rate) || 0) * (Number(d.quantity) || 0);
@@ -105,15 +120,36 @@ export function DashboardPage() {
 
   const activeClients = extra.clients.filter((c) => c.status === 'active').length;
 
+  // Lead "Next follow-up" dates live on leads, while Follow-ups page items
+  // live in follow_ups. The dashboard needs both sources to show all real
+  // pending work, including overdue lead follow-ups.
+  const dashboardFollowUps = useMemo<DashboardFollowUp[]>(() => [
+    ...extra.followUps
+      .filter((followUp) => followUp.status !== 'completed' && followUp.status !== 'cancelled')
+      .map((followUp) => ({
+        id: `follow-up-${followUp.id}`,
+        dueAt: followUp.due_at,
+        title: followUp.title ?? 'Follow-up',
+        clientName: followUp.clients?.client_name,
+      })),
+    ...extra.leads
+      .filter((lead) => Boolean(lead.next_action_due_at) && lead.status !== 'converted' && lead.status !== 'lost')
+      .map((lead) => ({
+        id: `lead-${lead.id}`,
+        dueAt: lead.next_action_due_at!,
+        title: lead.next_action?.trim() || `Follow up: ${lead.company_name ?? lead.contact_name ?? 'lead'}`,
+        clientName: lead.company_name ?? lead.contact_name ?? undefined,
+      })),
+  ], [extra.followUps, extra.leads]);
+
   const followUpStats = (() => {
     const now = new Date();
     const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const endToday = new Date(startToday);
     endToday.setDate(endToday.getDate() + 1);
     let overdue = 0, dueToday = 0, upcoming = 0;
-    extra.followUps.forEach((f) => {
-      if (f.status === 'completed' || f.status === 'cancelled') return;
-      const due = new Date(f.due_at);
+    dashboardFollowUps.forEach((f) => {
+      const due = new Date(f.dueAt);
       if (due < startToday) overdue += 1;
       else if (due < endToday) dueToday += 1;
       else upcoming += 1;
@@ -216,12 +252,12 @@ export function DashboardPage() {
 
   const followUpsByDay = useMemo(() => {
     const map: Record<string, number> = {};
-    extra.followUps.forEach((f) => { if (f.status === 'completed' || f.status === 'cancelled') return; const d = new Date(f.due_at); const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; map[key] = (map[key] ?? 0) + 1; });
+    dashboardFollowUps.forEach((f) => { const d = new Date(f.dueAt); const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; map[key] = (map[key] ?? 0) + 1; });
     return map;
-  }, [extra.followUps]);
+  }, [dashboardFollowUps]);
 
   const scheduleDay = selectedDay ?? new Date();
-  const scheduleFollowUps = useMemo(() => extra.followUps.filter((f) => { if (f.status === 'completed' || f.status === 'cancelled') return false; const d = new Date(f.due_at); return d.getFullYear() === scheduleDay.getFullYear() && d.getMonth() === scheduleDay.getMonth() && d.getDate() === scheduleDay.getDate(); }), [extra.followUps, scheduleDay]);
+  const scheduleFollowUps = useMemo(() => dashboardFollowUps.filter((f) => { const d = new Date(f.dueAt); return d.getFullYear() === scheduleDay.getFullYear() && d.getMonth() === scheduleDay.getMonth() && d.getDate() === scheduleDay.getDate(); }), [dashboardFollowUps, scheduleDay]);
 
   const recentLeads = useMemo(() => [...rangeLeads].sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()).slice(0, 6), [rangeLeads]);
 
@@ -424,7 +460,7 @@ export function DashboardPage() {
           </div>
           <div className="calendar-schedule">
             {scheduleFollowUps.length ? scheduleFollowUps.map((f) => (
-              <div className="calendar-item" key={f.id}><strong>{f.title ?? 'Follow-up'}</strong><span>{f.clients?.client_name ?? ''} · {timeLabel(f.due_at)}</span></div>
+              <div className="calendar-item" key={f.id}><strong>{f.title}</strong><span>{f.clientName ?? ''} · {timeLabel(f.dueAt)}</span></div>
             )) : <p className="ops-empty-inline">No follow-ups scheduled for this date range</p>}
           </div>
         </section>

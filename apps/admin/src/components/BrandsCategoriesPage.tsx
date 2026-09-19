@@ -65,7 +65,7 @@ export function loadNameList(key: string): string[] {
     return [];
   }
 }
-function saveNameList(key: string, list: string[]) {
+export function saveNameList(key: string, list: string[]) {
   try {
     window.localStorage.setItem(key, JSON.stringify(list));
   } catch {

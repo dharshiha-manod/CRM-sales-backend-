@@ -72,8 +72,9 @@ import { ReportsPage } from './components/ReportsPage';
 import { SignInForm } from './components/SignInForm';
 import { UsersPage } from './components/UsersPage';
 import { SettingsPage } from './components/SettingsPage';
-import { NotificationsPage } from './components/NotificationsPage';
+import { NotificationsPage, useUnreadNotificationCount } from './components/NotificationsPage';
 import { GpsTrackingPage } from './components/GpsTrackingPage';
+import { PublicQuotationPage } from './components/PublicQuotationPage';
 import { supabase } from './lib/supabase';
 import { INDUSTRY_MODULES } from './industry/moduleDefs';
 import type { ModuleDef } from './industry/moduleDefs';
@@ -91,6 +92,8 @@ function moduleLabel(key: IndustryKey, moduleId: string): string {
 }
 
 export default function App() {
+  const publicToken = window.location.pathname.match(/^\/quote\/([^/]+)$/)?.[1];
+  if (publicToken) return <PublicQuotationPage token={publicToken} />;
   const [session, setSession] = useState<Session | null>(null);
   const [loadingSession, setLoadingSession] = useState(Boolean(supabase));
    const validPages: string[] = ['dashboard', 'clients', 'representatives', 'users', 'leads', 'fieldActivity', 'products', 'brandsCategories', 'requirements', 'quotations', 'orders', 'collections', 'followUps', 'calls', 'reports', 'target', 'inventory', 'gpsTracking', 'settings', 'notifications'];
@@ -100,8 +103,9 @@ export default function App() {
     return validPages.includes(hash) ? (hash as Page) : 'dashboard';
   };
   const [page, setPage] = useState<Page>(pageFromHash());
- const { activeIndustry, setActiveIndustry, canSwitchIndustry } = useIndustry();
+const { activeIndustry, setActiveIndustry, canSwitchIndustry } = useIndustry();
 const { isGlobal } = useCurrentMembership();
+  const unreadNotificationCount = useUnreadNotificationCount();
   async function refreshSession() { if (!supabase) return; const { data } = await supabase.auth.getSession(); setSession(data.session); setLoadingSession(false); }
   useEffect(() => { if (!supabase) return; void refreshSession(); const { data } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); setLoadingSession(false); }); return () => data.subscription.unsubscribe(); }, []);
   useEffect(() => { window.location.hash = page; }, [page]);
@@ -171,6 +175,7 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
     <button key={value} className={page === value ? 'active' : ''} onClick={() => setPage(value)} title={text}>
       <span>{icon}</span>
       <span className="nav-label-text">{text}</span>
+      {value === 'notifications' && unreadNotificationCount > 0 && <span className="notification-unread-dot" aria-label={`${unreadNotificationCount} unread notification${unreadNotificationCount === 1 ? '' : 's'}`} />}
     </button>
   );
 

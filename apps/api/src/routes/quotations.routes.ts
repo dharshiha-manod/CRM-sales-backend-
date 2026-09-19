@@ -25,6 +25,9 @@ quotationsRouter.get(
   quotations.get,
 );
 quotationsRouter.patch('/quotations/:id', authenticate, requireRoles('super_admin', 'admin', 'sales_manager', 'sales_representative'), quotations.update);
+quotationsRouter.post('/quotations/:id/send', authenticate, requireRoles('super_admin', 'admin', 'sales_manager', 'sales_representative'), quotations.send);
+quotationsRouter.post('/quotations/:id/approve', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), quotations.approve);
+quotationsRouter.post('/quotations/:id/deny', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), quotations.deny);
 quotationsRouter.post(
   '/quotations/:id/convert',
   authenticate,

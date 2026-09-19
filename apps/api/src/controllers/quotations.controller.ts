@@ -2,7 +2,8 @@ import type { RequestHandler } from 'express';
 import { AppError } from '../errors/app-error.js';
 import { fieldActivityService } from '../services/field-activity.service.js';
 import { quotationService } from '../services/quotations.service.js';
-import { quotationCreateSchema, quotationUpdateSchema } from '../validation/quotations.schemas.js';
+import { publicQuotationDecisionSchema, quotationCreateSchema, quotationDenySchema, quotationUpdateSchema } from '../validation/quotations.schemas.js';
+import { env } from '../config/env.js';
 import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 
 const org = (req: Parameters<RequestHandler>[0]) => {
@@ -39,12 +40,34 @@ export const quotations: Record<string, RequestHandler> = {
     res.json({ data: await quotationService.list(org(req), { status, clientId, industryTypeId: industryTypeId ?? undefined }) });
   },
   get: async (req, res) => res.json({ data: await quotationService.get(org(req), id(req.params.id), req.industryScope!) }),
-    update: async (req, res) => {
+  update: async (req, res) => {
     const organizationId = org(req);
     const representativeId = req.organizationRole === 'sales_representative'
       ? (await fieldActivityService.currentRepresentative(organizationId, req.auth!.sub!)).id
       : null;
-    const data = await quotationService.update(organizationId, representativeId, id(req.params.id), quotationUpdateSchema.parse(req.body), req.industryScope!);
+    const data = await quotationService.update(organizationId, representativeId, req.auth!.sub!, id(req.params.id), quotationUpdateSchema.parse(req.body), req.industryScope!);
+    res.json({ data });
+  },
+  send: async (req, res) => {
+    // Never derive a customer-facing URL from CORS origins or the current
+    // browser. This URL is part of the email and must be publicly reachable.
+    if (!env.PUBLIC_APP_URL) throw new AppError(503, 'PUBLIC_APP_URL_REQUIRED', 'PUBLIC_APP_URL must be configured before a quotation can be sent to a client.');
+    const publicAppUrl = env.PUBLIC_APP_URL.replace(/\/$/, '');
+    const data = await quotationService.send(org(req), req.organizationRole === 'sales_representative'
+      ? (await fieldActivityService.currentRepresentative(org(req), req.auth!.sub!)).id : null, id(req.params.id), publicAppUrl, req.industryScope!);
+    res.json({ data, publicLink: `${publicAppUrl}/quote/${data.public_token}` });
+  },
+  publicGet: async (req, res) => res.json({ data: await quotationService.publicGet(id(req.params.token)) }),
+  publicDecision: async (req, res) => {
+    const data = await quotationService.publicDecision(id(req.params.token), publicQuotationDecisionSchema.parse(req.body));
+    res.json({ data });
+  },
+  approve: async (req, res) => {
+    const data = await quotationService.approve(org(req), req.auth!.sub!, id(req.params.id), req.industryScope!);
+    res.status(201).json({ data });
+  },
+  deny: async (req, res) => {
+    const data = await quotationService.deny(org(req), req.auth!.sub!, id(req.params.id), quotationDenySchema.parse(req.body).reason, req.industryScope!);
     res.json({ data });
   },
   convertToOrder: async (req, res) => {

@@ -24,6 +24,7 @@ type LeadMeta = {
   expectedOrderValue?: string;
   nextFollowUp?: string;
 };
+type LeadForFollowUp = { id: string; company_name: string; representative_id: string | null; next_action_due_at: string | null; priority: string | null; notes: string | null };
 function parseLeadMeta(notes?: string | null): LeadMeta {
   if (!notes) return {};
   const idx = notes.indexOf(LEAD_META_MARKER);
@@ -353,6 +354,9 @@ export async function updateLead(organizationId: string, id: string, input: Lead
     fail(error);
   }
   if (!data) throw new AppError(404, 'LEAD_NOT_FOUND', 'Lead not found in this organization.');
+  if (data.status === 'unqualified' && input.nextActionDueAt !== undefined) {
+    await syncOpenLeadFollowUpDueAt(organizationId, id, input.nextActionDueAt);
+  }
   return getLead(organizationId, id);
 }
 
@@ -400,6 +404,48 @@ export async function changeLeadStatus(organizationId: string, id: string, actor
   if (status === 'qualified' && !data.converted_client_id) {
     await autoConvertQualifiedLead(organizationId, data, actorId);
   }
+  if (status === 'unqualified') {
+    const lead = data as LeadForFollowUp;
+    const dueAt = lead.next_action_due_at ?? new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+    const priority = ['low', 'normal', 'high', 'critical'].includes(lead.priority ?? '') ? lead.priority! : 'normal';
+    const values = {
+      representative_id: lead.representative_id,
+      title: `Follow up: ${lead.company_name}`,
+      due_at: dueAt,
+      priority,
+      notes: leadNotesText(lead.notes),
+    };
+    const { data: existingFollowUp, error: existingFollowUpError } = await supabaseAdmin
+      .from('follow_ups')
+      .select('id')
+      .eq('organization_id', organizationId)
+      .eq('lead_id', lead.id)
+      .in('status', ['pending', 'in_progress'])
+      .maybeSingle();
+    if (existingFollowUpError) fail(existingFollowUpError);
+
+    if (existingFollowUp) {
+      const { error: updateFollowUpError } = await supabaseAdmin
+        .from('follow_ups')
+        .update(values)
+        .eq('id', existingFollowUp.id)
+        .eq('organization_id', organizationId);
+      if (updateFollowUpError) fail(updateFollowUpError);
+    } else {
+      console.info('[unqualified-follow-up] inserting', { organizationId, leadId: lead.id, representativeId: lead.representative_id });
+      const { data: insertedFollowUp, error: insertFollowUpError } = await supabaseAdmin
+        .from('follow_ups')
+        .insert({ organization_id: organizationId, lead_id: lead.id, ...values })
+        .select('id')
+        .single();
+      if (insertFollowUpError) {
+        console.error('[unqualified-follow-up] insert failed', insertFollowUpError);
+        fail(insertFollowUpError);
+      }
+      if (!insertedFollowUp) throw new AppError(500, 'FOLLOW_UP_CREATE_FAILED', 'Follow-up creation returned no row.');
+      console.info('[unqualified-follow-up] inserted', { followUpId: insertedFollowUp.id });
+    }
+  }
 
   return getLead(organizationId, id);
 }
@@ -432,6 +478,9 @@ export async function setLeadNextAction(organizationId: string, id: string, acto
     .maybeSingle();
   if (error) fail(error);
   if (!data) throw new AppError(404, 'LEAD_NOT_FOUND', 'Lead not found in this organization.');
+  if (data.status === 'unqualified') {
+    await syncOpenLeadFollowUpDueAt(organizationId, id, nextActionDueAt);
+  }
 
   await supabaseAdmin.from('lead_activities').insert({
     organization_id: organizationId,
@@ -442,6 +491,18 @@ export async function setLeadNextAction(organizationId: string, id: string, acto
   });
 
   return getLead(organizationId, id);
+}
+
+/** Keeps the operational follow-up aligned when an unqualified lead's due date changes. */
+async function syncOpenLeadFollowUpDueAt(organizationId: string, leadId: string, dueAt: string | null) {
+  if (!dueAt) return;
+  const { error } = await supabaseAdmin
+    .from('follow_ups')
+    .update({ due_at: dueAt })
+    .eq('organization_id', organizationId)
+    .eq('lead_id', leadId)
+    .in('status', ['pending', 'in_progress']);
+  if (error) fail(error);
 }
 
 export async function addLeadNote(organizationId: string, id: string, actorId: string, note: string) {
@@ -542,7 +603,7 @@ export async function convertLeadToClient(
       title: lead.next_action || `Follow up with ${lead.company_name}`,
       due_at: lead.next_action_due_at,
       priority: lead.priority ?? 'normal',
-      notes: lead.notes ?? null,
+      notes: leadNotesText(lead.notes),
     });
     if (followUpError) {
       await supabaseAdmin.from('lead_activities').insert({
@@ -572,4 +633,11 @@ export async function convertLeadToClient(
   });
 
   return getLead(organizationId, id);
+}
+
+/** Returns the human-authored lead note, without its packed FMCG metadata. */
+function leadNotesText(notes?: string | null): string | null {
+  if (notes == null) return null;
+  const markerIndex = notes.indexOf(LEAD_META_MARKER);
+  return markerIndex === -1 ? notes : notes.slice(0, markerIndex).trimEnd();
 }

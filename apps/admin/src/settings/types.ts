@@ -6,7 +6,7 @@ export type SectionId =
   | 'salesConfig' | 'visitConfig' | 'targetConfig' | 'orderConfig' | 'collectionConfig' | 'followUpConfig'
   | 'gps' | 'checkInOut' | 'trackingRules'
   | 'inventoryConfig' | 'stockRules' | 'expiryBatch'
-  | 'notifications' | 'callsIvr'
+  | 'notifications' | 'callsIvr' | 'quotationEmail'
   | 'dataDisplay' | 'auditLog';
 
 export type RoleView = 'admin' | 'manager' | 'salesRep';

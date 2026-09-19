@@ -13,6 +13,7 @@ import { InventoryConfigurationSection, StockRulesSection, ExpiryBatchSection } 
 import { NotificationsSection, CallsIvrSection } from '../settings/CommunicationSettings';
 import { DataDisplaySection, AuditLogSection } from '../settings/SystemSettings';
 import { IndustrySpecificSection } from '../settings/IndustrySettings';
+import { QuotationEmailSettings } from '../settings/QuotationEmailSettings';
 
 interface NavItem { id: SectionId; label: string; roles: RoleView[] }
 interface NavGroup { id: string; label: string; items: NavItem[] }
@@ -53,6 +54,7 @@ const NAV_GROUPS: NavGroup[] = [
   { id: 'communication', label: 'Communication', items: [
     { id: 'notifications', label: 'Notifications', roles: ADMIN_MANAGER },
     { id: 'callsIvr', label: 'Calls & IVR', roles: ADMIN_MANAGER },
+    { id: 'quotationEmail', label: 'Quotation Email', roles: ADMIN_MANAGER },
   ]},
   { id: 'system', label: 'System', items: [
     { id: 'dataDisplay', label: 'Data & Display', roles: ADMIN_ONLY },
@@ -149,6 +151,8 @@ export function SettingsPage() {
         return <NotificationsSection value={settings.notifications} onChange={(next) => update('notifications', () => next)} />;
       case 'callsIvr':
         return <CallsIvrSection value={settings.callsIvr} />;
+      case 'quotationEmail':
+        return <QuotationEmailSettings />;
       case 'dataDisplay':
         return <DataDisplaySection value={settings.dataDisplay} onChange={(next) => update('dataDisplay', () => next)} />;
       case 'auditLog':

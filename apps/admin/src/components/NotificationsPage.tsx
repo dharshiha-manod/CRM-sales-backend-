@@ -131,7 +131,17 @@ const GROUP_ORDER = ['Today', 'Yesterday', 'Earlier this week', 'Older'] as cons
 type LiveOrder = { id: string; order_number: string; total_amount: number; created_at: string; clients?: { client_code?: string | null; client_name?: string | null } | null };
 type LiveCollection = { id: string; amount: number; created_at?: string | null; sale_orders?: { order_number?: string | null } | null };
 type LiveClient = { client_code?: string | null; client_name?: string | null; created_at?: string | null; industry_types?: { code?: string | null } | null };
-type LiveFollowUp = { id: string; title: string; due_at: string; status: string; clients?: { client_name?: string | null } | null; sales_representatives?: { user_profiles?: { display_name?: string | null } | null } | null };
+type LiveFollowUp = {
+  id: string;
+  title: string;
+  due_at: string;
+  status: string;
+  client_id?: string | null;
+  lead_id?: string | null;
+  clients?: { client_name?: string | null; industry_types?: { code?: string | null } | null } | null;
+  leads?: { company_name?: string | null; industry_type_id?: string | null } | null;
+  sales_representatives?: { user_profiles?: { display_name?: string | null } | null } | null;
+};
 type LiveProduct = { id: string; product_code: string; product_name: string; stock_quantity?: number | null; industry_type_id?: string | null };
 type LiveIndustryType = { id: string; code: string };
 
@@ -159,6 +169,9 @@ function readIdSet(key: string): Set<string> {
 function saveIdSet(key: string, ids: Set<string>) {
   try { window.localStorage.setItem(key, JSON.stringify([...ids])); } catch { /* best effort */ }
 }
+
+const READ_STATE_CHANGED = 'fs-notifications-read-state-changed';
+function notifyReadStateChanged() { window.dispatchEvent(new Event(READ_STATE_CHANGED)); }
 
 function industryKeyFromCode(code?: string | null): NotifIndustry {
   const key = (code ?? '').toLowerCase();
@@ -220,13 +233,20 @@ function buildLiveNotifications(sources: {
   for (const f of sources.followUps) {
     const id = `followup-${f.id}`;
     if (dismissed.has(id) || f.status !== 'pending' || new Date(f.due_at) >= new Date()) continue;
+    const isLeadFollowUp = Boolean(f.lead_id);
+    const sourceName = isLeadFollowUp ? f.leads?.company_name : f.clients?.client_name;
+    const industry = isLeadFollowUp
+      ? industryKeyFromCode(industryTypeById.get(f.leads?.industry_type_id ?? ''))
+      : industryKeyFromCode(f.clients?.industry_types?.code);
     items.push({
       id, category: 'followup', title: 'Follow-up Overdue',
-      description: `${f.title} for ${f.clients?.client_name ?? 'a client'} is overdue.`,
-      module: 'Follow-ups', navigateTo: 'followUps', industry: 'global', roles: ['admin', 'manager', 'rep'],
+      description: isLeadFollowUp
+        ? `Follow up: ${sourceName ?? 'a lead'} (Lead) is overdue.`
+        : `${f.title} for ${sourceName ?? 'a client'} is overdue.`,
+      module: 'Follow-ups', navigateTo: 'followUps', industry, roles: ['admin', 'manager', 'rep'],
       assignedTo: f.sales_representatives?.user_profiles?.display_name ?? undefined,
       timestamp: f.due_at, read: readIds.has(id), priority: 'important',
-      details: [{ label: 'Client', value: f.clients?.client_name ?? '—' }, { label: 'Assigned to', value: f.sales_representatives?.user_profiles?.display_name ?? '—' }],
+      details: [{ label: isLeadFollowUp ? 'Lead' : 'Client', value: sourceName ?? '—' }, { label: 'Assigned to', value: f.sales_representatives?.user_profiles?.display_name ?? '—' }],
       primaryAction: 'View Follow-up',
     });
   }
@@ -271,6 +291,43 @@ function buildLiveNotifications(sources: {
   return items;
 }
 
+async function loadLiveNotifications(): Promise<NotificationItem[]> {
+  const [orders, collections, clients, followUps, products, industryTypes] = await Promise.all([
+    api<{ data: LiveOrder[] }>('/orders').catch(() => ({ data: [] })),
+    api<{ data: LiveCollection[] }>('/collections').catch(() => ({ data: [] })),
+    api<{ data: LiveClient[] }>('/clients').catch(() => ({ data: [] })),
+    api<{ data: LiveFollowUp[] }>('/follow-ups').catch(() => ({ data: [] })),
+    api<{ data: LiveProduct[] }>('/products').catch(() => ({ data: [] })),
+    api<{ data: LiveIndustryType[] }>('/industry-types?status=active').catch(() => ({ data: [] })),
+  ]);
+  return buildLiveNotifications({
+    orders: orders.data ?? [], collections: collections.data ?? [], clients: clients.data ?? [],
+    followUps: followUps.data ?? [], products: products.data ?? [], industryTypes: industryTypes.data ?? [],
+  });
+}
+
+/** Shared notification data loader for surfaces outside the notification page. */
+export function useUnreadNotificationCount(): number {
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      void loadLiveNotifications().then((items) => {
+        if (active) setUnreadCount(items.filter((item) => !item.read).length);
+      });
+    };
+    refresh();
+    window.addEventListener(READ_STATE_CHANGED, refresh);
+    return () => {
+      active = false;
+      window.removeEventListener(READ_STATE_CHANGED, refresh);
+    };
+  }, []);
+
+  return unreadCount;
+}
+
 /* ────────────────────────────── Component ────────────────────────────── */
 
 export function NotificationsPage({ onNavigate }: { onNavigate?: (page: string) => void }) {
@@ -283,18 +340,7 @@ const [role, setRole] = useState<Role>('admin');
   async function loadLive() {
     setLoading(true);
     try {
-      const [orders, collections, clients, followUps, products, industryTypes] = await Promise.all([
-        api<{ data: LiveOrder[] }>('/orders').catch(() => ({ data: [] })),
-        api<{ data: LiveCollection[] }>('/collections').catch(() => ({ data: [] })),
-        api<{ data: LiveClient[] }>('/clients').catch(() => ({ data: [] })),
-        api<{ data: LiveFollowUp[] }>('/follow-ups').catch(() => ({ data: [] })),
-        api<{ data: LiveProduct[] }>('/products').catch(() => ({ data: [] })),
-        api<{ data: LiveIndustryType[] }>('/industry-types?status=active').catch(() => ({ data: [] })),
-      ]);
-      setItems(buildLiveNotifications({
-        orders: orders.data ?? [], collections: collections.data ?? [], clients: clients.data ?? [],
-        followUps: followUps.data ?? [], products: products.data ?? [], industryTypes: industryTypes.data ?? [],
-      }));
+      setItems(await loadLiveNotifications());
     } finally {
       setLoading(false);
     }
@@ -321,6 +367,7 @@ function markRead(id: string, read = true) {
     const ids = readIdSet(READ_KEY);
     if (read) ids.add(id); else ids.delete(id);
     saveIdSet(READ_KEY, ids);
+    notifyReadStateChanged();
     setItems((cur) => cur.map((n) => (n.id === id ? { ...n, read } : n)));
     setSelected((cur) => (cur && cur.id === id ? { ...cur, read } : cur));
   }
@@ -328,6 +375,7 @@ function markRead(id: string, read = true) {
     const ids = readIdSet(READ_KEY);
     items.forEach((n) => ids.add(n.id));
     saveIdSet(READ_KEY, ids);
+    notifyReadStateChanged();
     setItems((cur) => cur.map((n) => ({ ...n, read: true })));
     setSelected((cur) => (cur ? { ...cur, read: true } : cur));
   }

@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { GenerateDocumentButton } from './GenerateDocumentButton';
 import { buildDraftFromQuotation } from '../lib/tradeDocumentHandoff';
+import { useCurrentMembership } from '../auth/useCurrentMembership';
 
 const QUOTATION_DOC_TYPES = ['Proforma Invoice', 'Commercial Invoice', 'Other'];
 import { QuotationPipelineStepper } from './QuotationPipelineStepper';
@@ -19,14 +20,16 @@ type QuotationItem = {
 type Quotation = {
   id: string;
   quotation_number: string;
-  status: 'sent' | 'accepted' | 'rejected' | 'expired' | 'converted';
+  status: 'draft' | 'sent' | 'client_accepted' | 'accepted' | 'rejected' | 'expired' | 'converted';
   valid_until?: string | null;
   discount_amount: number;
   tax_amount: number;
   total_amount: number;
   notes?: string | null;
+  decision_source?: 'manual_rep' | 'client_portal' | null;
+  rejection_reason?: string | null;
   created_at: string;
-  clients?: { client_code?: string; client_name?: string } | null;
+  clients?: { client_code?: string; client_name?: string; email?: string | null } | null;
   sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null;
   quotation_items?: QuotationItem[];
 };
@@ -49,6 +52,8 @@ const currency = (value: number) =>
 const dateLabel = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 
 export function QuotationsPage() {
+  const { role } = useCurrentMembership();
+  const canApprove = role === 'admin' || role === 'super_admin' || role === 'sales_manager';
   const { clientMatchesActiveIndustry, activeIndustry } = useIndustryScope();
   const [items, setItems] = useState<Quotation[]>([]);
   const [selected, setSelected] = useState<Quotation | null>(null);
@@ -78,6 +83,9 @@ export function QuotationsPage() {
   const [convertingId, setConvertingId] = useState<string | null>(null);
   const [convertMessage, setConvertMessage] = useState<string | null>(null);
   const [convertMessageIsError, setConvertMessageIsError] = useState(false);
+  const [publicLink, setPublicLink] = useState<string | null>(null);
+  const [denyTarget, setDenyTarget] = useState<Quotation | null>(null);
+  const [denyReason, setDenyReason] = useState('');
 
   async function convertToOrder(quotation: Quotation) {
     setConvertingId(quotation.id);
@@ -130,19 +138,11 @@ export function QuotationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The client accepting (or rejecting) a quotation is a genuine real-world
-  // event only a human can report — but the moment "accepted" is recorded,
-  // conversion to a Sales Order happens immediately, automatically. No
-  // separate "Convert to Order" click.
-  async function markStatus(quotation: Quotation, nextStatus: 'sent' | 'accepted' | 'rejected') {
+  async function markStatus(quotation: Quotation, nextStatus: 'rejected') {
     setStatusUpdatingId(quotation.id);
     setConvertMessage(null);
     try {
       await api(`/quotations/${quotation.id}`, { method: 'PATCH', body: JSON.stringify({ status: nextStatus }) });
-      if (nextStatus === 'accepted') {
-        await api(`/quotations/${quotation.id}/convert`, { method: 'POST', body: JSON.stringify({}) });
-        setConvertMessage(`${quotation.quotation_number} accepted — sales order created automatically. Find it on the Sales orders page.`);
-      }
       setConvertMessageIsError(false);
       setSelected(null);
       await load();
@@ -153,6 +153,14 @@ export function QuotationsPage() {
       setStatusUpdatingId(null);
     }
   }
+  async function shareQuotation(quotation: Quotation) {
+    setStatusUpdatingId(quotation.id);
+    try { const result = await api<{ publicLink: string }>(`/quotations/${quotation.id}/send`, { method: 'POST' }); setPublicLink(result.publicLink); setConvertMessage(`Quotation emailed to ${quotation.clients?.email ?? 'the client'} with its PDF attachment.`); setConvertMessageIsError(false); await load(); }
+    catch (caught) { setConvertMessage(caught instanceof Error ? caught.message : 'Unable to email the quotation.'); setConvertMessageIsError(true); }
+    finally { setStatusUpdatingId(null); }
+  }
+  async function approveQuotation(quotation: Quotation) { setStatusUpdatingId(quotation.id); try { await api(`/quotations/${quotation.id}/approve`, { method: 'POST' }); setSelected(null); await load(); } catch (caught) { setConvertMessage(caught instanceof Error ? caught.message : 'Unable to approve quotation.'); setConvertMessageIsError(true); } finally { setStatusUpdatingId(null); } }
+  async function denyQuotation() { if (!denyTarget || !denyReason.trim()) return; setStatusUpdatingId(denyTarget.id); try { await api(`/quotations/${denyTarget.id}/deny`, { method: 'POST', body: JSON.stringify({ reason: denyReason.trim() }) }); setDenyTarget(null); setSelected(null); await load(); } catch (caught) { setConvertMessage(caught instanceof Error ? caught.message : 'Unable to deny quotation.'); setConvertMessageIsError(true); } finally { setStatusUpdatingId(null); } }
 
   function closeModal(force = false) {
     if (saving && !force) return;
@@ -227,6 +235,11 @@ export function QuotationsPage() {
   }
   useEffect(() => {
     void load();
+    // Client decisions are made on the public page, so poll briefly to bring
+    // that decision back into the manager/admin CRM view automatically.
+    const timer = window.setInterval(() => void load(), 15_000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const scopedItems = useMemo(
     () => items.filter((quote) => clientMatchesActiveIndustry(quote.clients?.client_code)),
@@ -293,6 +306,7 @@ export function QuotationsPage() {
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">All statuses</option>
             <option value="sent">Sent</option>
+            <option value="client_accepted">Client accepted — awaiting approval</option>
             <option value="accepted">Accepted</option>
             <option value="rejected">Rejected</option>
             <option value="expired">Expired</option>
@@ -346,21 +360,21 @@ export function QuotationsPage() {
                   <td>{currency(quote.total_amount)}</td>
                                              <td>
                     <span className={`status-badge status-${quote.status}`}>{quote.status}</span>
+                    {quote.decision_source && <small> {quote.decision_source === 'client_portal' ? 'via client portal' : 'by rep'}</small>}
                   </td>
                               <td className="master-actions">
                     <button type="button" className="icon-action" title="View quotation" aria-label="View quotation" onClick={() => setSelected(quote)}>
                       ◉
                     </button>
-               {quote.status === 'sent' && (
+               {['draft', 'sent'].includes(quote.status) && (
                       <>
-                        <button type="button" className="quiet-button" disabled={statusUpdatingId === quote.id} onClick={() => void markStatus(quote, 'accepted')}>
-                          {statusUpdatingId === quote.id ? 'Saving…' : 'Mark Accepted'}
-                        </button>
+                        <button type="button" className="quiet-button" disabled={statusUpdatingId === quote.id} onClick={() => void shareQuotation(quote)}>Send to client</button>
                         <button type="button" className="quiet-button" disabled={statusUpdatingId === quote.id} onClick={() => void markStatus(quote, 'rejected')}>
                           Mark Rejected
                         </button>
                       </>
                     )}
+                    {quote.status === 'client_accepted' && canApprove && <><button type="button" className="primary-action" onClick={() => void approveQuotation(quote)}>Approve & Convert</button><button type="button" className="quiet-button" onClick={() => { setDenyTarget(quote); setDenyReason(''); }}>Deny</button></>}
                   </td>
                 </tr>
               ))}
@@ -433,6 +447,8 @@ export function QuotationsPage() {
               Quotation total <strong>{currency(selected.total_amount)}</strong>
             </div>
             {selected.notes && <p>{selected.notes}</p>}
+            {selected.decision_source && <p className="text-faint-inline">Decision: {selected.decision_source === 'client_portal' ? 'via client portal' : 'by rep'}</p>}
+            {selected.rejection_reason && <p className="error-message">Rejection reason: {selected.rejection_reason}</p>}
             {activeIndustry === 'trading' && (
               <div className="modal-actions">
                 <GenerateDocumentButton
@@ -442,19 +458,20 @@ export function QuotationsPage() {
                 />
               </div>
             )}
-         {selected.status === 'sent' && (
+         {['draft', 'sent'].includes(selected.status) && (
               <div className="modal-actions">
+                <button type="button" className="quiet-button" disabled={statusUpdatingId === selected.id} onClick={() => void shareQuotation(selected)}>Send to client</button>
                 <button type="button" className="quiet-button" disabled={statusUpdatingId === selected.id} onClick={() => void markStatus(selected, 'rejected')}>
                   Mark Rejected
                 </button>
-                <button type="button" className="primary-action" disabled={statusUpdatingId === selected.id} onClick={() => void markStatus(selected, 'accepted')}>
-                  {statusUpdatingId === selected.id ? 'Saving…' : 'Mark Accepted — creates the sales order automatically'}
-                </button>
               </div>
             )}
+            {selected.status === 'client_accepted' && canApprove && <div className="modal-actions"><button type="button" className="primary-action" onClick={() => void approveQuotation(selected)}>Approve & Convert to Order</button><button type="button" className="quiet-button" onClick={() => { setDenyTarget(selected); setDenyReason(''); }}>Deny</button></div>}
           </div>
         </div>
       )}
+      {publicLink && <div className="modal-backdrop"><div className="master-modal quotation-sent-modal" role="dialog" aria-modal="true"><div className="modal-heading"><h3>Quotation sent</h3><button className="icon-action" onClick={() => setPublicLink(null)} aria-label="Close">&times;</button></div><div className="quotation-sent-body"><p>The client received the branded email, PDF attachment, and View &amp; Respond button.</p><input readOnly value={publicLink} /></div><div className="modal-actions"><button className="primary-action" onClick={() => void navigator.clipboard.writeText(publicLink)}>Copy link</button></div></div></div>}
+      {denyTarget && <div className="modal-backdrop"><div className="master-modal" role="dialog" aria-modal="true"><div className="modal-heading"><h3>Deny quotation</h3><button className="icon-action" onClick={() => setDenyTarget(null)} aria-label="Close">Ã—</button></div><label>Reason<textarea value={denyReason} onChange={(event) => setDenyReason(event.target.value)} /></label><div className="modal-actions"><button className="quiet-button" onClick={() => setDenyTarget(null)}>Cancel</button><button className="primary-action" disabled={!denyReason.trim()} onClick={() => void denyQuotation()}>Deny quotation</button></div></div></div>}
       {modalOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => closeModal()}>
           <div className="master-modal" role="dialog" aria-modal="true" aria-labelledby="quotation-modal-title" onMouseDown={(e) => e.stopPropagation()}>

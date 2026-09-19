@@ -16,6 +16,15 @@ export const quotationCreateSchema = z.object({
 });
 
 export const quotationUpdateSchema = z.object({
-  status: z.enum(['accepted', 'rejected', 'expired']),
+  status: z.literal('rejected'),
   notes: z.string().trim().max(10000).optional().nullable(),
+});
+
+export const publicQuotationDecisionSchema = z.object({
+  decision: z.enum(['accepted', 'rejected']),
+  reason: z.string().trim().max(2_000).optional(),
+});
+
+export const quotationDenySchema = z.object({
+  reason: z.string().trim().min(1).max(2_000),
 });

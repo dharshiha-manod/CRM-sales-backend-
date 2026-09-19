@@ -1,19 +1,21 @@
-type StageKey = 'sent' | 'accepted' | 'order';
+type StageKey = 'sent' | 'client_accepted' | 'accepted' | 'order';
 
 const STAGES: { key: StageKey; label: string }[] = [
   { key: 'sent', label: 'Quotation sent' },
-  { key: 'accepted', label: 'Customer accepted' },
+  { key: 'client_accepted', label: 'Client accepted' },
+  { key: 'accepted', label: 'Manager approved' },
   { key: 'order', label: 'Sales order created' },
 ];
 
 interface Props {
-  status: 'sent' | 'accepted' | 'rejected' | 'expired' | 'converted';
+  status: 'draft' | 'sent' | 'client_accepted' | 'accepted' | 'rejected' | 'expired' | 'converted';
 }
 
 function currentStageIndex(status: Props['status']): number {
   if (status === 'sent') return 0;
-  if (status === 'accepted') return 1;
-  if (status === 'converted') return 2;
+  if (status === 'client_accepted') return 1;
+  if (status === 'accepted') return 2;
+  if (status === 'converted') return 3;
   return -1; // rejected or expired — closed without an order
 }
 

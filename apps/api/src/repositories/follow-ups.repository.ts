@@ -4,6 +4,20 @@ import { assertRecordInScope } from '../lib/industry-scope.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 const fail = (error: unknown): never => { throw error; };
 const OVERDUE_DAYS = 3;
+type LeadFollowUpInput = { leadId: string; representativeId: string | null; companyName: string; dueAt: string; priority: string; notes?: string | null };
+
+/** Creates, or refreshes, the one open follow-up associated with a lead. */
+export async function createOrUpdateForLead(organizationId: string, input: LeadFollowUpInput) {
+  const { data: existing, error: existingError } = await supabaseAdmin.from('follow_ups').select('id').eq('organization_id', organizationId).eq('lead_id', input.leadId).in('status', ['pending', 'in_progress']).maybeSingle();
+  if (existingError) fail(existingError);
+  const values = { representative_id: input.representativeId, title: `Follow up: ${input.companyName}`, due_at: input.dueAt, priority: input.priority, notes: input.notes ?? null };
+  if (existing) {
+    const { data, error } = await supabaseAdmin.from('follow_ups').update(values).eq('id', existing.id).eq('organization_id', organizationId).select().single();
+    return error ? fail(error) : data;
+  }
+  const { data, error } = await supabaseAdmin.from('follow_ups').insert({ organization_id: organizationId, lead_id: input.leadId, ...values }).select().single();
+  return error ? fail(error) : data;
+}
 export async function createFromVisit(organizationId: string, representativeId: string, visitId: string, input: { title: string; dueAt: string; priority: string; notes?: string | null }) {
   const { data: visit, error: visitError } = await supabaseAdmin.from('field_visits').select('id, client_id, status').eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).maybeSingle();
   if (visitError) fail(visitError); if (!visit?.client_id) throw new AppError(422, 'FOLLOW_UP_REQUIRES_CLIENT', 'A follow-up requires a visit linked to a client.');
@@ -47,22 +61,49 @@ async function syncOverdueCollectionFollowUps(organizationId: string) {
 export async function listFollowUps(organizationId: string, representativeId?: string, industryTypeId?: string | null) {
   await syncOverdueCollectionFollowUps(organizationId);
 
-  const select = industryTypeId
-    ? '*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))'
-    : '*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))';
+  // Lead information is loaded separately. This deliberately keeps the
+  // existing list endpoint compatible while the lead_id migration is rolled
+  // out: PostgREST rejects an embedded relationship before that FK exists.
+  // Do not use an inner client join for industry-scoped lists: lead-originated
+  // follow-ups intentionally have no client_id. They are filtered below using
+  // their linked lead's industry instead.
+  const select = '*, clients(client_code, client_name, industry_type_id, industry_types(code)), sales_representatives(employee_code, user_profiles(display_name))';
   let query = supabaseAdmin.from('follow_ups').select(select).eq('organization_id', organizationId).order('due_at').limit(100);
   if (representativeId) query = query.eq('representative_id', representativeId);
-  if (industryTypeId) query = query.eq('clients.industry_type_id', industryTypeId);
   const { data, error } = await query;
-  return error ? fail(error) : data;
+  if (error) fail(error);
+  const rows = data ?? [];
+  const leadIds = rows.map((row) => (row as { lead_id?: string | null }).lead_id).filter((value): value is string => Boolean(value));
+  const leadById = new Map<string, { id: string; lead_code: string | null; company_name: string | null; industry_type_id: string | null }>();
+  if (leadIds.length > 0) {
+    const { data: leads, error: leadsError } = await supabaseAdmin.from('leads').select('id, lead_code, company_name, industry_type_id').eq('organization_id', organizationId).in('id', leadIds);
+    if (leadsError) fail(leadsError);
+    for (const lead of leads ?? []) leadById.set(lead.id, lead);
+  }
+  const enriched = rows.map((row) => {
+    const leadId = (row as { lead_id?: string | null }).lead_id;
+    return leadId ? { ...row, leads: leadById.get(leadId) ?? null } : row;
+  });
+  if (!industryTypeId) return enriched;
+  return enriched.filter((row) => {
+    const clientIndustryTypeId = (row.clients as { industry_type_id?: string | null } | null)?.industry_type_id;
+    const leadIndustryTypeId = (row.leads as { industry_type_id?: string | null } | null)?.industry_type_id;
+    return (clientIndustryTypeId ?? leadIndustryTypeId) === industryTypeId;
+  });
 }
 export async function updateFollowUp(organizationId: string, id: string, input: { status: string; notes?: string | null }, scope?: IndustryScope) {
   if (scope) {
-    const { data: existing, error: existingError } = await supabaseAdmin.from('follow_ups').select('id, clients(industry_type_id)').eq('id', id).eq('organization_id', organizationId).maybeSingle();
+    const { data: existing, error: existingError } = await supabaseAdmin.from('follow_ups').select('id, lead_id, clients(industry_type_id)').eq('id', id).eq('organization_id', organizationId).maybeSingle();
     if (existingError) throw existingError;
     if (!existing) throw new AppError(404, 'FOLLOW_UP_NOT_FOUND', 'Follow-up not found in this organization.');
     const clientIndustryTypeId = (existing.clients as { industry_type_id?: string | null } | null)?.industry_type_id;
-    assertRecordInScope(scope, clientIndustryTypeId, new AppError(404, 'FOLLOW_UP_NOT_FOUND', 'Follow-up not found in this organization.'));
+    let industryTypeId = clientIndustryTypeId;
+    if (!industryTypeId && existing.lead_id) {
+      const { data: lead, error: leadError } = await supabaseAdmin.from('leads').select('industry_type_id').eq('id', existing.lead_id).eq('organization_id', organizationId).maybeSingle();
+      if (leadError) throw leadError;
+      industryTypeId = lead?.industry_type_id ?? null;
+    }
+    assertRecordInScope(scope, industryTypeId, new AppError(404, 'FOLLOW_UP_NOT_FOUND', 'Follow-up not found in this organization.'));
   }
   const update: Record<string, unknown> = { status: input.status };
   if (input.notes !== undefined) update.notes = input.notes;

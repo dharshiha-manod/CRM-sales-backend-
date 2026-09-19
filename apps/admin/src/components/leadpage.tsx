@@ -4,6 +4,7 @@ import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
 import type { IndustryKey } from '../industry/types';
 import { LeadPipelineStepper } from './LeadPipelineStepper';
+import { loadNameList, saveNameList } from './BrandsCategoriesPage';
 import './MasterDataPages.css';
 
 const PENDING_REQUIREMENT_CLIENT_KEY = 'fs-pending-requirement-client';
@@ -104,6 +105,12 @@ const sourceLabels: Record<string, string> = {
 };
 
 const priorityLabels: Record<string, string> = { low: 'Low', normal: 'Normal', high: 'High', critical: 'Critical' };
+const companyNameLabels: Partial<Record<IndustryKey, string>> = {
+  school: 'School name',
+  textile: 'Business name',
+  trading: 'Company name',
+  vehicle: 'Dealer name',
+};
 
 // Shop type / Customer type are industry-specific concepts — each Industry Type
 // gets its own field label and its own option list, so switching the active
@@ -122,7 +129,6 @@ const shopTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['wholesale', 'Wholesale outlet'],
       ['distributor', 'Distributor'],
       ['institution', 'Institution (canteen / hostel)'],
-      ['other', 'Other'],
     ],
   },
   pharma: {
@@ -132,7 +138,6 @@ const shopTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['hospital', 'Hospital / Clinic'],
       ['wholesale', 'Pharma distributor'],
       ['institution', 'Institution'],
-      ['other', 'Other'],
     ],
   },
   textile: {
@@ -142,7 +147,6 @@ const shopTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['wholesale', 'Wholesale outlet'],
       ['general_store', 'Retail store'],
       ['institution', 'Export house'],
-      ['other', 'Other'],
     ],
   },
   trading: {
@@ -151,7 +155,6 @@ const shopTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['wholesale', 'Import/Export trader'],
       ['general_store', 'Local trader'],
       ['institution', 'Corporate buyer'],
-      ['other', 'Other'],
     ],
   },
   vehicle: {
@@ -160,7 +163,6 @@ const shopTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['general_store', 'Showroom'],
       ['wholesale', 'Dealership'],
       ['institution', 'Fleet buyer'],
-      ['other', 'Other'],
     ],
   },
   // School doesn't have a "shop" concept at all, so this field is hidden
@@ -176,7 +178,6 @@ const customerTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['distributor', 'Distributor'],
       ['wholesaler', 'Wholesaler'],
       ['institution', 'Institution (bulk buyer)'],
-      ['other', 'Other'],
     ],
   },
   pharma: {
@@ -186,7 +187,6 @@ const customerTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['hospital', 'Hospital'],
       ['distributor', 'Distributor'],
       ['institution', 'Institution'],
-      ['other', 'Other'],
     ],
   },
   textile: {
@@ -196,7 +196,6 @@ const customerTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['wholesaler', 'Wholesaler'],
       ['manufacturer', 'Manufacturer'],
       ['exporter', 'Exporter'],
-      ['other', 'Other'],
     ],
   },
   trading: {
@@ -207,7 +206,6 @@ const customerTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['wholesaler', 'Wholesaler'],
       ['retailer', 'Retailer'],
       ['institution', 'Corporate buyer'],
-      ['other', 'Other'],
     ],
   },
   vehicle: {
@@ -216,7 +214,6 @@ const customerTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['dealer', 'Dealer'],
       ['fleet', 'Fleet buyer'],
       ['individual', 'Individual buyer'],
-      ['other', 'Other'],
     ],
   },
   school: {
@@ -227,7 +224,6 @@ const customerTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['international', 'International school'],
       ['college', 'College'],
       ['coaching', 'Coaching / Tuition center'],
-      ['other', 'Other'],
     ],
   },
 };
@@ -239,10 +235,110 @@ function fieldLabelText(config: Record<IndustryKey, FieldConfig>, industry: Indu
   return config[industry]?.fieldLabel ?? 'Type';
 }
 function optionLabel(config: Record<IndustryKey, FieldConfig>, industry: IndustryKey, value?: string | null): string {
-  return fieldOptions(config, industry).find(([v]) => v === value)?.[1] ?? '—';
+  if (!value) return '—';
+  return fieldOptions(config, industry).find(([optionValue]) => optionValue === value)?.[1] ?? value;
 }
 function defaultOptionValue(config: Record<IndustryKey, FieldConfig>, industry: IndustryKey): string {
   return fieldOptions(config, industry)[0]?.[0] ?? '';
+}
+
+type LeadTypeField = 'shop-type' | 'customer-type';
+type CustomTypeOptions = Record<LeadTypeField, string[]>;
+
+function leadTypeListKey(industry: IndustryKey, field: LeadTypeField): string {
+  return `fs-lead-${field}-list:${industry}`;
+}
+
+function loadCustomTypeOptions(industry: IndustryKey): CustomTypeOptions {
+  return {
+    'shop-type': loadNameList(leadTypeListKey(industry, 'shop-type')),
+    'customer-type': loadNameList(leadTypeListKey(industry, 'customer-type')),
+  };
+}
+
+function saveCustomTypeOption(config: Record<IndustryKey, FieldConfig>, industry: IndustryKey, field: LeadTypeField, value: string): string[] {
+  const trimmed = value.trim();
+  const configured = fieldOptions(config, industry);
+  const isBuiltIn = configured.some(([optionValue, label]) => optionValue === trimmed || label.toLocaleLowerCase() === trimmed.toLocaleLowerCase());
+  const key = leadTypeListKey(industry, field);
+  const current = loadNameList(key);
+  if (!trimmed || isBuiltIn || current.some((option) => option.toLocaleLowerCase() === trimmed.toLocaleLowerCase())) return current;
+  const next = [...current, trimmed].sort((left, right) => left.localeCompare(right));
+  saveNameList(key, next);
+  return next;
+}
+
+function LeadTypeComboBox({ id, config, industry, value, customOptions, onChange }: {
+  id: string;
+  config: Record<IndustryKey, FieldConfig>;
+  industry: IndustryKey;
+  value: string;
+  customOptions: string[];
+  onChange: (value: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const configured = fieldOptions(config, industry);
+  const selectedLabel = configured.find(([optionValue]) => optionValue === value)?.[1] ?? value;
+  const shownCustomOptions = customOptions.filter((custom) => !configured.some(([, label]) => label.toLocaleLowerCase() === custom.toLocaleLowerCase()));
+  const options = [
+    ...configured.map(([optionValue, label]) => ({ value: optionValue, label })),
+    ...shownCustomOptions.map((option) => ({ value: option, label: option })),
+  ];
+
+  return (
+    <div className="lead-type-combobox">
+      <div className="lead-type-combobox__input-wrap">
+        <input
+          id={id}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={isOpen}
+          aria-controls={`${id}-options`}
+          value={selectedLabel}
+          autoComplete="off"
+          placeholder={`Type or choose a ${fieldLabelText(config, industry).toLowerCase()}`}
+          onFocus={() => setIsOpen(true)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setIsOpen(false);
+          }}
+          onChange={(event) => {
+            const typed = event.target.value;
+            const matchingOption = options.find((option) => option.label.toLocaleLowerCase() === typed.toLocaleLowerCase());
+            onChange(matchingOption?.value ?? typed);
+            setIsOpen(true);
+          }}
+        />
+        <button
+          type="button"
+          className="lead-type-combobox__toggle"
+          aria-label={`Show ${fieldLabelText(config, industry).toLowerCase()} options`}
+          aria-expanded={isOpen}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => setIsOpen((open) => !open)}
+        >
+          ▾
+        </button>
+      </div>
+      {isOpen && (
+        <div id={`${id}-options`} className="lead-type-combobox__options" role="listbox">
+          {options.map((option) => (
+            <button
+              key={`${option.value}-${option.label}`}
+              type="button"
+              role="option"
+              aria-selected={value === option.value}
+              className={value === option.value ? 'is-selected' : undefined}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => { onChange(option.value); setIsOpen(false); }}
+            >
+              {option.label}
+            </button>
+          ))}
+          {options.length === 0 && <p>No saved options yet. Type a new value.</p>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // DB status values are unchanged (new/contacted/qualified/unqualified/converted/lost) —
@@ -331,8 +427,9 @@ type SortKey = 'newest' | 'oldest' | 'value' | 'followup';
 export function LeadsPage() {
   const [items, setItems] = useState<Lead[]>([]);
   const [search, setSearch] = useState('');
-  const [status, setStatus] = useState('');
+
 // NEW — deleted entirely (the create-lead form's own `form.industryTypeId` is untouched — it still tags each new lead)
+const [status, setStatus] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
   const [repFilter, setRepFilter] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('newest');
@@ -348,6 +445,7 @@ export function LeadsPage() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState<LeadForm>(blankForm);
+  const [customTypeOptions, setCustomTypeOptions] = useState<CustomTypeOptions>(() => loadCustomTypeOptions(activeIndustry));
   const [editingLeadId, setEditingLeadId] = useState<string | null>(null);
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -356,6 +454,10 @@ export function LeadsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
   const [confirmDespiteDuplicate, setConfirmDespiteDuplicate] = useState(false);
+
+  useEffect(() => {
+    setCustomTypeOptions(loadCustomTypeOptions(activeIndustry));
+  }, [activeIndustry]);
 
   const [selected, setSelected] = useState<Lead | null>(null);
   const [activities, setActivities] = useState<LeadActivity[]>([]);
@@ -399,7 +501,13 @@ const [callError, setCallError] = useState<string | null>(null);
       if (status) params.set('status', status);
       if (search) params.set('search', search);
       const query = params.toString();
-      setItems((await api<{ data: Lead[] }>(`/leads${query ? `?${query}` : ''}`)).data ?? []);
+      const leads = (await api<{ data: Lead[] }>(`/leads${query ? `?${query}` : ''}`)).data ?? [];
+      setItems(leads);
+      const focusLeadId = sessionStorage.getItem('fs-focus-lead-id');
+      if (focusLeadId) {
+        const focusedLead = leads.find((lead) => lead.id === focusLeadId);
+        if (focusedLead) { setSelected(focusedLead); sessionStorage.removeItem('fs-focus-lead-id'); }
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to load leads.');
     } finally {
@@ -629,7 +737,6 @@ function openCreate() {
 
     setSaving(true);
     try {
-     // NEW
       const payload = {
         leadCode: form.leadCode.trim() || undefined,
         industryTypeId: form.industryTypeId,
@@ -683,14 +790,15 @@ function openCreate() {
           });
         }
       }
+      const savedShopTypes = activeIndustry === 'school'
+        ? customTypeOptions['shop-type']
+        : saveCustomTypeOption(shopTypeConfig, activeIndustry, 'shop-type', form.shopType);
+      const savedCustomerTypes = saveCustomTypeOption(customerTypeConfig, activeIndustry, 'customer-type', form.customerType);
+      setCustomTypeOptions({ 'shop-type': savedShopTypes, 'customer-type': savedCustomerTypes });
       closeModal(true);
       await load();
     } catch (caught) {
-      if (caught && typeof caught === 'object' && 'details' in caught) {
-        setFormError((caught as Error).message);
-      } else {
-        setFormError(caught instanceof Error ? caught.message : 'Unable to save lead.');
-      }
+      setFormError(caught instanceof Error ? caught.message : 'Unable to save lead.');
     } finally {
       setSaving(false);
       savingRef.current = false;
@@ -1440,7 +1548,7 @@ async function suggestRep() {
                     <input value={form.leadCode} placeholder="Auto" onChange={(e) => setForm({ ...form, leadCode: e.target.value })} />
                   </label>
                                       <label>
-                    {{ school: 'School name', textile: 'Business name', trading: 'Company name', vehicle: 'Dealer name' }[activeIndustry] ?? 'Shop / Retailer name'}
+                    {companyNameLabels[activeIndustry] ?? 'Shop / Retailer name'}
                     <input required value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} onBlur={() => void checkDuplicatesNow()} />
                   </label>
                   <label>
@@ -1450,13 +1558,14 @@ async function suggestRep() {
                   {activeIndustry !== 'school' && (
                     <label>
                       {fieldLabelText(shopTypeConfig, activeIndustry)}
-                      <select value={form.shopType} onChange={(e) => setForm({ ...form, shopType: e.target.value })}>
-                        {fieldOptions(shopTypeConfig, activeIndustry).map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
+                      <LeadTypeComboBox
+                        id="lead-shop-type"
+                        config={shopTypeConfig}
+                        industry={activeIndustry}
+                        value={form.shopType}
+                        customOptions={customTypeOptions['shop-type']}
+                        onChange={(shopType) => setForm({ ...form, shopType })}
+                      />
                     </label>
                   )}
                 </div>
@@ -1496,13 +1605,14 @@ async function suggestRep() {
                 <div className="fieldset-grid">
                                 <label>
                     {fieldLabelText(customerTypeConfig, activeIndustry)}
-                    <select value={form.customerType} onChange={(e) => setForm({ ...form, customerType: e.target.value })}>
-                      {fieldOptions(customerTypeConfig, activeIndustry).map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
+                    <LeadTypeComboBox
+                      id="lead-customer-type"
+                      config={customerTypeConfig}
+                      industry={activeIndustry}
+                      value={form.customerType}
+                      customOptions={customTypeOptions['customer-type']}
+                      onChange={(customerType) => setForm({ ...form, customerType })}
+                    />
                   </label>
                                                      <label>
                     Interested product / category
