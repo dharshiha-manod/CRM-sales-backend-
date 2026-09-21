@@ -177,10 +177,7 @@ const config: TradingModuleConfig = {
       ]}
     />
   ),
-  sampleRecords: [
-    { id: 'demo-customs-1', customs_reference: 'CUS-2026-0001', shipment_number: 'SHP-0001', transaction_number: 'TXN-2026-0001', transaction_type: 'Export', customer_name: 'Al Habib Foods', product_name: 'Basmati Rice', hs_code: '1006.30', quantity: 500, country_of_origin: 'India', destination_country: 'UAE', port_of_loading: 'Chennai Port', port_of_discharge: 'Jebel Ali Port', declared_value: 350000, currency: 'USD', exchange_rate: 83.4, base_currency: 'INR', base_value: 29190000, customs_broker: 'Chennai Customs Clearing Agency', declaration_date: '2026-08-27', assessment_date: '2026-08-27', customs_duty: 0, other_charges: 4500, inspection_status: 'Passed', clearance_date: '2026-08-28', clearance_status: 'Cleared' },
-    { id: 'demo-customs-2', customs_reference: 'CUS-2026-0002', shipment_number: 'SHP-0002', transaction_number: 'TXN-2026-0002', transaction_type: 'Import', supplier_name: 'Global Commodities Co', product_name: 'Cotton Yarn', hs_code: '5205.11', quantity: 200, country_of_origin: 'Egypt', destination_country: 'India', port_of_loading: 'Alexandria', port_of_discharge: 'Tuticorin', declared_value: 50400, currency: 'USD', exchange_rate: 83.4, base_currency: 'INR', base_value: 4203360, customs_broker: 'Southern Freight Forwarders', declaration_date: '2026-09-07', customs_duty: 420336, other_charges: 6500, inspection_status: 'Pending', clearance_status: 'Duty Pending' },
-  ],
+ 
 };
 
 export function CustomsClearancePage() {

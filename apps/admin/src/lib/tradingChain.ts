@@ -178,17 +178,30 @@ export function buildChain(tables: ChainTables, anchor: ChainAnchor): TradingCha
     claims: byShipmentOrDeal(tables.claims),
     commissions: dealNumber ? tables.commissions.filter((c) => eq(c.deal_number, dealNumber)) : [],
     finance: byShipmentOrDeal(tables.finance),
-    // Collections have no trading order link, so they're matched on the
-    // customer — enough to answer "has this customer paid", without
-    // pretending a per-order link exists that the schema doesn't have.
-    collections: customerName
-      ? tables.collections.filter((c) => {
-        const client = (c.clients as Record<string, unknown> | undefined) ?? {};
-        return eq(client.client_name, customerName) || eq(c.client_name, customerName);
-      })
-      : [],
+    // Step 4 of the Trading connectivity plan: Collections are recorded
+    // against the core sales order, and that order's number is now saved
+    // on the Deal (core_order_number) the moment the quotation is
+    // approved. Match on that real link first; only deals approved before
+    // this change (no core_order_number saved yet) fall back to the old
+    // customer-name guess.
+    collections: (() => {
+      const coreOrderNumber = str(deal?.core_order_number);
+      if (coreOrderNumber) {
+        return tables.collections.filter((c) => {
+          const order = (c.sale_orders as Record<string, unknown> | undefined) ?? {};
+          return eq(order.order_number, coreOrderNumber);
+        });
+      }
+      return customerName
+        ? tables.collections.filter((c) => {
+          const client = (c.clients as Record<string, unknown> | undefined) ?? {};
+          return eq(client.client_name, customerName) || eq(c.client_name, customerName);
+        })
+        : [];
+    })(),   
   };
 }
+
 
 export async function loadChain(anchor: ChainAnchor, industryTypeId?: string | null): Promise<TradingChain> {
   const tables = await loadTradingTables(industryTypeId);

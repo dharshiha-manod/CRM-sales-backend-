@@ -130,11 +130,7 @@ const config: TradingModuleConfig = {
     { icon: '⊘', iconClass: 'kpi-icon-red', label: 'Expired rates', value: (r) => String(r.filter((x) => rateStatus(x) === 'Expired').length) },
   ],
   detailExtra: (r) => <RateHistory record={r} />,
-  sampleRecords: [
-    { id: 'demo-currency-0', currency_code: 'INR', currency_name: 'Indian Rupee', currency_symbol: '₹', country_region: 'India', decimal_places: 2, is_base_currency: 'Yes', base_currency: 'INR', target_currency: 'INR', exchange_rate: 1, effective_date: '2026-01-01', rate_source: 'Company base currency' },
-    { id: 'demo-currency-1', currency_code: 'USD', currency_name: 'US Dollar', currency_symbol: '$', country_region: 'United States', decimal_places: 2, is_base_currency: 'No', base_currency: 'USD', target_currency: 'INR', exchange_rate: 83.4, effective_date: '2026-08-01', rate_source: 'RBI reference rate' },
-    { id: 'demo-currency-2', currency_code: 'AED', currency_name: 'UAE Dirham', currency_symbol: 'د.إ', country_region: 'United Arab Emirates', decimal_places: 2, is_base_currency: 'No', base_currency: 'AED', target_currency: 'INR', exchange_rate: 22.7, effective_date: '2026-08-01', rate_source: 'Bank rate' },
-  ],
+
 };
 
 export function CurrencyManagementPage() {

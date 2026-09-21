@@ -411,7 +411,7 @@ export function QuotationsPage() {
                 ×
               </button>
             </div>
-                     <QuotationPipelineStepper status={selected.status} />
+            <QuotationPipelineStepper status={selected.status} withDeal={activeIndustry === 'trading'} />
             <p>
               <strong>{selected.clients?.client_name ?? 'Client'}</strong> · {dateLabel(selected.created_at)}
               {selected.valid_until ? ` · Valid until ${selected.valid_until}` : ''}
@@ -425,7 +425,7 @@ export function QuotationsPage() {
                     <th>Quantity</th>
                     <th>Unit price</th>
                     <th>Discount</th>
-                    <th>Subtotal</th>
+                    <th>Subtotal</th>       
                   </tr>
                 </thead>
                 <tbody>

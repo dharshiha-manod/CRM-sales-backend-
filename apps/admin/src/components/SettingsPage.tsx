@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import './SettingsPage.css';
 import { useIndustry } from '../industry/IndustryContext';
@@ -14,6 +14,7 @@ import { NotificationsSection, CallsIvrSection } from '../settings/Communication
 import { DataDisplaySection, AuditLogSection } from '../settings/SystemSettings';
 import { IndustrySpecificSection } from '../settings/IndustrySettings';
 import { QuotationEmailSettings } from '../settings/QuotationEmailSettings';
+import { api } from '../lib/api';
 
 interface NavItem { id: SectionId; label: string; roles: RoleView[] }
 interface NavGroup { id: string; label: string; items: NavItem[] }
@@ -62,6 +63,24 @@ const NAV_GROUPS: NavGroup[] = [
   ]},
 ];
 
+function hydrateSettings(stored: unknown): SettingsState {
+  const defaults = createInitialSettingsState();
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return defaults;
+  const raw = stored as Record<string, unknown>;
+  const merged = { ...defaults } as SettingsState;
+  for (const key of Object.keys(defaults) as (keyof SettingsState)[]) {
+    const savedValue = raw[key];
+    const defaultValue = defaults[key];
+    if (Array.isArray(defaultValue)) {
+      if (Array.isArray(savedValue)) merged[key] = savedValue as SettingsState[typeof key];
+    } else if (defaultValue && typeof defaultValue === 'object' && savedValue && typeof savedValue === 'object' && !Array.isArray(savedValue)) {
+      merged[key] = { ...defaultValue, ...savedValue } as SettingsState[typeof key];
+    }
+  }
+  merged.industrySpecific = { ...defaults.industrySpecific, ...(raw.industrySpecific as Partial<SettingsState['industrySpecific']> | undefined) };
+  return merged;
+}
+
 export function SettingsPage() {
   const { activeIndustry, setActiveIndustry, config } = useIndustry();
   const [roleView, setRoleView] = useState<RoleView>('admin');
@@ -69,6 +88,8 @@ export function SettingsPage() {
   const [saved, setSaved] = useState<SettingsState>(settings);
   const [activeSection, setActiveSection] = useState<SectionId>('organization');
   const [toast, setToast] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
   const visibleGroups = useMemo(
     () => NAV_GROUPS.map((group) => ({ ...group, items: group.items.filter((item) => item.roles.includes(roleView)) })).filter((group) => group.items.length > 0),
@@ -76,6 +97,25 @@ export function SettingsPage() {
   );
 
   const dirty = settings !== saved;
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const response = await api<{ data: { settings?: unknown; updated_at?: string } | null }>('/organization-settings');
+        if (!active) return;
+        const hydrated = hydrateSettings(response.data?.settings);
+        if (response.data?.updated_at) hydrated.organization.lastUpdated = new Date(response.data.updated_at).toLocaleString();
+        setSettings(hydrated);
+        setSaved(hydrated);
+      } catch (caught) {
+        if (active) setToast(caught instanceof Error ? `Unable to load settings: ${caught.message}` : 'Unable to load settings.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, []);
 
   function update<K extends keyof SettingsState>(key: K, updater: (prev: SettingsState[K]) => SettingsState[K]) {
     setSettings((prev) => ({ ...prev, [key]: updater(prev[key]) }));
@@ -92,10 +132,29 @@ export function SettingsPage() {
     if (firstVisible) selectSection(firstVisible.id);
   }
 
-  function saveChanges() {
-    setSaved(settings);
-    setToast('✓ Settings saved successfully.');
-    window.setTimeout(() => setToast(''), 3000);
+  async function saveChanges() {
+    setSaving(true);
+    setToast('');
+    const next: SettingsState = {
+      ...settings,
+      organization: { ...settings.organization, lastUpdated: new Date().toLocaleString() },
+    };
+    try {
+      const response = await api<{ data: { settings?: unknown; updated_at?: string } }>('/organization-settings', {
+        method: 'PUT',
+        body: JSON.stringify({ settings: next }),
+      });
+      const persisted = hydrateSettings(response.data.settings);
+      if (response.data.updated_at) persisted.organization.lastUpdated = new Date(response.data.updated_at).toLocaleString();
+      setSettings(persisted);
+      setSaved(persisted);
+      setToast('✓ Settings saved successfully.');
+      window.setTimeout(() => setToast(''), 3000);
+    } catch (caught) {
+      setToast(caught instanceof Error ? `Unable to save settings: ${caught.message}` : 'Unable to save settings.');
+    } finally {
+      setSaving(false);
+    }
   }
 
   function discardChanges() {
@@ -203,12 +262,12 @@ export function SettingsPage() {
           <div className="settings-save-bar">
             {toast && <span className="settings-toast">{toast}</span>}
             {dirty && !toast && <span className="settings-unsaved">Unsaved changes</span>}
-            <button type="button" onClick={discardChanges} disabled={!dirty}>Discard Changes</button>
-            <button type="button" className="settings-save-btn" onClick={saveChanges} disabled={!dirty}>Save Changes</button>
+            <button type="button" onClick={discardChanges} disabled={!dirty || saving}>Discard Changes</button>
+            <button type="button" className="settings-save-btn" onClick={() => void saveChanges()} disabled={!dirty || saving || loading}>{saving ? 'Saving…' : 'Save Changes'}</button>
           </div>
         </header>
         <div className="settings-content-body">
-          {renderSection()}
+          {loading ? <p>Loading settings…</p> : renderSection()}
           {activeSection === 'industry' && canSeeCurrent && (
             <IndustrySpecificSection industry={activeIndustry} rows={industryFor(activeIndustry)} onChange={(next) => update('industrySpecific', (prev) => ({ ...prev, [activeIndustry]: next }))} />
           )}

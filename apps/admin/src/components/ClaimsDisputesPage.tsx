@@ -214,10 +214,7 @@ const config: TradingModuleConfig = {
       ]}
     />
   ),
-  sampleRecords: [
-    { id: 'demo-claim-1', claim_number: 'CLM-2026-0001', claim_date: '2026-08-30', claim_type: 'Quality Issue', priority: 'High', severity: 'High', claim_source: 'Customer complaint', customer_name: 'Al Habib Foods', supplier_name: 'Orient Traders', deal_number: 'DEAL-0001', order_number: 'SO-0001', shipment_number: 'SHP-0001', product_name: 'Basmati Rice', quantity: 15, claimed_value: 10500, currency: 'USD', exchange_rate: 83.4, base_currency: 'INR', base_value: 875700, invoice_number: 'CI-2026-0091', reported_by: 'Al Habib Foods QC team', assigned_to: 'Priya Ramesh', responsible_party: 'Under Investigation', expected_resolution_date: '2026-09-15', status: 'Investigation' },
-    { id: 'demo-claim-2', claim_number: 'CLM-2026-0002', claim_date: '2026-09-01', claim_type: 'Delivery Delay', priority: 'Medium', severity: 'Medium', claim_source: 'Internal follow-up', customer_name: 'Coastal Garments', supplier_name: 'Global Commodities Co', deal_number: 'DEAL-0002', shipment_number: 'SHP-0002', logistics_number: 'LOG-2026-0002', logistics_provider: 'VRL Logistics', product_name: 'Cotton Yarn', claimed_value: 5000, currency: 'INR', exchange_rate: 1, base_currency: 'INR', base_value: 5000, assigned_to: 'Arjun Nair', responsible_party: 'Logistics Provider', expected_resolution_date: '2026-09-05', actual_resolution_date: '2026-09-04', resolution: 'Freight partner issued a partial credit for the one-day delay.', compensation_amount: 5000, status: 'Resolved' },
-  ],
+
 };
 
 export function ClaimsDisputesPage() {

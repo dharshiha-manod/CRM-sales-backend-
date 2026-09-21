@@ -81,6 +81,7 @@ const config: TradingModuleConfig = {
   codeField: 'order_number',
   nameField: 'product_name',
   statusOptions: STATUSES,
+  inlineStatus: true,
   searchableKeys: ['order_number', 'deal_number', 'customer_name', 'product_name'],
   fields: [
     { key: 'order_number', label: 'Order number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'SO' },

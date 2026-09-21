@@ -181,10 +181,7 @@ const config: TradingModuleConfig = {
       ]}
     />
   ),
-  sampleRecords: [
-    { id: 'demo-impexp-1', transaction_number: 'TXN-2026-0001', transaction_type: 'Export', deal_number: 'DEAL-0001', order_number: 'SO-0001', customer_name: 'Al Habib Foods', product_name: 'Basmati Rice', quantity: 500, unit: 'MT', country_of_origin: 'India', destination_country: 'UAE', port_of_loading: 'Chennai Port', port_of_discharge: 'Jebel Ali Port', shipment_number: 'SHP-0001', shipping_mode: 'Sea', invoice_number: 'CI-2026-0091', currency: 'USD', total_value: 350000, exchange_rate: 83.4, base_currency: 'INR', base_value: 29190000, incoterm: 'CIF', expected_shipment_date: '2026-08-28', expected_arrival_date: '2026-09-20', status: 'In Transit' },
-    { id: 'demo-impexp-2', transaction_number: 'TXN-2026-0002', transaction_type: 'Import', supplier_name: 'Global Commodities Co', product_name: 'Cotton Yarn', quantity: 200, unit: 'Ton', country_of_origin: 'Egypt', destination_country: 'India', port_of_loading: 'Alexandria', port_of_discharge: 'Tuticorin', shipment_number: 'SHP-0002', shipping_mode: 'Sea', currency: 'USD', total_value: 50400, exchange_rate: 83.4, base_currency: 'INR', base_value: 4203360, incoterm: 'FOB', expected_shipment_date: '2026-09-08', actual_arrival_date: '2026-09-09', status: 'Customs Pending' },
-  ],
+  
 };
 
 export function ImportExportPage() {

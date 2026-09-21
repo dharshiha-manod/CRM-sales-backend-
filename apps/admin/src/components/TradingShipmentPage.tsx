@@ -33,6 +33,8 @@ const config: TradingModuleConfig = {
   codeField: 'shipment_number',
   nameField: 'product_name',
   statusOptions: STATUSES,
+  inlineStatus: true,
+  inlineStatusExtra: (record, next) => (next === 'Delivered' && !record.actual_delivery_date ? { actual_delivery_date: new Date().toISOString().slice(0, 10) } : undefined),
   searchableKeys: ['shipment_number', 'deal_number', 'customer_name', 'supplier_name', 'product_name', 'tracking_number'],
   fields: [
     { key: 'shipment_number', label: 'Shipment number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'SHP' },

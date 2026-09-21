@@ -1038,3 +1038,7 @@
 .quotation-sent-body input {
   width: 100%;
 }
+/* Inline status dropdown in the list (opt-in via config.inlineStatus) */
+.status-select { cursor: pointer; font: inherit; font-size: .78rem; font-weight: 600; padding: 4px 8px; max-width: 160px; border: 1px solid transparent; }
+.status-select:hover { border-color: currentColor; }
+.status-select:disabled { opacity: .6; cursor: progress; }

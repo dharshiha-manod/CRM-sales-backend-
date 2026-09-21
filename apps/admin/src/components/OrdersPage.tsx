@@ -55,6 +55,10 @@ type ReadyQuotation = {
   id: string;
   quotation_number: string;
   status: 'sent' | 'accepted' | 'rejected' | 'expired' | 'converted';
+  // An accepted quotation is converted automatically on approval. The API
+  // retains the accepted status for older records, so this is the reliable
+  // signal that an order already exists.
+  converted_order_id?: string | null;
   discount_amount: number;
   tax_amount: number;
   total_amount: number;
@@ -204,10 +208,14 @@ export function OrdersPage() {
 
       const allQuotations = quotationsRes.data ?? [];
       setReadyQuotations(allQuotations.filter((q) => q.status === 'accepted'));
-      // A quotation already has a Sales Order the moment its own status flips
-      // to "converted" — that's the duplicate-prevention signal, independent
-      // of whether this order list's quotation_id happens to be populated.
-      setConvertedQuotationIds(new Set(allQuotations.filter((q) => q.status === 'converted').map((q) => q.id)));
+      // Newer records are marked converted; older records retain "accepted"
+      // but have a converted_order_id. Honour both shapes so no created order
+      // is ever offered for creation again.
+      setConvertedQuotationIds(new Set(
+        allQuotations
+          .filter((q) => q.status === 'converted' || q.converted_order_id)
+          .map((q) => q.id),
+      ));
       setRequirementMap(new Map((requirementsRes.data ?? []).map((r) => [r.id, r])));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to load orders.');
@@ -432,7 +440,7 @@ export function OrdersPage() {
   const filtersActive = !!(search || clientFilter || repFilter || status || paymentFilter || dateFrom || dateTo);
 
   const scopedReadyQuotations = useMemo(
-    () => readyQuotations.filter((q) => clientMatchesActiveIndustry(q.clients?.client_code) && !convertedQuotationIds.has(q.id)),
+    () => readyQuotations.filter((q) => clientMatchesActiveIndustry(q.clients?.client_code) && !q.converted_order_id && !convertedQuotationIds.has(q.id)),
     [readyQuotations, clientMatchesActiveIndustry, convertedQuotationIds],
   );
 

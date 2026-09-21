@@ -196,7 +196,11 @@ async function withAchievement<T extends {
   return rows.map((r) => {
     const a = agg.get(bucketKey(r))!;
     let achieved = 0;
-    if (r.target_type === 'sales_amount' || r.target_type === 'order_value') achieved = a.ordersAmount;
+    // Sales Amount measures cash realised, not merely invoiced value. Use
+    // recorded collections here; Order Value remains available for targets
+    // that intentionally measure confirmed order value instead.
+    if (r.target_type === 'sales_amount') achieved = a.collections;
+    else if (r.target_type === 'order_value') achieved = a.ordersAmount;
     else if (r.target_type === 'order_count') achieved = a.ordersCount;
     else if (QUANTITY_TYPES.has(r.target_type)) achieved = a.itemQty;
     else if (COLLECTION_TYPES.has(r.target_type)) achieved = a.collections;

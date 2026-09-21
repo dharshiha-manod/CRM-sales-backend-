@@ -1,6 +1,7 @@
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
+import { logger } from '../lib/logger.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { sendQuotationEmail } from '../services/quotation-email.service.js';
 import { getQuotationEmailTemplate } from './quotation-email-templates.repository.js';
@@ -70,7 +71,9 @@ export async function convertToOrder(organizationId: string, representativeId: s
   const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal }));
   const { error: itemError } = await supabaseAdmin.from('sale_order_items').insert(items);
   if (itemError) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); fail(itemError); }
-  const { error: updateError } = await supabaseAdmin.from('quotations').update({ status: 'accepted', converted_order_id: order.id }).eq('id', id).eq('organization_id', organizationId); if (updateError) fail(updateError);
+  // Conversion is automatic after approval. Mark it explicitly so every
+  // consumer can present this quotation as completed rather than actionable.
+  const { error: updateError } = await supabaseAdmin.from('quotations').update({ status: 'converted', converted_order_id: order.id }).eq('id', id).eq('organization_id', organizationId); if (updateError) fail(updateError);
   if (quotation.requirement_id) await supabaseAdmin.from('requirements').update({ status: 'converted' }).eq('id', quotation.requirement_id).eq('organization_id', organizationId);
   return getQuotation(organizationId, id, scope);
 }
@@ -90,5 +93,198 @@ export async function sendQuotation(organizationId: string, representativeId: st
 async function publicQuotation(token: string) { const { data, error } = await supabaseAdmin.from('quotations').select(`${PUBLIC}, public_token, token_expires_at`).eq('public_token', token).maybeSingle(); if (error) fail(error); if (!data || !data.token_expires_at || new Date(data.token_expires_at).getTime() < Date.now()) throw new AppError(404, 'QUOTATION_LINK_NOT_FOUND', 'This quotation link is invalid or has expired.'); return data; }
 export async function getPublicQuotation(token: string) { const { public_token: _token, token_expires_at: _expiry, organization_id, clients, ...quotation } = await publicQuotation(token); const industryTypeId = (clients as { industry_type_id?: string | null } | null)?.industry_type_id; const template = industryTypeId ? await getQuotationEmailTemplate(organization_id, industryTypeId) : null; return { ...quotation, clients: clients ? { client_name: (clients as { client_name?: string }).client_name } : null, company_logo_url: template?.logo_url ?? null }; }
 export async function recordPublicDecision(token: string, input: PublicDecision) { const quotation = await publicQuotation(token); if (quotation.status !== 'sent') throw new AppError(409, 'QUOTATION_ALREADY_DECIDED', 'This quotation has already been decided.'); const update = input.decision === 'accepted' ? { status: 'client_accepted', decision_source: 'client_portal', decided_at: new Date().toISOString(), decided_by: null } : { status: 'rejected', decision_source: 'client_portal', decided_at: new Date().toISOString(), decided_by: null, rejection_reason: input.reason?.trim() ?? null }; const { data, error } = await supabaseAdmin.from('quotations').update(update).eq('id', quotation.id).eq('status', 'sent').select(PUBLIC).maybeSingle(); if (error) fail(error); if (!data) throw new AppError(409, 'QUOTATION_ALREADY_DECIDED', 'This quotation has already been decided.'); return data; }
-export async function approveQuotation(organizationId: string, managerUserId: string, id: string, scope?: IndustryScope) { const quotation = await getQuotation(organizationId, id, scope); if (quotation.status !== 'client_accepted') throw new AppError(422, 'QUOTATION_NOT_AWAITING_APPROVAL', 'Only a client-accepted quotation can be approved.'); const { error } = await supabaseAdmin.from('quotations').update({ status: 'accepted', approved_at: new Date().toISOString(), approved_by: managerUserId }).eq('id', id).eq('organization_id', organizationId).eq('status', 'client_accepted'); if (error) fail(error); return convertToOrder(organizationId, null, id, scope); }
+
+async function createDealFromApprovedQuotation(quotation: Awaited<ReturnType<typeof getQuotation>>) {
+  const { data: existing, error: existingError } = await supabaseAdmin
+    .from('trading_deals')
+    .select('*')
+    .eq('organization_id', quotation.organization_id)
+    .eq('quotation_id', quotation.id)
+    .maybeSingle();
+  if (existingError) fail(existingError);
+  if (existing) return existing;
+
+  const item = (quotation.quotation_items as Array<Record<string, unknown>> | null)?.[0];
+  const product = item?.products as { product_name?: string | null; category?: string | null; cost_price?: number | null } | null | undefined;
+  const client = quotation.clients as { id?: string; client_name?: string | null; industry_type_id?: string | null } | null;
+  const dealNumber = `DEAL-${quotation.quotation_number.replace(/^QT-/, '')}`;
+  const payload = {
+    organization_id: quotation.organization_id,
+    industry_type_id: client?.industry_type_id ?? null,
+    quotation_id: quotation.id,
+    requirement_id: quotation.requirement_id ?? null,
+    deal_number: dealNumber,
+    deal_name: `Deal — ${quotation.quotation_number}`,
+    customer_id: quotation.client_id,
+    customer_name: client?.client_name ?? 'Customer',
+    product_name: product?.product_name ?? null,
+    product_category: product?.category ?? null,
+    quantity: item?.quantity ?? null,
+    purchase_rate: product?.cost_price ?? null,
+ selling_rate: item?.quantity ? Number(item.subtotal) / Number(item.quantity) : item?.unit_price ?? null,
+    sales_rep: (quotation.sales_representatives as { user_profiles?: { display_name?: string | null } | null } | null)?.user_profiles?.display_name ?? null,
+    currency: 'INR',
+    deal_date: new Date().toISOString().slice(0, 10),
+    priority: 'Medium',
+    status: 'Confirmed',
+    notes: `Automatically created from approved quotation ${quotation.quotation_number}.`,
+  };
+  const { data, error } = await supabaseAdmin.from('trading_deals').insert(payload).select().single();
+  if (error) {
+    // A concurrent approval retry may win the unique quotation link race.
+    if (error.code === '23505') {
+      const { data: duplicate, error: duplicateError } = await supabaseAdmin.from('trading_deals').select('*').eq('organization_id', quotation.organization_id).eq('quotation_id', quotation.id).maybeSingle();
+      if (duplicateError) fail(duplicateError);
+      if (duplicate) return duplicate;
+    }
+    fail(error);
+  }
+  return data;
+}
+
+// Deal Management only exists in the Trading workspace, so only Trading
+// quotations get a Deal + Trading Sales Order. Matched on code, ignoring case,
+// because industry_types can hold both 'TRADING' and 'trading'.
+async function isTradingIndustry(industryTypeId?: string | null): Promise<boolean> {
+  if (!industryTypeId) return false;
+  const { data, error } = await supabaseAdmin.from('industry_types').select('code').eq('id', industryTypeId).maybeSingle();
+  if (error) fail(error);
+  return String(data?.code ?? '').toLowerCase() === 'trading';
+}
+
+// Deal -> Sales Order (Trading > Sales Order Management). The number comes from
+// the quotation number, so a retry can never create a second order for the deal.
+async function ensureTradingSalesOrder(quotation: Awaited<ReturnType<typeof getQuotation>>, deal: Record<string, any>) {
+  if (deal.order_number) return null;
+  const { data: existing, error: existingError } = await supabaseAdmin
+    .from('trading_sales_orders').select('*')
+    .eq('organization_id', quotation.organization_id).eq('deal_number', deal.deal_number).limit(1).maybeSingle();
+  if (existingError) fail(existingError);
+  let order = existing;
+  if (!order) {
+    const { data, error } = await supabaseAdmin.from('trading_sales_orders').insert({
+      organization_id: quotation.organization_id,
+      industry_type_id: deal.industry_type_id,
+      order_number: `SO-${quotation.quotation_number.replace(/^QT-/, '')}`,
+      deal_number: deal.deal_number,
+      customer_name: deal.customer_name,
+      product_name: deal.product_name,
+      quantity: deal.quantity,
+      unit: deal.unit ?? null,
+      currency: deal.currency,
+      selling_rate: deal.selling_rate,
+      total_amount: quotation.total_amount,
+      order_date: new Date().toISOString().slice(0, 10),
+      expected_delivery_date: deal.expected_delivery_date ?? null,
+      payment_terms: deal.payment_terms ?? null,
+      delivery_terms: deal.delivery_terms ?? null,
+      status: 'Confirmed',
+      notes: `Automatically created from deal ${deal.deal_number} (quotation ${quotation.quotation_number}).`,
+    }).select().single();
+    if (error) {
+      if (error.code !== '23505') fail(error);
+      const { data: duplicate, error: duplicateError } = await supabaseAdmin
+        .from('trading_sales_orders').select('*')
+        .eq('organization_id', quotation.organization_id).eq('deal_number', deal.deal_number).limit(1).maybeSingle();
+      if (duplicateError) fail(duplicateError);
+      if (!duplicate) fail(error);
+      order = duplicate;
+    } else {
+      order = data;
+    }
+  }
+  // Link back. Deal page shows its sales order, and the Deal page's own
+  // "Confirmed -> create sales order" trigger sees order_number and skips.
+  const { error: linkError } = await supabaseAdmin.from('trading_deals').update({ order_number: order!.order_number }).eq('id', deal.id).eq('organization_id', quotation.organization_id);
+   if (linkError) fail(linkError);
+  return order;
+}
+// Quotation -> Deal -> Sales Order for Trading. Never throws: a problem here
+// must not block the manager's approval or the standard sales order below.
+// Sales Order -> Shipment (Trading > Shipment Management). Numbered from the
+// quotation number and looked up by order number first, so a retry can never
+// create a second shipment for the same order.
+async function ensureTradingShipment(quotation: Awaited<ReturnType<typeof getQuotation>>, order: Record<string, any>, deal: Record<string, any>) {
+  if (order.shipment_number) return;
+  const { data: existing, error: existingError } = await supabaseAdmin
+    .from('trading_shipments').select('*')
+    .eq('organization_id', quotation.organization_id).eq('order_number', order.order_number).limit(1).maybeSingle();
+  if (existingError) fail(existingError);
+  let shipment = existing;
+  if (!shipment) {
+    const { data, error } = await supabaseAdmin.from('trading_shipments').insert({
+      organization_id: quotation.organization_id,
+      industry_type_id: order.industry_type_id,
+      shipment_number: `SHP-${quotation.quotation_number.replace(/^QT-/, '')}`,
+      deal_number: order.deal_number,
+      order_number: order.order_number,
+      customer_name: order.customer_name,
+      supplier_name: deal.supplier_name ?? null,
+      product_name: order.product_name,
+      quantity: order.quantity,
+      unit: order.unit ?? null,
+      shipment_date: new Date().toISOString().slice(0, 10),
+      expected_delivery_date: order.expected_delivery_date ?? null,
+      status: 'Planned',
+      notes: `Automatically created from sales order ${order.order_number}.`,
+    }).select().single();
+    if (error) {
+      if (error.code !== '23505') fail(error);
+      const { data: duplicate, error: duplicateError } = await supabaseAdmin
+        .from('trading_shipments').select('*')
+        .eq('organization_id', quotation.organization_id).eq('order_number', order.order_number).limit(1).maybeSingle();
+      if (duplicateError) fail(duplicateError);
+      if (!duplicate) fail(error);
+      shipment = duplicate;
+    } else {
+      shipment = data;
+    }
+  }
+  // Link back so the Sales Order page shows its shipment and its own
+  // "Confirmed -> create shipment" trigger sees shipment_number and skips.
+  const { error: linkError } = await supabaseAdmin.from('trading_sales_orders').update({ shipment_number: shipment!.shipment_number }).eq('id', order.id).eq('organization_id', quotation.organization_id);
+  if (linkError) fail(linkError);
+}
+async function runTradingChain(quotation: Awaited<ReturnType<typeof getQuotation>>) {
+  try {
+    if (!(await isTradingIndustry(quotation.clients?.industry_type_id))) return null;
+    const deal = await createDealFromApprovedQuotation(quotation);
+    const order = await ensureTradingSalesOrder(quotation, deal);
+    if (order) await ensureTradingShipment(quotation, order, deal);
+    return deal;
+  } catch (error) {
+    logger.error({ err: error, quotationNumber: quotation.quotation_number }, 'Trading deal / sales order automation failed');
+    return null;
+  }
+}
+
+// Step 4 of the Trading connectivity plan: Collections are only ever
+// recorded against the standard core sales order (sale_orders, FS-...),
+// never against the Trading Sales Order (trading_sales_orders, SO-...).
+// The two numbers share no naming convention, so the only reliable link
+// is the one made right here, at the moment both orders exist for the
+// same approved quotation. Never blocks approval.
+async function linkCoreOrderToDeal(organizationId: string, deal: Record<string, any> | null, coreOrder: { id: string; order_number: string } | null) {
+  if (!deal || !coreOrder) return;
+  try {
+    const { error } = await supabaseAdmin.from('trading_deals').update({ core_order_id: coreOrder.id, core_order_number: coreOrder.order_number }).eq('id', deal.id).eq('organization_id', organizationId);
+    if (error) throw error;
+  } catch (error) {
+    logger.error({ err: error, dealNumber: deal.deal_number }, 'Linking core sales order to Trading deal failed');
+  }
+}
+
+export async function approveQuotation(organizationId: string, managerUserId: string, id: string, scope?: IndustryScope) {
+  const quotation = await getQuotation(organizationId, id, scope);
+  if (quotation.status !== 'client_accepted') throw new AppError(422, 'QUOTATION_NOT_AWAITING_APPROVAL', 'Only a client-accepted quotation can be approved.');
+  const { error } = await supabaseAdmin.from('quotations').update({ status: 'accepted', approved_at: new Date().toISOString(), approved_by: managerUserId }).eq('id', id).eq('organization_id', organizationId).eq('status', 'client_accepted');
+  if (error) fail(error);
+  const tradingDeal = await runTradingChain(quotation);
+  const converted = await convertToOrder(organizationId, null, id, scope);
+  if (tradingDeal && converted.converted_order_id) {
+    const { data: coreOrder } = await supabaseAdmin.from('sale_orders').select('id, order_number').eq('id', converted.converted_order_id).eq('organization_id', organizationId).maybeSingle();
+    if (coreOrder) await linkCoreOrderToDeal(organizationId, tradingDeal, coreOrder);
+  }
+  return converted;
+}
 export async function denyQuotation(organizationId: string, managerUserId: string, id: string, reason: string, scope?: IndustryScope) { const quotation = await getQuotation(organizationId, id, scope); if (quotation.status !== 'client_accepted') throw new AppError(422, 'QUOTATION_NOT_AWAITING_APPROVAL', 'Only a client-accepted quotation can be denied.'); const { data, error } = await supabaseAdmin.from('quotations').update({ status: 'rejected', approved_by: managerUserId, rejection_reason: reason }).eq('id', id).eq('organization_id', organizationId).eq('status', 'client_accepted').select().maybeSingle(); if (error) fail(error); if (!data) throw new AppError(409, 'QUOTATION_NOT_AWAITING_APPROVAL', 'This quotation is no longer awaiting approval.'); return data; }

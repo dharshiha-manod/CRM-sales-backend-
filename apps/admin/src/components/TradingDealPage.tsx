@@ -17,6 +17,47 @@ type SnapshotItem = { product_id?: string | null; product_name?: string; product
 type SnapshotRequirement = { id: string; title?: string; status?: string; requirement_items?: SnapshotItem[] };
 type SnapshotQuotation = { id: string; requirement_id?: string | null; quotation_number?: string; status?: string; quotation_items?: SnapshotItem[] };
 type TradingSnapshot = { client: Record<string, unknown>; requirements: SnapshotRequirement[]; quotations: SnapshotQuotation[] };
+type SnapshotCandidate = { requirement?: SnapshotRequirement; quotation?: SnapshotQuotation };
+type DynamicOption = { value: string; label: string };
+
+// The candidate records are deliberately kept with the fetched snapshot: picking
+// one must not require a second request just to recover its product and rates.
+let requirementCandidates = new Map<string, SnapshotCandidate>();
+
+function candidateItemLabel(item?: SnapshotItem): string {
+  const productName = item?.products?.product_name ?? item?.product_name ?? 'No product';
+  const quantity = item?.quantity == null ? '—' : String(item.quantity);
+  return `${productName}, qty ${quantity}`;
+}
+
+function quotationReference(quotation: SnapshotQuotation): string {
+  const number = quotation.quotation_number ?? quotation.id;
+  return number.startsWith('QT-') ? number : `QT-${number}`;
+}
+
+function buildCandidateOptions(snapshot: TradingSnapshot): DynamicOption[] {
+  requirementCandidates = new Map<string, SnapshotCandidate>();
+  const options: DynamicOption[] = [];
+
+  for (const requirement of snapshot.requirements) {
+    const value = `requirement:${requirement.id}`;
+    requirementCandidates.set(value, { requirement });
+    options.push({
+      value,
+      label: `REQ — ${requirement.title ?? requirement.id} (${candidateItemLabel(requirement.requirement_items?.[0])})`,
+    });
+  }
+  for (const quotation of snapshot.quotations) {
+    const value = `quotation:${quotation.id}`;
+    const requirement = snapshot.requirements.find((item) => item.id === quotation.requirement_id);
+    requirementCandidates.set(value, { requirement, quotation });
+    options.push({
+      value,
+      label: `${quotationReference(quotation)} — ${candidateItemLabel(quotation.quotation_items?.[0])}`,
+    });
+  }
+  return options;
+}
 
 function fillFromRequirementAndQuotation(
   setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void,
@@ -66,25 +107,28 @@ function fillPrimaryContact(matched: Record<string, unknown>, setForm: (updater:
   }));
 }
 
-async function autoFillFromCustomer(matched: Record<string, unknown>, setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void) {
+async function autoFillFromCustomer(
+  matched: Record<string, unknown>,
+  setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void,
+  setDynamicOptions: (key: string, options: DynamicOption[]) => void,
+) {
   const clientId = matched.id as string | undefined;
   if (!clientId) return;
+  requirementCandidates = new Map<string, SnapshotCandidate>();
+  setDynamicOptions('requirement_id', []);
+  setForm((prev) => ({ ...prev, _requirement_candidate_count: '0', _requirement_candidate_id: '', requirement_id: '', quotation_id: '' }));
   try {
     const res = await api<{ data: TradingSnapshot }>(`/clients/${clientId}/trading-snapshot`);
     const snapshot = res.data;
     const quotation = snapshot.quotations[0];
     const requirement = snapshot.requirements.find((r) => r.id === quotation?.requirement_id) ?? snapshot.requirements[0];
     // Exactly one relevant record on both sides — auto-select it, per spec.
-    // NOTE: when the customer has MORE than one open requirement/quotation,
-    // this intentionally does nothing automatic (no guessing which one) —
-    // the "Requirement (if multiple)" text field above is a manual
-    // placeholder for that case. A real dropdown picker listing each
-    // candidate (with Product/Quantity/Quotation shown) is the natural next
-    // step but needs a small new lookupResource on that field pointed at
-    // this snapshot's requirements, which is worth its own follow-up pass
-    // rather than a rushed addition here.
     if (snapshot.quotations.length <= 1 && snapshot.requirements.length <= 1) {
       fillFromRequirementAndQuotation(setForm, requirement, quotation);
+    } else {
+      const candidates = buildCandidateOptions(snapshot);
+      setDynamicOptions('requirement_id', candidates);
+      setForm((prev) => ({ ...prev, _requirement_candidate_count: String(candidates.length) }));
     }
   } catch {
     // Auto-fill is a convenience — leave the form usable (manual entry)
@@ -156,6 +200,7 @@ const config: TradingModuleConfig = {
   codeField: 'deal_number',
   nameField: 'deal_name',
   statusOptions: STATUSES,
+  inlineStatus: true,
   searchableKeys: ['deal_number', 'deal_name', 'customer_name', 'supplier_name', 'product_name', 'sales_rep'],
   fields: [
     { key: 'deal_number', label: 'Deal number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'DEAL' },
@@ -175,17 +220,23 @@ const config: TradingModuleConfig = {
       // quantity, supplier, rates) fill a moment later via onLookupChange,
       // since those need a backend call.
       autoFillMap: { client_name: 'customer_name', id: 'customer_id', address: 'customer_address', city: 'customer_city', gstin: 'customer_gstin' },
-      onLookupChange: (matched, setForm) => {
+      onLookupChange: (matched, setForm, setDynamicOptions) => {
         fillPrimaryContact(matched, setForm, 'customer');
-        void autoFillFromCustomer(matched, setForm);
+        void autoFillFromCustomer(matched, setForm, setDynamicOptions);
       },
     },
     {
       key: 'requirement_id',
       label: 'Requirement (if multiple)',
-      type: 'text',
+      type: 'select',
       group: 'Product & quantity',
-      placeholder: 'Auto-fills after Customer is selected; only shown when the customer has more than one open requirement',
+      dynamicOptionsKey: 'requirement_id',
+      dynamicOptionsValueKey: '_requirement_candidate_id',
+      visibleIf: (form) => Number(form._requirement_candidate_count) > 1,
+      onValueChangeAsync: (candidateKey, _form, setForm) => {
+        const candidate = requirementCandidates.get(candidateKey);
+        if (candidate) fillFromRequirementAndQuotation(setForm, candidate.requirement, candidate.quotation);
+      },
     },
     { key: 'customer_address', label: 'Customer address', type: 'text', group: 'Customer details', placeholder: 'Auto-fills from the selected customer' },
     { key: 'customer_city', label: 'Customer city', type: 'text', group: 'Customer details' },

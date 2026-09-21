@@ -182,10 +182,7 @@ const config: TradingModuleConfig = {
       ]}
     />
   ),
-  sampleRecords: [
-    { id: 'demo-logistics-1', logistics_number: 'LOG-2026-0001', shipment_number: 'SHP-0001', deal_number: 'DEAL-0001', customer_name: 'Al Habib Foods', supplier_name: 'Orient Traders', product_name: 'Basmati Rice', quantity: 500, unit: 'MT', origin: 'Chennai Port', destination: 'Jebel Ali Port', carrier: 'Maersk Line', shipping_mode: 'Sea', tracking_number: 'MSKU4471203', pickup_date: '2026-08-28', actual_departure_date: '2026-08-29', estimated_arrival_date: '2026-09-20', current_location: 'Arabian Sea, en route', freight_cost: 2200, other_charges: 180, currency: 'USD', exchange_rate: 83.4, base_currency: 'INR', base_value: 183480, status: 'In Transit' },
-    { id: 'demo-logistics-2', logistics_number: 'LOG-2026-0002', shipment_number: 'SHP-0002', deal_number: 'DEAL-0002', customer_name: 'Coastal Garments', supplier_name: 'Global Commodities Co', product_name: 'Cotton Yarn', quantity: 200, unit: 'Ton', origin: 'Coimbatore', destination: 'Tiruppur', carrier: 'VRL Logistics', shipping_mode: 'Road', tracking_number: 'VRL889021', pickup_date: '2026-09-08', actual_departure_date: '2026-09-08', estimated_arrival_date: '2026-09-10', actual_delivery_date: '2026-09-09', freight_cost: 12500, currency: 'INR', exchange_rate: 1, base_currency: 'INR', base_value: 12500, status: 'Delivered' },
-  ],
+ 
 };
 
 export function LogisticsPage() {

@@ -52,6 +52,14 @@ const TARGET_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'followups', label: 'Follow-ups' },
 ];
 const CURRENCY_TYPES = new Set(['sales_amount', 'order_value', 'collection_amount', 'fee_collection']);
+const TARGET_TYPE_LABELS = Object.fromEntries(TARGET_TYPE_OPTIONS.map((option) => [option.value, option.label]));
+const TARGET_SOURCES: Record<string, string> = {
+  sales_amount: 'Recorded collections', order_value: 'Confirmed sales orders', order_count: 'Confirmed sales orders',
+  collection_amount: 'Recorded collections', fee_collection: 'Recorded collections',
+  product_quantity: 'Order line quantities', order_quantity: 'Order line quantities', meter_quantity: 'Order line quantities', quantity_sold: 'Order line quantities',
+  visit_count: 'Completed field visits', client_visits: 'Completed field visits', institution_visits: 'Completed field visits', doctor_visits: 'Completed field visits', pharmacy_visits: 'Completed field visits',
+  new_customers: 'New client assignments', admission_target: 'New client assignments', student_enrollment: 'New client assignments', followups: 'Completed field visits',
+};
 
 const PERIODS: { key: 'today' | 'week' | 'month' | 'quarter' | 'year'; label: string }[] = [
   { key: 'today', label: 'Today' },
@@ -67,6 +75,8 @@ const STATUS_CLASS: Record<string, string> = { not_started: 'status-badge', on_t
 const money = (v: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Math.round(v || 0));
 const plain = (v: number) => new Intl.NumberFormat('en-IN').format(Math.round(v || 0));
 function formatByType(v: number, type: string) { return CURRENCY_TYPES.has(type) ? money(v) : plain(v); }
+function targetTypeLabel(type: string) { return TARGET_TYPE_LABELS[type] ?? type.replaceAll('_', ' '); }
+function targetSource(type: string) { return TARGET_SOURCES[type] ?? 'Live CRM activity'; }
 function repName(t: TargetApiRow) { return t.sales_representatives?.user_profiles?.display_name ?? t.sales_representatives?.employee_code ?? 'Unassigned'; }
 function achievementPct(t: TargetApiRow) { return t.target_value > 0 ? Math.round((t.achieved_value / t.target_value) * 100) : 0; }
 function computeStatus(t: TargetApiRow): 'not_started' | 'on_track' | 'at_risk' | 'achieved' | 'exceeded' {
@@ -147,6 +157,10 @@ export function TargetsPage() {
     const atRisk = filtered.filter((t) => computeStatus(t) === 'at_risk').length;
     return { totalTarget, achieved, remaining, pct, atRisk };
   }, [filtered]);
+  const metricTypes = useMemo(() => [...new Set(filtered.map((target) => target.target_type))], [filtered]);
+  const oneMetricType = metricTypes.length === 1 ? metricTypes[0] : null;
+  const kpiLabel = oneMetricType ? targetTypeLabel(oneMetricType) : 'Selected targets';
+  const formatKpi = (value: number) => oneMetricType ? formatByType(value, oneMetricType) : '—';
 
   const alerts = useMemo(() => filtered.filter((t) => computeStatus(t) === 'at_risk'), [filtered]);
 
@@ -206,10 +220,10 @@ export function TargetsPage() {
       </div>
 
       <div className="kpi-grid" style={{ '--kpi-count': 4 } as React.CSSProperties}>
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon">▦</div><div><span>Total Target</span><strong>{money(kpi.totalTarget)}</strong></div></div>
-        <div className="kpi-card" data-tone="green"><div className="kpi-icon">✓</div><div><span>Achieved</span><strong>{money(kpi.achieved)}</strong></div></div>
-        <div className="kpi-card" data-tone="amber"><div className="kpi-icon">◔</div><div><span>Remaining</span><strong>{money(kpi.remaining)}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon">%</div><div><span>Achievement %</span><strong>{kpi.pct}%</strong></div></div>
+        <div className="kpi-card" data-tone="ink"><div className="kpi-icon">▦</div><div><span>Total Target · {kpiLabel}</span><strong>{formatKpi(kpi.totalTarget)}</strong></div></div>
+        <div className="kpi-card" data-tone="green"><div className="kpi-icon">✓</div><div><span>Achieved · {kpiLabel}</span><strong>{formatKpi(kpi.achieved)}</strong></div></div>
+        <div className="kpi-card" data-tone="amber"><div className="kpi-icon">◔</div><div><span>Remaining · {kpiLabel}</span><strong>{formatKpi(kpi.remaining)}</strong></div></div>
+        <div className="kpi-card" data-tone="red"><div className="kpi-icon">%</div><div><span>Achievement %</span><strong>{oneMetricType ? `${kpi.pct}%` : '—'}</strong></div></div>
       </div>
 
       <div className="master-toolbar">
@@ -230,17 +244,18 @@ export function TargetsPage() {
 
       <div className="data-table-wrap">
         <table>
-          <thead><tr><th>Sales Rep</th><th>Period</th><th>Target</th><th>Achieved</th><th>Remaining</th><th>Achievement %</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Sales Rep</th><th>Metric</th><th>Period</th><th>Target</th><th>Achieved</th><th>Remaining</th><th>Achievement %</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>
             {loading ? (
-              [0, 1, 2].map((i) => <tr key={i} className="skeleton-row"><td colSpan={8}><span className="skeleton-block" style={{ width: '100%' }} /></td></tr>)
+              [0, 1, 2].map((i) => <tr key={i} className="skeleton-row"><td colSpan={9}><span className="skeleton-block" style={{ width: '100%' }} /></td></tr>)
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={8} className="empty-row"><div className="empty-state"><p>No targets for this period yet.</p><button type="button" className="primary-action" onClick={openCreate}>+ Create Target</button></div></td></tr>
+              <tr><td colSpan={9} className="empty-row"><div className="empty-state"><p>No targets for this period yet.</p><button type="button" className="primary-action" onClick={openCreate}>+ Create Target</button></div></td></tr>
             ) : filtered.map((t) => {
               const pct = achievementPct(t); const status = computeStatus(t);
               return (
                 <tr key={t.id}>
                   <td>{repName(t)}</td>
+                  <td><strong>{targetTypeLabel(t.target_type)}</strong><small>{targetSource(t.target_type)}</small></td>
                   <td>{t.period_label}</td>
                   <td>{formatByType(t.target_value, t.target_type)}</td>
                   <td>{formatByType(t.achieved_value, t.target_type)}</td>
@@ -319,6 +334,7 @@ export function TargetsPage() {
             </div>
             <dl className="detail-dl">
               <dt>Period</dt><dd>{viewing.period_label}</dd>
+              <dt>Metric</dt><dd>{targetTypeLabel(viewing.target_type)} · {targetSource(viewing.target_type)}</dd>
               <dt>Target</dt><dd>{formatByType(viewing.target_value, viewing.target_type)}</dd>
               <dt>Achieved</dt><dd>{formatByType(viewing.achieved_value, viewing.target_type)}</dd>
               <dt>Achievement</dt><dd>{achievementPct(viewing)}%</dd>

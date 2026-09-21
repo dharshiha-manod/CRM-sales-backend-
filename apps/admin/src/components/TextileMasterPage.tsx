@@ -14,6 +14,7 @@ import './MasterDataPages.css';
  */
 
 export type FieldType = 'text' | 'number' | 'select' | 'date' | 'textarea' | 'lookup' | 'multi-lookup';
+export type DynamicSelectOption = { value: string; label: string };
 export interface FieldDef {
   key: string;
   label: string;
@@ -76,7 +77,18 @@ export interface FieldDef {
    * the form. Optional — existing configs that don't set this are
    * unaffected.
    */
-onLookupChange?: (matched: TextileRecord, setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void) => void;
+  onLookupChange?: (
+    matched: TextileRecord,
+    setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void,
+    setDynamicOptions: (key: string, options: DynamicSelectOption[]) => void,
+  ) => void;
+  /** For type: 'select' — reads its { value, label } options from this runtime-populated bucket. */
+  dynamicOptionsKey?: string;
+  /**
+   * For a dynamic select — field in the form that stores the option value.
+   * This lets a picker drive another persisted field through its callbacks.
+   */
+  dynamicOptionsValueKey?: string;
   visibleIf?: (form: Record<string, string>) => boolean;
   onValueChange?: (value: string, form: Record<string, string>) => Record<string, string> | void;
   /**
@@ -125,6 +137,14 @@ statusFilterable?: boolean;
   // live-derived "Validity" column) so the table doesn't show a permanently
   // empty/stale Status badge.
   hideStatusColumn?: boolean;
+  /**
+   * Optional, off by default. When true the list shows ONE Status column that is a
+   * dropdown: picking a value saves it right away (same PATCH and same afterSave as
+   * the Edit form), and a separate `status` list column is not repeated.
+   */
+  inlineStatus?: boolean;
+  /** Optional extra fields to save together with an inline status change (e.g. a delivery date). */
+  inlineStatusExtra?: (record: TextileRecord, nextStatus: string) => Record<string, unknown> | undefined;
   /**
    * Front-end-only preview rows shown when there's nothing real to display yet
    * (empty table, or the API/route isn't wired up). Never sent to the API —
@@ -201,7 +221,7 @@ function dateLabel(value: unknown): string {
 }
 
 export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
- const { resource, eyebrowModule, title, description, icon, emptyIcon, codeField, nameField, statusOptions, fields, searchableKeys, kpis, statusFilterable = true, hideStatusColumn = false, sampleRecords, afterSave } = config;
+ const { resource, eyebrowModule, title, description, icon, emptyIcon, codeField, nameField, statusOptions, fields, searchableKeys, kpis, statusFilterable = true, hideStatusColumn = false, inlineStatus = false, sampleRecords, afterSave } = config;
   const { activeIndustry, activeIndustryTypeId } = useIndustryScope();
   const { config: activeIndustryConfig } = useIndustry();
   const industryLabel = activeIndustryConfig.label.toUpperCase();
@@ -222,9 +242,11 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
   const [formMessage, setFormMessage] = useState('');
   const [formNotice, setFormNotice] = useState('');
   const [lookupData, setLookupData] = useState<Record<string, TextileRecord[]>>({});
+  const [dynamicOptions, setDynamicOptions] = useState<Record<string, DynamicSelectOption[]>>({});
   const [deleting, setDeleting] = useState<TextileRecord | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+  const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
  useEffect(() => {
     const lookupFields = fields.filter((f) => (f.type === 'lookup' || f.type === 'multi-lookup') && f.lookupResource);
     lookupFields.forEach(async (f) => {
@@ -343,7 +365,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     });
   }, [displayRecords, search, statusFilter, searchableKeys]);
 
-   function openCreate() {
+  function openCreate() {
     setEditing(null);
     const blank = blankFormFrom(fields);
     const year = new Date().getFullYear();
@@ -354,6 +376,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
       if (f.autoGenerate) blank[f.key] = resolveAutoGenerate(f, blank, sequenceLabel);
     }
     setForm(blank);
+    setDynamicOptions({});
     setFormMessage('');
     setFormNotice('');
     setModal(true);
@@ -363,6 +386,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     const next: Record<string, string> = {};
     for (const f of fields) next[f.key] = record[f.key] != null ? String(record[f.key]) : '';
     setForm(next);
+    setDynamicOptions({});
     setFormMessage('');
     setFormNotice('');
     setModal(true);
@@ -396,6 +420,25 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
       setSaving(false);
     }
   }
+   // Inline status dropdown (opt-in via config.inlineStatus). Sends the same PATCH the
+  // Edit form sends, then runs the same afterSave hook, so changing the status here
+  // triggers exactly the same automation as saving the record.
+  async function changeStatus(record: TextileRecord, next: string) {
+    if (!next || next === record.status) return;
+    setStatusBusyId(record.id);
+    setMessage('');
+    try {
+      const body = { status: next, ...(config.inlineStatusExtra?.(record, next) ?? {}) };
+      const res = await api<{ data: TextileRecord }>(`${resource}/${record.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      setMessage(`${title} status changed to ${next} successfully.`);
+      await load();
+      afterSave?.(res.data, load);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : 'Unable to change the status.');
+    } finally {
+      setStatusBusyId(null);
+    }
+  }
   async function confirmDelete() {
     if (!deleting) return;
     setDeleteBusy(true);
@@ -423,8 +466,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
   }, [formFields]);
   const ungrouped = groups.get(undefined) ?? [];
   const groupNames = [...groups.keys()].filter((k): k is string => Boolean(k));
-
-  const listColumns = fields.filter((f) => f.listColumn);
+  const listColumns = fields.filter((f) => f.listColumn && !(inlineStatus && f.key === 'status'));
 
   return (
     <section className="page-panel master-page">
@@ -496,7 +538,25 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
                   {listColumns.map((c) => (
                     <td key={c.key}>{c.format ? c.format(r[c.key], r) : (r[c.key] != null && r[c.key] !== '' ? String(r[c.key]) : '—')}</td>
                   ))}
-                  {!hideStatusColumn && <td><span className={statusBadgeClass(r.status)}>{r.status ?? '—'}</span></td>}
+                         {!hideStatusColumn && (
+                    <td>
+                      {inlineStatus && !usingDemoData ? (
+                        <select
+                          className={`${statusBadgeClass(r.status)} status-select`}
+                          value={r.status ?? ''}
+                          disabled={statusBusyId === r.id}
+                          aria-label={`Change status of ${String(r[nameField] ?? r[codeField] ?? '')}`}
+                          onChange={(e) => void changeStatus(r, e.target.value)}
+                        >
+                          {!r.status && <option value="">—</option>}
+                          {r.status && !statusOptions.includes(r.status) && <option value={r.status}>{r.status}</option>}
+                          {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      ) : (
+                        <span className={statusBadgeClass(r.status)}>{r.status ?? '—'}</span>
+                      )}
+                    </td>
+                  )}
                   <td className="master-actions">
                     <button type="button" className="icon-action" title="View" aria-label={`View ${String(r[nameField] ?? r[codeField] ?? '')}`} onClick={() => setViewing(r)}>◉</button>
                     <button type="button" className="icon-action" title="Edit" aria-label={`Edit ${String(r[nameField] ?? r[codeField] ?? '')}`} onClick={() => openEdit(r)}>✎</button>
@@ -582,7 +642,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
                           {ungrouped.map((f) => (
                   <label key={f.key}>
                     {f.label}{f.required ? ' *' : ''}
-                    {renderInput(f, form, setForm, lookupData, fields)}
+                    {renderInput(f, form, setForm, lookupData, fields, dynamicOptions, (key, options) => setDynamicOptions((prev) => ({ ...prev, [key]: options })))}
                   </label>
                 ))}
               </div>
@@ -593,7 +653,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
                                  {groups.get(g)!.map((f) => (
                       <label key={f.key}>
                         {f.label}{f.required ? ' *' : ''}
-                        {renderInput(f, form, setForm, lookupData, fields)}
+                        {renderInput(f, form, setForm, lookupData, fields, dynamicOptions, (key, options) => setDynamicOptions((prev) => ({ ...prev, [key]: options })))}
                       </label>
                     ))}
                   </div>
@@ -651,11 +711,20 @@ function dedupeByValue(rows: TextileRecord[], f: FieldDef): TextileRecord[] {
   return out;
 }
 
-function renderInput(f: FieldDef, form: Record<string, string>, setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void, lookupData: Record<string, TextileRecord[]> = {}, fields: FieldDef[] = []) {
- const value = form[f.key] ?? '';
+function renderInput(
+  f: FieldDef,
+  form: Record<string, string>,
+  setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void,
+  lookupData: Record<string, TextileRecord[]> = {},
+  fields: FieldDef[] = [],
+  dynamicOptions: Record<string, DynamicSelectOption[]> = {},
+  setDynamicOptions: (key: string, options: DynamicSelectOption[]) => void = () => undefined,
+) {
+ const valueKey = f.dynamicOptionsValueKey ?? f.key;
+ const value = form[valueKey] ?? '';
   const onChange = (v: string) => {
     setForm((prev) => {
-      const next = { ...prev, [f.key]: v };
+      const next = { ...prev, [valueKey]: v };
       if (f.onValueChange) {
         const patch = f.onValueChange(v, next);
         if (patch) Object.assign(next, patch);
@@ -717,7 +786,7 @@ function renderInput(f: FieldDef, form: Record<string, string>, setForm: (update
       // Runs after the synchronous autoFillMap copy above. Kept outside
       // setForm's updater since it may be async (e.g. an API call) and
       // updaters must stay synchronous and pure.
-      if (f.onLookupChange && matchedForCallback) f.onLookupChange(matchedForCallback, setForm);
+      if (f.onLookupChange && matchedForCallback) f.onLookupChange(matchedForCallback, setForm, setDynamicOptions);
       f.onValueChangeAsync?.(v, form, setForm);
     };
     return (
@@ -732,10 +801,11 @@ function renderInput(f: FieldDef, form: Record<string, string>, setForm: (update
     );
   }
   if (f.type === 'select') {
+    const options = f.dynamicOptionsKey ? dynamicOptions[f.dynamicOptionsKey] ?? [] : (f.options ?? []).map((option) => ({ value: option, label: option }));
     return (
       <select required={f.required} value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">Select…</option>
-        {f.options?.map((o) => <option key={o} value={o}>{o}</option>)}
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     );
   }
