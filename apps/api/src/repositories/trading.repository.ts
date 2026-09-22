@@ -1,4 +1,3 @@
-
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import type { TradingResource } from '../lib/trading-resources.js';
@@ -144,6 +143,97 @@ async function autoCreateShipmentLogistics(org: string, shipment: Record<string,
   }
 }
 
+// Step 8 of the Trading connectivity plan: a Deal reaching "Confirmed" by
+// ANY route — not just the automated Lead→Quotation→Deal chain — must end
+// up with both a Trading Sales Order (SO-..., what the rest of Trading
+// reads) and a core Sales Order (FS-..., what Collections reads). Before
+// this, only quotations.repository.ts's approveQuotation() created the
+// core order, so a Deal created by hand ("+ Add Deal") or converted from a
+// Purchase Enquiry got a Trading SO but never an FS- order — its money
+// never reached Collections. Numbers are derived from the deal number
+// itself, never counted, so re-saving an already-converted Deal can never
+// create a duplicate of either order.
+async function convertConfirmedDealToOrders(org: string, deal: Record<string, unknown>) {
+  try {
+    const dealNumber = typeof deal.deal_number === 'string' ? deal.deal_number : undefined;
+    if (!dealNumber) return;
+    const suffix = dealNumber.replace(/^DEAL-/, '');
+    const orderNumber = `SO-${suffix}`;
+    const quantity = Number(deal.quantity) || 0;
+    const sellingRate = Number(deal.selling_rate) || 0;
+    const totalAmount = quantity * sellingRate;
+
+    const { data: existingSO } = await supabaseAdmin.from('trading_sales_orders').select('id').eq('organization_id', org).eq('order_number', orderNumber).limit(1).maybeSingle();
+    if (!existingSO) {
+      const { error } = await supabaseAdmin.from('trading_sales_orders').insert({
+        organization_id: org,
+        industry_type_id: deal.industry_type_id ?? null,
+        order_number: orderNumber,
+        deal_number: dealNumber,
+        customer_name: deal.customer_name ?? null,
+        product_name: deal.product_name ?? null,
+        quantity: deal.quantity ?? null,
+        unit: deal.unit ?? null,
+        currency: deal.currency ?? null,
+        selling_rate: deal.selling_rate ?? null,
+        total_amount: totalAmount || null,
+        order_date: new Date().toISOString().slice(0, 10),
+        expected_delivery_date: deal.expected_delivery_date ?? null,
+        payment_terms: deal.payment_terms ?? null,
+        delivery_terms: deal.delivery_terms ?? null,
+        status: 'Confirmed',
+        notes: `Automatically created from deal ${dealNumber}.`,
+      });
+      if (error && error.code !== '23505') throw error;
+    }
+
+    const customerId = typeof deal.customer_id === 'string' ? deal.customer_id : undefined;
+    const productName = typeof deal.product_name === 'string' ? deal.product_name : undefined;
+    if (customerId && productName && !deal.core_order_number) {
+      const { data: product } = await supabaseAdmin.from('products').select('id').eq('organization_id', org).eq('product_name', productName).limit(1).maybeSingle();
+      if (product) {
+        const coreOrderNumber = `FS-${suffix}`;
+        const { data: existingCore } = await supabaseAdmin.from('sale_orders').select('id, order_number').eq('organization_id', org).eq('order_number', coreOrderNumber).limit(1).maybeSingle();
+        let coreOrder = existingCore;
+        if (!coreOrder) {
+          const { data: inserted, error: coreError } = await supabaseAdmin.from('sale_orders').insert({
+            organization_id: org,
+            order_number: coreOrderNumber,
+            client_id: customerId,
+            representative_id: null,
+            discount_amount: 0,
+            tax_amount: 0,
+            total_amount: totalAmount,
+            notes: `Automatically created from Trading deal ${dealNumber}.`,
+            status: 'confirmed',
+          }).select('id, order_number').single();
+          if (coreError) throw coreError;
+          coreOrder = inserted;
+          const { error: itemError } = await supabaseAdmin.from('sale_order_items').insert({
+            order_id: coreOrder!.id,
+            product_id: product.id,
+            quantity: deal.quantity ?? 0,
+            unit_price: deal.selling_rate ?? 0,
+            discount_amount: 0,
+            subtotal: totalAmount,
+          });
+          if (itemError) throw itemError;
+        }
+        if (coreOrder) {
+          const { error: linkError } = await supabaseAdmin.from('trading_deals').update({ core_order_id: coreOrder.id, core_order_number: coreOrder.order_number }).eq('id', deal.id).eq('organization_id', org);
+          if (linkError) throw linkError;
+        }
+      }
+    }
+
+    if (!deal.order_number) {
+      const { error } = await supabaseAdmin.from('trading_deals').update({ order_number: orderNumber }).eq('id', deal.id).eq('organization_id', org);
+      if (error) throw error;
+    }
+  } catch (error) {
+    logger.error({ err: error, dealNumber: deal.deal_number }, 'Confirmed-deal to sales order conversion failed');
+  }
+}
 function sanitizePayload(resource: TradingResource, input: Record<string, unknown>): Record<string, unknown> {
   const allowed = new Set([...resource.columns, 'status']);
   const out: Record<string, unknown> = {};
@@ -202,12 +292,16 @@ export async function updateTradingRecord(resource: TradingResource, org: string
   // auto-creates the Trade Documents and Logistics record that should
   // exist by then. Only fires for the Shipments table; every other
   // Trading module saves unchanged.
-  if (resource.table === 'trading_shipments') {
+   if (resource.table === 'trading_shipments') {
     const shipment = data as Record<string, unknown>;
     await cascadeShipmentStatus(org, shipment);
     const status = typeof shipment.status === 'string' ? shipment.status : '';
     if (DOCUMENT_TRIGGER_STATUSES.has(status)) await autoCreateShipmentDocuments(org, shipment);
     if (LOGISTICS_TRIGGER_STATUSES.has(status)) await autoCreateShipmentLogistics(org, shipment);
+  }
+  if (resource.table === 'trading_deals') {
+    const deal = data as Record<string, unknown>;
+    if (deal.status === 'Confirmed' && !deal.order_number) await convertConfirmedDealToOrders(org, deal);
   }
   return data;
 }

@@ -53,7 +53,7 @@ export const TRADING_RESOURCES: TradingResource[] = [
     table: 'trading_purchase_enquiries',
     codeField: 'enquiry_number',
     requiredFields: ['enquiry_number', 'product_name'],
-    columns: ['enquiry_number', 'enquiry_date', 'required_by_date', 'product_name', 'quantity', 'unit', 'specification', 'supplier_name', 'requested_rate', 'currency', 'delivery_location', 'delivery_terms', 'payment_terms', 'procurement_person', 'notes', 'industry_type_id', 'deal_number'],
+      columns: ['enquiry_number', 'enquiry_date', 'required_by_date', 'product_name', 'quantity', 'unit', 'specification', 'supplier_name', 'customer_name', 'customer_id', 'requested_rate', 'currency', 'delivery_location', 'delivery_terms', 'payment_terms', 'procurement_person', 'notes', 'industry_type_id', 'deal_number'],
   },
   {
     path: 'price-lists',

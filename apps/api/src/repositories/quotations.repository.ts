@@ -11,7 +11,7 @@ type ItemInput = { productId: string; quantity: number; discountPercent: number 
 type CreateInput = { items: ItemInput[]; validUntil?: string | null; notes?: string | null };
 type PublicDecision = { decision: 'accepted' | 'rejected'; reason?: string };
 const FULL = '*, clients(id, client_code, client_name, email, industry_type_id), organizations(name), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, category, cost_price, selling_price))';
-const PUBLIC = 'id, organization_id, quotation_number, status, valid_until, total_amount, created_at, clients(client_name, industry_type_id), organizations(name), quotation_items(quantity, unit_price, discount_amount, subtotal, products(product_code, product_name))';
+const PUBLIC = 'id, organization_id, quotation_number, status, valid_until, total_amount, tax_amount, created_at, clients(client_name, industry_type_id), organizations(name), quotation_items(quantity, unit_price, discount_amount, subtotal, tax_percent, tax_amount, products(product_code, product_name))';
 
 function scopeCheck(scope: IndustryScope | undefined, client: unknown) {
   if (scope) assertRecordInScope(scope, (client as { industry_type_id?: string | null } | null)?.industry_type_id, new AppError(404, 'QUOTATION_NOT_FOUND', 'Quotation not found in this organization.'));
@@ -23,18 +23,39 @@ export async function createFromRequirement(organizationId: string, representati
   if (!requirement) throw new AppError(404, 'REQUIREMENT_NOT_FOUND', 'Requirement not found in this organization.');
   if (requirement.status !== 'open') throw new AppError(422, 'REQUIREMENT_NOT_OPEN', 'A quotation can only be built from an open requirement.');
   const ids = input.items.map((item) => item.productId);
-  const { data: products, error: productsError } = await supabaseAdmin.from('products').select('id, selling_price').eq('organization_id', organizationId).eq('status', 'active').in('id', ids);
+  const { data: products, error: productsError } = await supabaseAdmin.from('products').select('id, selling_price, tax_percent').eq('organization_id', organizationId).eq('status', 'active').in('id', ids);
   if (productsError) fail(productsError);
   if ((products ?? []).length !== ids.length) throw new AppError(422, 'INVALID_QUOTATION_PRODUCT', 'One or more selected products are unavailable.');
   const byId = new Map((products ?? []).map((product) => [product.id, product]));
-  const lines = input.items.map((item) => { const product = byId.get(item.productId)!; const gross = Number(product.selling_price) * item.quantity; const discount_amount = Math.round(gross * item.discountPercent) / 100; return { product_id: product.id, quantity: item.quantity, unit_price: Number(product.selling_price), discount_percent: item.discountPercent, discount_amount, subtotal: gross - discount_amount }; });
+  const lines = input.items.map((item) => {
+    const product = byId.get(item.productId)!;
+    const gross = Number(product.selling_price) * item.quantity;
+    const discount_amount = Math.round(gross * item.discountPercent) / 100;
+    const subtotal = gross - discount_amount;
+    const tax_percent = Number(product.tax_percent ?? 0);
+    const tax_amount = Math.round(subtotal * tax_percent) / 100;
+    return { product_id: product.id, quantity: item.quantity, unit_price: Number(product.selling_price), discount_percent: item.discountPercent, discount_amount, subtotal, tax_percent, tax_amount };
+  });
   const quotationNumber = `QT-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-  const { data: quotation, error } = await supabaseAdmin.from('quotations').insert({ organization_id: organizationId, quotation_number: quotationNumber, client_id: requirement.client_id, representative_id: representativeId, requirement_id: requirement.id, valid_until: input.validUntil ?? null, discount_amount: lines.reduce((sum, line) => sum + line.discount_amount, 0), total_amount: lines.reduce((sum, line) => sum + line.subtotal, 0), notes: input.notes ?? null }).select().single();
+  const subtotalSum = lines.reduce((sum, line) => sum + line.subtotal, 0);
+  const taxSum = lines.reduce((sum, line) => sum + line.tax_amount, 0);
+  const { data: quotation, error } = await supabaseAdmin.from('quotations').insert({ organization_id: organizationId, quotation_number: quotationNumber, client_id: requirement.client_id, representative_id: representativeId, requirement_id: requirement.id, valid_until: input.validUntil ?? null, discount_amount: lines.reduce((sum, line) => sum + line.discount_amount, 0), tax_amount: taxSum, total_amount: subtotalSum + taxSum, notes: input.notes ?? null }).select().single();
   if (error) fail(error);
   const { error: itemError } = await supabaseAdmin.from('quotation_items').insert(lines.map((line) => ({ ...line, quotation_id: quotation.id })));
   if (itemError) { await supabaseAdmin.from('quotations').delete().eq('id', quotation.id); fail(itemError); }
   await supabaseAdmin.from('requirements').update({ status: 'quoted' }).eq('id', requirement.id).eq('organization_id', organizationId);
-  return getQuotation(organizationId, quotation.id);
+
+  const { data: possibleDuplicates } = await supabaseAdmin
+    .from('quotations')
+    .select('id, quotation_number, total_amount')
+    .eq('organization_id', organizationId)
+    .eq('client_id', requirement.client_id)
+    .eq('status', 'draft')
+    .eq('notes', 'Auto-generated when lead was qualified.')
+    .neq('id', quotation.id);
+
+  const created = await getQuotation(organizationId, quotation.id);
+  return { ...created, possibleDuplicates: possibleDuplicates ?? [] };
 }
 
 export async function getQuotation(organizationId: string, id: string, scope?: IndustryScope) {
@@ -68,7 +89,7 @@ export async function convertToOrder(organizationId: string, representativeId: s
   const number = `FS-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const { data: order, error } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: number, client_id: quotation.client_id, representative_id: quotation.representative_id, discount_amount: quotation.discount_amount, tax_amount: quotation.tax_amount, total_amount: quotation.total_amount, notes: `Converted from quotation ${quotation.quotation_number}`, status: 'confirmed' }).select().single();
   if (error) fail(error);
-  const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal }));
+  const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal, tax_percent: item.tax_percent ?? 0, tax_amount: item.tax_amount ?? 0 }));
   const { error: itemError } = await supabaseAdmin.from('sale_order_items').insert(items);
   if (itemError) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); fail(itemError); }
   // Conversion is automatic after approval. Mark it explicitly so every
@@ -81,6 +102,18 @@ export async function sendQuotation(organizationId: string, representativeId: st
   const quotation = await getQuotation(organizationId, id, scope);
   if (representativeId && quotation.representative_id !== representativeId) throw new AppError(404, 'QUOTATION_NOT_FOUND', 'Quotation not found in this organization.');
   if (!['draft', 'sent'].includes(quotation.status)) throw new AppError(422, 'INVALID_QUOTATION_STATUS', 'Only a draft or sent quotation can be shared.');
+
+  if (quotation.requirement_id) {
+    const { data: requirement } = await supabaseAdmin
+      .from('requirements')
+      .select('status')
+      .eq('id', quotation.requirement_id)
+      .maybeSingle();
+    if (requirement?.status === 'dropped') {
+      throw new AppError(422, 'REQUIREMENT_DROPPED', 'This quotation\'s requirement is marked Dropped. Reopen it before sending.');
+    }
+  }
+
   const token = quotation.public_token ?? crypto.randomUUID();
   const publicLink = `${publicAppUrl.replace(/\/$/, '')}/quote/${token}`;
   // Deliver first. A failed SMTP attempt must not make a draft look sent.

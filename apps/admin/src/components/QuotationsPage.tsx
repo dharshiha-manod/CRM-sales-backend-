@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { GenerateDocumentButton } from './GenerateDocumentButton';
@@ -15,6 +15,8 @@ type QuotationItem = {
   discount_percent: number;
   discount_amount: number;
   subtotal: number;
+  tax_percent?: number;
+  tax_amount?: number;
   products?: { product_code?: string; product_name?: string } | null;
 };
 type Quotation = {
@@ -47,6 +49,104 @@ type QuoteLine = { productId: string; productName: string; quantity: string; dis
 
 const PENDING_QUOTATION_REQUIREMENT_KEY = 'fs-pending-quotation-requirement';
 
+function requirementLabel(r: OpenRequirement) {
+  const repLabel = r.sales_representatives?.user_profiles?.display_name ?? r.sales_representatives?.employee_code ?? 'Rep';
+  return `${r.clients?.client_name ?? 'Client'} — ${r.title} (${repLabel})`;
+}
+
+/**
+ * Type-to-search dropdown for the requirement picker. A plain <select> whose
+ * <option> list is filtered by a separate search box looks fine, but Chrome
+ * freezes the popup's contents at the moment it's opened — so once you've
+ * clicked it open, typing further characters into the search box narrows the
+ * underlying <option> list without the already-open native popup ever
+ * re-painting, making matches seem to vanish as you keep typing. Rendering
+ * the list as plain React elements (like the app's other lookup fields)
+ * re-renders live on every keystroke instead.
+ */
+function RequirementLookup({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: OpenRequirement[];
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const selected = options.find((r) => r.id === value);
+  const displayValue = open ? search : selected ? requirementLabel(selected) : '';
+  const filtered = search.trim()
+    ? options.filter((r) => requirementLabel(r).toLowerCase().includes(search.trim().toLowerCase()))
+    : options;
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setSearch('');
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      <input
+        type="text"
+        required
+        value={displayValue}
+        placeholder="Search by client, title or representative…"
+        onFocus={() => {
+          setOpen(true);
+          setSearch('');
+        }}
+        onChange={(e) => {
+          setSearch(e.target.value);
+          setOpen(true);
+        }}
+      />
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            zIndex: 20,
+            top: '100%',
+            left: 0,
+            right: 0,
+            maxHeight: 220,
+            overflowY: 'auto',
+            background: '#fff',
+            border: '1px solid #ddd',
+            borderRadius: 6,
+            boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
+          }}
+        >
+          {filtered.length === 0 && <div style={{ padding: '6px 10px', color: '#999', fontSize: 13 }}>No matches</div>}
+          {filtered.map((r) => (
+            <div
+              key={r.id}
+              style={{ padding: '6px 10px', cursor: 'pointer' }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onChange(r.id);
+                setOpen(false);
+                setSearch('');
+              }}
+            >
+              {requirementLabel(r)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const currency = (value: number) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(Number(value || 0));
 const dateLabel = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
@@ -71,10 +171,16 @@ export function QuotationsPage() {
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [requirementOptions, setRequirementOptions] = useState<OpenRequirement[]>([]);
+  const [requirementOptionsRaw, setRequirementOptionsRaw] = useState<OpenRequirement[]>([]);
+  // Recomputes whenever the industry-scope hook resolves — so a requirement
+  // isn't permanently dropped just because this page's industry-type/client
+  // data was still loading at the moment it was fetched.
+  const requirementOptions = useMemo(
+    () => requirementOptionsRaw.filter((r) => clientMatchesActiveIndustry(r.clients?.client_code)),
+    [requirementOptionsRaw, clientMatchesActiveIndustry],
+  );
   const [requirementId, setRequirementId] = useState('');
 
-  const [requirementSearch, setRequirementSearch] = useState('');
   const [lines, setLines] = useState<QuoteLine[]>([]);
   const [skippedItemCount, setSkippedItemCount] = useState(0);
    const [validUntil, setValidUntil] = useState('');
@@ -105,7 +211,6 @@ export function QuotationsPage() {
   }
  async function openCreate(preselectRequirementId?: string) {
     setRequirementId('');
-    setRequirementSearch('');
     setLines([]);
     setSkippedItemCount(0);
     setValidUntil('');
@@ -115,10 +220,14 @@ export function QuotationsPage() {
     setOptionsLoading(true);
     try {
       const res = await api<{ data: OpenRequirement[] }>('/requirements?status=open');
-      const scoped = (res.data ?? []).filter((r) => clientMatchesActiveIndustry(r.clients?.client_code));
-      setRequirementOptions(scoped);
-      if (preselectRequirementId && scoped.some((r) => r.id === preselectRequirementId)) {
-        selectRequirement(preselectRequirementId);
+      // Scoping to the active industry happens reactively via the
+      // requirementOptions memo below, not here — the industry-scope hook's
+      // own /industry-types and /clients calls can still be in flight on a
+      // freshly-mounted page, and filtering with a not-yet-resolved
+      // clientMatchesActiveIndustry silently excluded every requirement.
+      setRequirementOptionsRaw(res.data ?? []);
+      if (preselectRequirementId) {
+        selectRequirement(preselectRequirementId, res.data ?? []);
       }
     } catch (caught) {
       setFormError(caught instanceof Error ? caught.message : 'Unable to load open requirements.');
@@ -167,10 +276,10 @@ export function QuotationsPage() {
     setModalOpen(false);
   }
 
-  function selectRequirement(id: string) {
+  function selectRequirement(id: string, fromList?: OpenRequirement[]) {
     setRequirementId(id);
     setFormError(null);
-    const requirement = requirementOptions.find((item) => item.id === id);
+    const requirement = (fromList ?? requirementOptions).find((item) => item.id === id);
     const items = requirement?.requirement_items ?? [];
     const priceable = items.filter((item) => item.product_id);
     setSkippedItemCount(items.length - priceable.length);
@@ -418,13 +527,14 @@ export function QuotationsPage() {
             </p>
             <p className="text-faint-inline">Representative: {selected.sales_representatives?.user_profiles?.display_name ?? selected.sales_representatives?.employee_code ?? '—'}</p>
             <div className="data-table-wrap">
-              <table>
+                          <table>
                 <thead>
                   <tr>
                     <th>Product</th>
                     <th>Quantity</th>
                     <th>Unit price</th>
                     <th>Discount</th>
+                    <th>Tax</th>
                     <th>Subtotal</th>       
                   </tr>
                 </thead>
@@ -437,11 +547,18 @@ export function QuotationsPage() {
                       <td>
                         {currency(line.discount_amount)} ({line.discount_percent}%)
                       </td>
+                      <td>
+                        {currency(line.tax_amount ?? 0)} ({line.tax_percent ?? 0}%)
+                      </td>
                       <td>{currency(line.subtotal)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            </div>
+            <div className="sales-summary">
+              <div><span>Subtotal (after discount)</span><strong>{currency((selected.quotation_items ?? []).reduce((sum, line) => sum + Number(line.subtotal || 0), 0))}</strong></div>
+              <div><span>Tax</span><strong>{currency(selected.tax_amount)}</strong></div>
             </div>
                        <div className="order-total">
               Quotation total <strong>{currency(selected.total_amount)}</strong>
@@ -493,33 +610,9 @@ export function QuotationsPage() {
                     {formError}
                   </p>
                 )}
-                              <label style={{ gridColumn: '1 / -1' }}>
+                <label style={{ gridColumn: '1 / -1' }}>
                   Requirement
-                  <input
-                    type="text"
-                    placeholder="Search by client, title or representative…"
-                    value={requirementSearch}
-                    onChange={(e) => setRequirementSearch(e.target.value)}
-                    style={{ marginBottom: '0.5rem' }}
-                  />
-                  <select required value={requirementId} onChange={(e) => selectRequirement(e.target.value)}>
-                    <option value="">Select an open requirement</option>
-                    {requirementOptions
-                      .filter((requirement) => {
-                        const repLabel =
-                          requirement.sales_representatives?.user_profiles?.display_name ??
-                          requirement.sales_representatives?.employee_code ??
-                          '';
-                        const text = `${requirement.clients?.client_name ?? ''} ${requirement.title} ${repLabel}`.toLowerCase();
-                        return !requirementSearch || text.includes(requirementSearch.toLowerCase());
-                      })
-                      .map((requirement) => (
-                        <option key={requirement.id} value={requirement.id}>
-                          {requirement.clients?.client_name ?? 'Client'} — {requirement.title} (
-                          {requirement.sales_representatives?.user_profiles?.display_name ?? requirement.sales_representatives?.employee_code ?? 'Rep'})
-                        </option>
-                      ))}
-                  </select>
+                  <RequirementLookup value={requirementId} options={requirementOptions} onChange={selectRequirement} />
                   {!requirementOptions.length && <small>No open requirements found. Create one from the Requirements page first.</small>}
                 </label>
 

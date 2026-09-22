@@ -27,7 +27,7 @@ type Requirement = {
   requirement_items?: RequirementItem[];
 };
 
-type ClientOption = { id: string; client_name: string; client_code?: string };
+type ClientOption = { id: string; client_name: string; client_code?: string; sales_representative_client_assignments?: { status: string; sales_representative_id: string }[] };
 type RepresentativeOption = { id: string; user_id?: string | null; employee_code?: string; user_profiles?: { display_name?: string | null } | null };
 type ProductOption = { id: string; product_name: string; product_code?: string; industry_type_id?: string | null };
 
@@ -389,9 +389,11 @@ export function RequirementsPage() {
             <tbody>
               {shown.map((item) => (
                 <tr key={item.id}>
-                  <td>
+               <td>
                     <strong>{item.title}</strong>
-                    {item.description && <small>{item.description}</small>}
+                    <small className={`origin-tag ${item.description?.startsWith('Auto-created when lead') ? 'origin-auto' : 'origin-manual'}`}>
+                      {item.description?.startsWith('Auto-created when lead') ? 'Auto' : 'Manual'}
+                    </small>
                   </td>
                   <td>{item.clients?.client_name ?? '—'}</td>
                   <td>{item.sales_representatives?.user_profiles?.display_name ?? item.sales_representatives?.employee_code ?? '—'}</td>
@@ -579,7 +581,16 @@ export function RequirementsPage() {
                 {form.clientMode === 'existing' ? (
                   <label>
                     Select client
-                    <select required value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })}>
+                   <select
+                      required
+                      value={form.clientId}
+                      onChange={(e) => {
+                        const clientId = e.target.value;
+                        const picked = scopedClientOptions.find((client) => client.id === clientId);
+                        const assignedRepId = picked?.sales_representative_client_assignments?.find((a) => a.status === 'active')?.sales_representative_id;
+                        setForm((current) => ({ ...current, clientId, representativeId: assignedRepId ?? current.representativeId }));
+                      }}
+                    >
                       <option value="">Select a client</option>
                       {scopedClientOptions.map((client) => (
                         <option key={client.id} value={client.id}>

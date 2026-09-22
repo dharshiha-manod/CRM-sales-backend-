@@ -2,7 +2,7 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { setProductIndustryTypes } from './industry-types.repository.js';
 const fail = (error: unknown): never => { throw error; };
-const map = { productCode: 'product_code', productName: 'product_name', sellingPrice: 'selling_price', costPrice: 'cost_price', stockQuantity: 'stock_quantity' } as Record<string, string>;
+const map = { productCode: 'product_code', productName: 'product_name', sellingPrice: 'selling_price', costPrice: 'cost_price', stockQuantity: 'stock_quantity', taxPercent: 'tax_percent' } as Record<string, string>;
 const payload = (input: Record<string, unknown>) => { const { industryTypeIds, ...rest } = input; return Object.fromEntries(Object.entries(rest).map(([key, value]) => [map[key] ?? key, value])); };
 export async function listProducts(org: string, search?: string, status?: string, industryTypeId?: string) {
   let query = supabaseAdmin.from('products').select('*').eq('organization_id', org).order('product_name');

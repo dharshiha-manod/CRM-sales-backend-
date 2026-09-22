@@ -25,8 +25,7 @@ export const INDUSTRY_FIELD_DEFS: Record<string, IndustryFieldDef[]> = {
     { key: 'drugLicenseNumber', label: 'Drug license number', type: 'text', required: true, pattern: /^[A-Za-z0-9/-]{5,30}$/, patternMessage: 'Enter a valid drug license number' },
     { key: 'licenseValidTill', label: 'License valid till', type: 'text', pattern: /^\d{4}-\d{2}-\d{2}$/, patternMessage: 'Use date format YYYY-MM-DD' }
   ],
-  TRADING: [
-    { key: 'businessType', label: 'Business type', type: 'select', required: true, options: ['Import', 'Export', 'Import & Export', 'Domestic trading'] },
+ TRADING: [
     { key: 'iecCode', label: 'Import Export Code (IEC)', type: 'text', pattern: /^[0-9]{10}$/, patternMessage: 'IEC must be 10 digits' }
   ]
 };

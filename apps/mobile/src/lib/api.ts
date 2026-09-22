@@ -15,6 +15,10 @@ export async function api<T>(path: string, options?: { method?: 'GET' | 'POST' |
     },
     body: hasBody ? JSON.stringify(options.body) : undefined,
   });
-  if (!response.ok) { const body = await response.json().catch(() => null) as { error?: { message?: string } } | null; throw new Error(body?.error?.message ?? `Request failed (${response.status})`); }
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: { message?: string; code?: string; details?: unknown } } | null;
+    const error = Object.assign(new Error(body?.error?.message ?? `Request failed (${response.status})`), { code: body?.error?.code, details: body?.error?.details });
+    throw error;
+  }
   return response.json() as Promise<T>;
 }

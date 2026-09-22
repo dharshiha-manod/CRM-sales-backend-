@@ -142,53 +142,13 @@ function sellingValue(r: Record<string, unknown>) {
 function purchaseValue(r: Record<string, unknown>) {
   return (Number(r.purchase_rate) || 0) * (Number(r.quantity) || 0);
 }
-
-// NEW — Step 7 of the Trading connectivity plan. Mirrors Step 5's
-// convertEnquiryToDeal in TradingPurchaseEnquiryPage.tsx: saving a Deal
-// with status "Confirmed" creates the matching Sales Order automatically
-// and links back to it. Guarded the same way (only fires once, checked
-// via the absent order_number) so re-saving an already-converted Deal
-// never creates a second Sales Order.
-async function convertDealToSalesOrder(deal: Record<string, unknown>, reload: () => Promise<void>) {
-  try {
-    const ordersRes = await api<{ data: Array<Record<string, unknown>> }>('/trading/sales-orders');
-    const year = new Date().getFullYear();
-    const seq = String((ordersRes.data?.length ?? 0) + 1).padStart(4, '0');
-    const orderNumber = `SO-${year}-${seq}`;
-    await api('/trading/sales-orders', {
-      method: 'POST',
-      body: JSON.stringify({
-        order_number: orderNumber,
-        deal_number: deal.deal_number ?? '',
-        customer_name: deal.customer_name ?? '',
-        product_name: deal.product_name ?? '',
-        quantity: deal.quantity,
-        unit: deal.unit,
-        currency: deal.currency,
-        selling_rate: deal.selling_rate,
-        order_date: new Date().toISOString().slice(0, 10),
-        expected_delivery_date: deal.expected_delivery_date,
-        payment_terms: deal.payment_terms,
-        delivery_terms: deal.delivery_terms,
-      }),
-    });
-    // Link back: this Deal now shows which Sales Order it became.
-    await api(`/trading/deals/${deal.id}`, { method: 'PATCH', body: JSON.stringify({ order_number: orderNumber }) });
-    await reload();
-  } catch {
-    // Best-effort automation — the Deal itself already saved fine; the
-    // user can retry (edit status again) if this part fails.
-  }
-}
-
-function handleAfterSave(saved: Record<string, unknown>, reload: () => Promise<void>) {
-  // Only fire the moment status BECOMES "Confirmed" — not on every later
-  // save of an already-converted Deal — so we never create a second
-  // Sales Order for the same Deal.
-  if (saved.status === 'Confirmed' && !saved.order_number) {
-    void convertDealToSalesOrder(saved, reload);
-  }
-}
+// Step 7/8 of the Trading connectivity plan: creating the Sales Order(s)
+// for a Confirmed deal used to happen here, client-side. It's now done by
+// the backend in trading.repository.ts (convertConfirmedDealToOrders),
+// because that path also needs to create the core FS- order Collections
+// reads from — something only the server can do safely. Saving a Deal is
+// now just a save; the backend reacts to status becoming "Confirmed" on
+// its own.
 
 const config: TradingModuleConfig = {
   resource: '/trading/deals',
@@ -330,7 +290,6 @@ const config: TradingModuleConfig = {
     { key: 'order_number', label: 'Sales order (once confirmed)', type: 'text', readOnly: true, listColumn: true, placeholder: 'Fills in automatically when status is set to "Confirmed"', group: 'Schedule & terms' },
     { key: 'notes', label: 'Notes', type: 'textarea', group: 'Schedule & terms' },
   ],
-  afterSave: handleAfterSave,
   kpis: [
     { icon: '◆', iconClass: 'kpi-icon-ink', label: 'Total deals', value: (r) => String(r.length) },
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Open deals', value: (r) => String(r.filter((x) => !['Completed', 'Cancelled', 'Lost'].includes(String(x.status))).length) },

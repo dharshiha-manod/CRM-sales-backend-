@@ -409,11 +409,30 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
       // never a user-editable field, so a locked user can't tag a record
       // into another industry even by tampering with the form payload.
       if (!editing && activeIndustryTypeId) payload.industry_type_id = activeIndustryTypeId;
-      const res = await api<{ data: TextileRecord }>(editing ? `${resource}/${editing.id}` : resource, { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
+      let res: { data: TextileRecord } | undefined;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          res = await api<{ data: TextileRecord }>(editing ? `${resource}/${editing.id}` : resource, { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
+          break;
+        } catch (caught) {
+          const code = (caught as { code?: string } | null)?.code;
+          const canRetry = !editing && code === 'DUPLICATE_RECORD' && fields.some((f) => f.autoGenerate) && attempt < 3;
+          if (!canRetry) throw caught;
+          const year = new Date().getFullYear();
+          const seq = String(records.length + 2 + attempt).padStart(4, '0');
+          const sequenceLabel = `${year}-${seq}`;
+          const regenerated: Record<string, string> = {};
+          for (const f of fields) {
+            if (f.autoGenerate) regenerated[f.key] = resolveAutoGenerate(f, form, sequenceLabel);
+          }
+          Object.assign(payload, regenerated);
+          setForm((prev) => ({ ...prev, ...regenerated }));
+        }
+      }
       setModal(false);
       setMessage(editing ? `${title} record updated successfully.` : `${title} record added successfully.`);
       await load();
-      afterSave?.(res.data, load);
+      afterSave?.(res!.data, load);
     } catch (caught) {
       setFormMessage(caught instanceof Error ? caught.message : 'Unable to save this record.');
     } finally {
@@ -710,6 +729,128 @@ function dedupeByValue(rows: TextileRecord[], f: FieldDef): TextileRecord[] {
   }
   return out;
 }
+/**
+ * Type-to-search dropdown for `type: 'lookup'` fields. Plain <select> lists
+ * become unusable once a resource (Clients, Products, etc.) has 100+ rows —
+ * this swaps the list for a text box that filters as you type, while a
+ * visually-hidden mirror input keeps the same native `required` validation
+ * the old <select> had (so "Save" still blocks and points at the field if
+ * it's required and empty).
+ */
+function SearchableLookup({
+  value,
+  required,
+  options,
+  valueKey,
+  labelKey,
+  onChange,
+}: {
+  value: string;
+  required?: boolean;
+  options: TextileRecord[];
+  valueKey?: string;
+  labelKey?: string;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const getValue = (o: TextileRecord) => String(o[valueKey ?? 'id'] ?? o.id);
+  const getLabel = (o: TextileRecord) => {
+    const v = getValue(o);
+    return labelKey ? `${v} — ${String(o[labelKey] ?? '')}` : v;
+  };
+
+  const selected = options.find((o) => getValue(o) === value);
+  const displayValue = open ? search : selected ? getLabel(selected) : '';
+  const filtered = search.trim()
+    ? options.filter((o) => getLabel(o).toLowerCase().includes(search.trim().toLowerCase()))
+    : options;
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setSearch('');
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      <input
+        type="text"
+        value={displayValue}
+        placeholder="Type to search…"
+        onFocus={() => {
+          setOpen(true);
+          setSearch('');
+        }}
+        onChange={(e) => {
+          setSearch(e.target.value);
+          setOpen(true);
+        }}
+      />
+      <input
+        type="text"
+        required={required}
+        value={value}
+        readOnly
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={() => undefined}
+        style={{ position: 'absolute', inset: 0, opacity: 0, pointerEvents: 'none' }}
+      />
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            zIndex: 20,
+            top: '100%',
+            left: 0,
+            right: 0,
+            maxHeight: 220,
+            overflowY: 'auto',
+            background: '#fff',
+            border: '1px solid #ddd',
+            borderRadius: 6,
+            boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
+          }}
+        >
+          <div
+            style={{ padding: '6px 10px', cursor: 'pointer', color: '#888' }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onChange('');
+              setOpen(false);
+              setSearch('');
+            }}
+          >
+            Select…
+          </div>
+          {filtered.length === 0 && <div style={{ padding: '6px 10px', color: '#999', fontSize: 13 }}>No matches</div>}
+          {filtered.map((o) => (
+            <div
+              key={String(o.id)}
+              style={{ padding: '6px 10px', cursor: 'pointer' }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onChange(getValue(o));
+                setOpen(false);
+                setSearch('');
+              }}
+            >
+              {getLabel(o)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function renderInput(
   f: FieldDef,
@@ -790,14 +931,14 @@ function renderInput(
       f.onValueChangeAsync?.(v, form, setForm);
     };
     return (
-      <select required={f.required} value={value} onChange={(e) => handleLookupChange(e.target.value)}>
-        <option value="">Select…</option>
-        {options.map((o) => {
-                  const optionValue = String(o[f.lookupValueKey ?? f.key] ?? o.id);
-          const optionLabel = f.lookupLabelKey ? `${optionValue} — ${String(o[f.lookupLabelKey] ?? '')}` : optionValue;
-          return <option key={String(o.id)} value={optionValue}>{optionLabel}</option>;
-        })}
-      </select>
+      <SearchableLookup
+        value={value}
+        required={f.required}
+        options={options}
+        valueKey={f.lookupValueKey ?? f.key}
+        labelKey={f.lookupLabelKey}
+        onChange={handleLookupChange}
+      />
     );
   }
   if (f.type === 'select') {

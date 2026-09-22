@@ -31,9 +31,10 @@ async function convertSalesOrderToShipment(order: Record<string, unknown>, reloa
       await reload();
       return;
     }
-    const year = new Date().getFullYear();
-    const seq = String((shipmentsRes.data?.length ?? 0) + 1).padStart(4, '0');
-    const shipmentNumber = `SHP-${year}-${seq}`;
+    // Derived from the order number, never counted — same fix as Deal ->
+    // Sales Order and Purchase Enquiry -> Deal, so two orders confirmed at
+    // the same moment can never collide on SHP-....
+    const shipmentNumber = `SHP-${String(order.order_number ?? '').replace(/^SO-/, '')}`;
     await api('/trading/shipments', {
       method: 'POST',
       body: JSON.stringify({

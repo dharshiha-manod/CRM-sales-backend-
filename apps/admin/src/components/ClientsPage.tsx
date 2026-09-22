@@ -26,7 +26,6 @@ const INDUSTRY_FIELDS: Record<string, IndustryField[]> = {
     { key: 'licenseValidTill', label: 'License valid till', type: 'text', hint: 'YYYY-MM-DD' }
   ],
   TRADING: [
-    { key: 'businessType', label: 'Business type', type: 'select', required: true, options: ['Import', 'Export', 'Import & Export', 'Domestic trading'] },
     { key: 'iecCode', label: 'Import Export Code (IEC)', type: 'text', hint: '10 digits' }
   ]
 };
@@ -342,7 +341,9 @@ const stageOf = (clientId: string): string => {
         <fieldset className="modal-fieldset">
           <legend>{industryFields.length > 0 ? `${(industryTypes.find((it) => it.id === form.industryTypeId)?.name ?? '').toUpperCase()} DETAILS` : 'OUTLET DETAILS'}</legend>
           <div className="fieldset-grid">
-            <label>Outlet type<select value={form.outletType} onChange={(e) => setForm({ ...form, outletType: e.target.value })}><option value="">Not set</option>{OUTLET_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+  {selectedIndustryCode !== 'TRADING' && (
+              <label>Outlet type<select value={form.outletType} onChange={(e) => setForm({ ...form, outletType: e.target.value })}><option value="">Not set</option>{OUTLET_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+            )}
             {industryFields.map((field) => (
               <label key={field.key}>
                 {field.label}{field.required ? ' *' : ''}
@@ -402,7 +403,11 @@ const stageOf = (clientId: string): string => {
                     <dt>Client code</dt><dd>{viewing.client_code}</dd>
                     <dt>Industry</dt><dd>{viewing.industry_types?.name ?? 'Not set'}</dd>
                     <dt>Type</dt><dd>{viewing.client_type}</dd>
-                    <dt>Outlet type</dt><dd>{OUTLET_TYPES.find(([value]) => value === viewing.outlet_type)?.[1] ?? 'Not set'}</dd>
+                 {viewing.industry_types?.code !== 'TRADING' && (
+                      <>
+                        <dt>Outlet type</dt><dd>{OUTLET_TYPES.find(([value]) => value === viewing.outlet_type)?.[1] ?? 'Not set'}</dd>
+                      </>
+                    )}
                     <dt>GSTIN</dt><dd>{viewing.gstin || 'Not recorded'}</dd>
                     <dt>PAN</dt><dd>{viewing.pan || 'Not recorded'}</dd>
                     <dt>Credit terms</dt><dd>{viewing.credit_limit != null ? `${money(viewing.credit_limit)} limit · ${viewing.credit_days ?? 0} days` : 'Not set'}</dd>

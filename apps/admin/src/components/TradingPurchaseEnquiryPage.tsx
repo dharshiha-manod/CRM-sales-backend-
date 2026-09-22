@@ -16,19 +16,21 @@ const STATUSES = ['Draft', 'Sent', 'Supplier Responded', 'Under Comparison', 'Ne
 // real customer-picker (like Deal's own Customer lookup) is a reasonable
 // next step, not folded in here to keep this change reviewable on its own.
 async function convertEnquiryToDeal(enquiry: Record<string, unknown>, reload: () => Promise<void>) {
-  const customerName = window.prompt(`Convert ${String(enquiry.enquiry_number ?? '')} to a Deal — which customer is this for?`);
-  if (!customerName) return; // cancelled — enquiry stays "Converted to Deal" with no deal_number; editing status again retries
+  const customerName = typeof enquiry.customer_name === 'string' ? enquiry.customer_name : '';
+  const customerId = typeof enquiry.customer_id === 'string' ? enquiry.customer_id : '';
+  if (!customerId) {
+    window.alert(`Pick a Customer on ${String(enquiry.enquiry_number ?? '')} before converting it to a Deal.`);
+    return; // enquiry stays "Converted to Deal" with no deal_number; editing status again retries
+  }
   try {
-    const dealsRes = await api<{ data: Array<Record<string, unknown>> }>('/trading/deals');
-    const year = new Date().getFullYear();
-    const seq = String((dealsRes.data?.length ?? 0) + 1).padStart(4, '0');
-    const dealNumber = `DEAL-${year}-${seq}`;
+    const dealNumber = `DEAL-${String(enquiry.enquiry_number ?? '').replace(/^ENQ-/, '')}`;
     await api('/trading/deals', {
       method: 'POST',
       body: JSON.stringify({
         deal_number: dealNumber,
         deal_name: `Deal for ${String(enquiry.product_name ?? '')} (from ${String(enquiry.enquiry_number ?? '')})`,
         customer_name: customerName,
+        customer_id: customerId,
         supplier_name: enquiry.supplier_name ?? '',
         product_name: enquiry.product_name ?? '',
         quantity: enquiry.quantity,
@@ -39,13 +41,9 @@ async function convertEnquiryToDeal(enquiry: Record<string, unknown>, reload: ()
         delivery_terms: enquiry.delivery_terms,
       }),
     });
-    // Link back: this enquiry now shows which Deal it became.
     await api(`/trading/purchase-enquiries/${enquiry.id}`, { method: 'PATCH', body: JSON.stringify({ deal_number: dealNumber }) });
     await reload();
-  } catch {
-    // Best-effort automation — the enquiry itself already saved fine;
-    // the user can retry (edit status again) if this part fails.
-  }
+  } catch {}
 }
 
 function handleAfterSave(saved: Record<string, unknown>, reload: () => Promise<void>) {
@@ -92,6 +90,11 @@ const config: TradingModuleConfig = {
     { key: 'quantity', label: 'Quantity', type: 'number', group: 'Requirement' },
     { key: 'unit', label: 'Unit', type: 'text', group: 'Requirement' },
     { key: 'specification', label: 'Specification', type: 'textarea', group: 'Requirement' },
+       {
+      key: 'customer_name', label: 'Customer (needed to convert this to a Deal)', type: 'lookup',
+      lookupResource: '/clients', lookupValueKey: 'client_name', lookupLabelKey: 'client_code',
+      autoFillMap: { id: 'customer_id' }, group: 'Supplier response',
+    },
     { key: 'supplier_name', label: 'Supplier / vendor', type: 'lookup', lookupResource: '/trading/suppliers', lookupLabelKey: 'supplier_name', listColumn: true, group: 'Supplier response' },
     { key: 'requested_rate', label: 'Requested / quoted rate', type: 'number', group: 'Supplier response' },
     { key: 'currency', label: 'Currency', type: 'text', group: 'Supplier response' },

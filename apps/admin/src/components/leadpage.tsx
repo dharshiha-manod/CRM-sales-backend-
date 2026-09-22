@@ -149,14 +149,7 @@ const shopTypeConfig: Record<IndustryKey, FieldConfig> = {
       ['institution', 'Export house'],
     ],
   },
-  trading: {
-    fieldLabel: 'Trade type',
-    options: [
-      ['wholesale', 'Import/Export trader'],
-      ['general_store', 'Local trader'],
-      ['institution', 'Corporate buyer'],
-    ],
-  },
+  trading: { fieldLabel: 'Trade type', options: [] },
   vehicle: {
     fieldLabel: 'Dealer type',
     options: [
@@ -298,6 +291,7 @@ function LeadTypeComboBox({ id, config, industry, value, customOptions, onChange
           autoComplete="off"
           placeholder={`Type or choose a ${fieldLabelText(config, industry).toLowerCase()}`}
           onFocus={() => setIsOpen(true)}
+          onBlur={() => setIsOpen(false)}
           onKeyDown={(event) => {
             if (event.key === 'Escape') setIsOpen(false);
           }}
@@ -467,6 +461,7 @@ const [savingNote, setSavingNote] = useState(false);
 const [calling, setCalling] = useState(false);
 const [callError, setCallError] = useState<string | null>(null);
   const [statusUpdating, setStatusUpdating] = useState(false);
+  const [rowStatusUpdating, setRowStatusUpdating] = useState<Record<string, boolean>>({});
   const [detailError, setDetailError] = useState<string | null>(null);
 
 
@@ -857,8 +852,21 @@ async function changeStatus(newStatus: Lead['status']) {
       }
     } catch (caught) {
       setDetailError(caught instanceof Error ? caught.message : 'Unable to update lead status.');
-    } finally {
+  } finally {
       setStatusUpdating(false);
+    }
+  }
+  async function changeStatusForRow(lead: Lead, newStatus: Lead['status']) {
+    if (newStatus === lead.status) return;
+    setRowStatusUpdating((current) => ({ ...current, [lead.id]: true }));
+    try {
+      const response = await api<{ data: Lead }>(`/leads/${lead.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: newStatus }) });
+      setItems((current) => current.map((item) => (item.id === response.data.id ? response.data : item)));
+      if (selected?.id === response.data.id) setSelected(response.data);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to update lead status.');
+    } finally {
+      setRowStatusUpdating((current) => ({ ...current, [lead.id]: false }));
     }
   }
   async function addNote() {
@@ -1123,7 +1131,7 @@ async function suggestRep() {
             <thead>
               <tr>
                           <th>Lead</th>
-                {activeIndustry !== 'school' && <th>{fieldLabelText(shopTypeConfig, activeIndustry)}</th>}
+                   {activeIndustry !== 'school' && activeIndustry !== 'trading' && <th>{fieldLabelText(shopTypeConfig, activeIndustry)}</th>}
                 <th>Industry</th>
                 <th>Representative</th>
                 <th>Contact</th>
@@ -1144,7 +1152,7 @@ async function suggestRep() {
                       <strong>{lead.company_name}</strong>
                       <small className="lead-code">{lead.lead_code}</small>
                     </td>
-                                       {activeIndustry !== 'school' && <td>{optionLabel(shopTypeConfig, activeIndustry, meta.shopType)}</td>}
+                             {activeIndustry !== 'school' && activeIndustry !== 'trading' && <td>{optionLabel(shopTypeConfig, activeIndustry, meta.shopType)}</td>}
                     <td>{lead.industry_types?.name ?? '—'}</td>
                     <td>{lead.sales_representatives?.user_profiles?.display_name ?? lead.sales_representatives?.employee_code ?? 'Unassigned'}</td>
                     <td>
@@ -1156,8 +1164,23 @@ async function suggestRep() {
                     <td>
                       <span className={`status-badge status-${lead.priority}`}>{priorityLabels[lead.priority] ?? lead.priority}</span>
                     </td>
-                    <td>
-                      <span className={`status-badge status-${lead.status}`}>{statusLabels[lead.status] ?? lead.status}</span>
+                 <td>
+                   <select
+                        className={`status-badge status-${lead.status} status-select`}
+                        style={{ display: 'inline-block', maxWidth: 'none', minWidth: '128px', whiteSpace: 'nowrap' }}
+                        disabled={lead.status === 'converted' || rowStatusUpdating[lead.id]}
+                        value={lead.status}
+                        aria-label={`Change status of ${lead.company_name}`}
+                        onChange={(e) => void changeStatusForRow(lead, e.target.value as Lead['status'])}
+                      >
+                        {(['new', 'contacted', 'qualified', 'unqualified', 'converted', 'lost'] as const)
+                          .filter((option) => option !== 'converted' || lead.status === 'converted')
+                          .map((option) => (
+                            <option key={option} value={option}>
+                              {statusLabels[option]}
+                            </option>
+                          ))}
+                      </select>
                     </td>
                     <td>
                       {lead.next_action_due_at ? (
@@ -1276,7 +1299,7 @@ async function suggestRep() {
               <dd>{selected.sales_representatives?.user_profiles?.display_name ?? selected.sales_representatives?.employee_code ?? 'Unassigned'}</dd>
               <dt>Area / Route</dt>
               <dd>{unpackFmcgMeta(selected.notes).meta.areaRoute || '—'}</dd>
-              {activeIndustry !== 'school' && (
+              {activeIndustry !== 'school' && activeIndustry !== 'trading' && (
                 <>
                   <dt>{fieldLabelText(shopTypeConfig, activeIndustry)}</dt>
                   <dd>{optionLabel(shopTypeConfig, activeIndustry, unpackFmcgMeta(selected.notes).meta.shopType)}</dd>
@@ -1555,7 +1578,7 @@ async function suggestRep() {
                     Area / Route
                     <input placeholder="e.g. Route 4 - MG Road belt" value={form.areaRoute} onChange={(e) => setForm({ ...form, areaRoute: e.target.value })} />
                   </label>
-                  {activeIndustry !== 'school' && (
+                 {activeIndustry !== 'school' && activeIndustry !== 'trading' && (
                     <label>
                       {fieldLabelText(shopTypeConfig, activeIndustry)}
                       <LeadTypeComboBox

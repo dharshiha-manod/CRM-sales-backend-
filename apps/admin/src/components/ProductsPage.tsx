@@ -14,6 +14,8 @@ type Product = {
   cost_price?: number | null;
   stock_quantity?: number | null;
   status: 'active' | 'inactive';
+  // Real, backend-persisted GST/tax rate for this product (products.tax_percent).
+  tax_percent?: number | null;
   // Resolved server-side from the product_industry_types join table (see
   // products.repository.ts) — not a real column on the products row itself.
   industry_type_id?: string | null;
@@ -29,7 +31,6 @@ type FmcgMeta = {
   packSize: string;
   mrp: string;
   discountPercent: string;
-  taxPercent: string;
   batchNumber: string;
   mfgDate: string;
   expiryDate: string;
@@ -44,13 +45,11 @@ const blankFmcgMeta: FmcgMeta = {
   packSize: '',
   mrp: '',
   discountPercent: '',
-  taxPercent: '',
   batchNumber: '',
   mfgDate: '',
   expiryDate: '',
   minStockLevel: '',
 };
-
 function loadFmcgMeta(productId: string): FmcgMeta {
   try {
     const raw = window.localStorage.getItem(`${FMCG_META_PREFIX}${productId}`);
@@ -138,6 +137,9 @@ type ProductForm = {
   stockQuantity: string;  
   status: 'active' | 'inactive';
   industryTypeId: string;
+  // Real, backend-persisted field (products.tax_percent) — not part of
+  // FmcgMeta/localStorage.
+  taxPercent: string;
 } & FmcgMeta;
 
 const blankForm: ProductForm = {
@@ -149,6 +151,7 @@ const blankForm: ProductForm = {
   stockQuantity: '',
   status: 'active',
   industryTypeId: '',
+  taxPercent: '',
   ...blankFmcgMeta,
 };
 
@@ -300,10 +303,11 @@ export function ProductsPage() {
      sellingPrice: String(product.selling_price),
       costPrice: product.cost_price == null ? '' : String(product.cost_price),
       stockQuantity: product.stock_quantity == null ? '' : String(product.stock_quantity),
-      status: product.status,
+         status: product.status,
       industryTypeId: product.industry_type_id ?? activeIndustryTypeId ?? '',
       ...loadFmcgMeta(product.id),
       unit: product.unit ?? 'pcs',
+      taxPercent: product.tax_percent == null ? '' : String(product.tax_percent),
     });
     setMessage('');
     setModalOpen(true);
@@ -321,7 +325,7 @@ export function ProductsPage() {
        // Industry Type is set globally via the sidebar picker, not per-product.
     setSaving(true);
     setMessage('');
-    const fmcgMeta: FmcgMeta = {
+     const fmcgMeta: FmcgMeta = {
       barcode: form.barcode,
       brand: form.brand,
       subCategory: form.subCategory,
@@ -329,7 +333,6 @@ export function ProductsPage() {
       packSize: form.packSize,
       mrp: form.mrp,
       discountPercent: form.discountPercent,
-      taxPercent: form.taxPercent,
       batchNumber: form.batchNumber,
       mfgDate: form.mfgDate,
       expiryDate: form.expiryDate,
@@ -344,6 +347,7 @@ export function ProductsPage() {
       stockQuantity: form.stockQuantity === '' ? null : Number(form.stockQuantity),
       status: form.status,
       unit: form.unit || null,
+      taxPercent: form.taxPercent === '' ? null : Number(form.taxPercent),
       industryTypeIds: [form.industryTypeId || activeIndustryTypeId || ''].filter(Boolean),
     };
     try {
@@ -475,7 +479,7 @@ export function ProductsPage() {
         <div className="data-table-wrap">
           <table>
             <thead>
-              <tr><th>Product</th><th>SKU / Barcode</th><th>Brand</th><th>Category</th><th>Selling Price / MRP</th><th>Stock</th><th>Batch / Expiry</th><th>Status</th><th>Actions</th></tr>
+              <tr><th>Product</th><th>SKU / Barcode</th><th>Brand</th><th>Category</th><th>Selling Price</th><th>Stock</th><th>Batch / Expiry</th><th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {filteredItems.map((item) => {
@@ -491,8 +495,9 @@ export function ProductsPage() {
                     </td>
                     <td>{meta.brand || '—'}</td>
                     <td>{item.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</td>
-                                                            <td>
-                      {formatMoney(Number(item.selling_price) + (Number(item.selling_price) * Number(meta.taxPercent || 0)) / 100)}
+                                        <td>
+                      {formatMoney(Number(item.selling_price) + (Number(item.selling_price) * Number(item.tax_percent || 0)) / 100)}
+                      <br /><small className="text-faint-inline">Before tax {formatMoney(Number(item.selling_price))}</small>
                     </td>
                     <td>
                       {item.stock_quantity ?? '—'}
@@ -643,8 +648,8 @@ export function ProductsPage() {
              <dt>Selling price</dt><dd>{formatMoney(Number(viewing.selling_price))}</dd>
                 <dt>Purchase price</dt><dd>{viewing.cost_price == null ? 'Not recorded' : formatMoney(Number(viewing.cost_price))}</dd>
                 <dt>MRP</dt><dd>{meta.mrp ? formatMoney(Number(meta.mrp)) : 'Not recorded'}</dd>
-                         <dt>Discount / Tax</dt><dd>{meta.discountPercent || 0}% / {meta.taxPercent || 0}%</dd>
-                <dt>Price incl. GST</dt><dd>{formatMoney(Number(viewing.selling_price) + (Number(viewing.selling_price) * Number(meta.taxPercent || 0)) / 100)}</dd>
+                         <dt>Discount / Tax</dt><dd>{meta.discountPercent || 0}% / {viewing.tax_percent || 0}%</dd>
+                <dt>Price incl. GST</dt><dd>{formatMoney(Number(viewing.selling_price) + (Number(viewing.selling_price) * Number(viewing.tax_percent || 0)) / 100)}</dd>
                 <dt>Current stock</dt>
                 <dd>
                   {viewing.stock_quantity ?? '—'}{meta.minStockLevel ? ` (min ${meta.minStockLevel})` : ''}
