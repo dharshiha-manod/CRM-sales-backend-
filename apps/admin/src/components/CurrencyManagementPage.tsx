@@ -84,9 +84,15 @@ const config: TradingModuleConfig = {
   description: 'Currencies and exchange rates used across deals, price lists, logistics, import/export, customs and claims. Each rate change is a new dated record — history is preserved and transactions keep the rate they were struck at.',
   icon: '＄',
   emptyIcon: '＄',
+  // NEW
   codeField: 'currency_code',
   nameField: 'currency_name',
   statusOptions: STATUSES,
+  // This page shows its own computed Status (Active/Upcoming/Expired,
+  // derived from effective_date/expiry_date — the rate_status field
+  // above), so the generic base Status column would just duplicate it
+  // with a permanently empty badge. Hide the generic one.
+  hideStatusColumn: true,
   searchableKeys: ['currency_code', 'currency_name', 'base_currency', 'target_currency', 'rate_source'],
   fields: [
     { key: 'currency_code', label: 'Currency code', type: 'text', required: true, listColumn: true, placeholder: 'e.g. INR' },

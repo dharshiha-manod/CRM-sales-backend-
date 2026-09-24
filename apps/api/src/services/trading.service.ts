@@ -1,4 +1,5 @@
 // NEW
+// NEW
 import * as repository from '../repositories/trading.repository.js';
 
 export const tradingService = {
@@ -7,4 +8,5 @@ export const tradingService = {
   create: repository.createTradingRecord,
   update: repository.updateTradingRecord,
   remove: repository.deleteTradingRecord,
+  sendPurchaseEnquiry: repository.sendPurchaseEnquiry,
 };

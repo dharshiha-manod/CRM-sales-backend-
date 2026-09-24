@@ -1,2 +1,2 @@
 import * as repository from '../repositories/orders.repository.js';
-export const orderService = { createFromVisit: repository.createOrderFromVisit, list: repository.listOrders };
+export const orderService = { createFromVisit: repository.createOrderFromVisit, createManual: repository.createManualOrder, list: repository.listOrders, cancel: repository.cancelOrder, update: repository.updateOrder, approve: repository.approveOrder };

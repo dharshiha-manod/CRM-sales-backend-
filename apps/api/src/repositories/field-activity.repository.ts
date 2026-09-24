@@ -2,8 +2,16 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
-
+import { getVisitConfig, getTrackingRulesConfig, getGpsConfig, getCheckInOutConfig } from '../lib/settings.js';
 const fail = (error: unknown): never => { throw error; };
+// Settings → GPS & Location → "Verification enabled" + "Minimum accuracy (meters)"
+async function assertGpsAccuracy(organizationId: string, accuracyMeters?: number | null) {
+  const gpsConfig = await getGpsConfig(organizationId);
+  if (!gpsConfig.verificationEnabled || accuracyMeters == null) return;
+  if (accuracyMeters > gpsConfig.minAccuracyMeters) {
+    throw new AppError(422, 'GPS_ACCURACY_TOO_LOW', `GPS accuracy is ${Math.round(accuracyMeters)} m, but at least ${gpsConfig.minAccuracyMeters} m is required. Move to open sky and try again.`);
+  }
+}
 const distanceMeters = (latitudeA: number, longitudeA: number, latitudeB: number, longitudeB: number) => {
   const radians = (value: number) => value * Math.PI / 180;
   const a = Math.sin(radians(latitudeB - latitudeA) / 2) ** 2 + Math.cos(radians(latitudeA)) * Math.cos(radians(latitudeB)) * Math.sin(radians(longitudeB - longitudeA) / 2) ** 2;
@@ -35,13 +43,17 @@ export async function listNearbyAssignedClients(organizationId: string, represen
 }
 
 export async function checkIn(organizationId: string, representativeId: string, input: Record<string, unknown>) {
+  const visitConfig = await getVisitConfig(organizationId);
   const location = input.location as { latitude: number; longitude: number; accuracyMeters?: number | null };
+  await assertGpsAccuracy(organizationId, location.accuracyMeters);
   let distance: number | null = null; let withinGeofence: boolean | null = null;
   if (input.clientId) {
     const { data: client, error: clientError } = await supabaseAdmin.from('clients').select('latitude, longitude, gps_radius_meters').eq('id', input.clientId as string).eq('organization_id', organizationId).maybeSingle();
     if (clientError) fail(clientError);
     if (!client) throw new AppError(404, 'CLIENT_NOT_FOUND', 'The selected client was not found.');
-    if (client.latitude != null && client.longitude != null) { distance = Math.round(distanceMeters(location.latitude, location.longitude, Number(client.latitude), Number(client.longitude))); withinGeofence = distance <= Number(client.gps_radius_meters ?? 150); }
+    if (client.latitude != null && client.longitude != null) { distance = Math.round(distanceMeters(location.latitude, location.longitude, Number(client.latitude), Number(client.longitude))); withinGeofence = distance <= Number(client.gps_radius_meters ?? visitConfig.radiusMeters); }
+    // Settings → Visit Configuration → Mandatory GPS verification
+    if (visitConfig.mandatoryGpsVerification && withinGeofence === false) throw new AppError(422, 'OUTSIDE_GEOFENCE', `You are ${distance} m from the client, outside the allowed ${client.gps_radius_meters ?? visitConfig.radiusMeters} m radius. Move closer to check in.`);
   }
   const { data, error } = await supabaseAdmin.from('field_visits').insert({ organization_id: organizationId, representative_id: representativeId, client_id: input.clientId, unlisted_client_name: input.unlistedClientName, notes: input.notes, check_in_lat: location.latitude, check_in_lng: location.longitude, check_in_accuracy_meters: location.accuracyMeters, check_in_distance_meters: distance, check_in_within_geofence: withinGeofence, status: 'checked_in' }).select('*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))').single();
   return error ? fail(error) : data;
@@ -56,13 +68,25 @@ export async function addPing(organizationId: string, representativeId: string, 
 }
 
 export async function checkOut(organizationId: string, representativeId: string, visitId: string, input: Record<string, unknown>) {
+  const visitConfig = await getVisitConfig(organizationId);
   const location = input.location as { latitude: number; longitude: number; accuracyMeters?: number | null };
-  const { data: activeVisit, error: visitError } = await supabaseAdmin.from('field_visits').select('id, clients(latitude, longitude, gps_radius_meters)').eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).in('status', ['checked_in', 'in_progress']).maybeSingle();
+  await assertGpsAccuracy(organizationId, location.accuracyMeters);
+  const notes = input.notes as string | null | undefined;
+  const { data: activeVisit, error: visitError } = await supabaseAdmin.from('field_visits').select('id, check_in_time, clients(latitude, longitude, gps_radius_meters)').eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).in('status', ['checked_in', 'in_progress']).maybeSingle();
   if (visitError) fail(visitError); if (!activeVisit) throw new AppError(404, 'ACTIVE_VISIT_NOT_FOUND', 'An active visit was not found.');
+  // Settings → Visit Configuration → Minimum visit duration
+  if (activeVisit.check_in_time) {
+    const elapsedMinutes = (Date.now() - new Date(activeVisit.check_in_time).getTime()) / 60000;
+    if (elapsedMinutes < visitConfig.minDurationMinutes) throw new AppError(422, 'VISIT_TOO_SHORT', `This visit must last at least ${visitConfig.minDurationMinutes} minute(s) before checking out.`);
+  }
+  // Settings → Visit Configuration → Require notes
+  if (visitConfig.requireNotes && !(notes && notes.trim())) throw new AppError(422, 'VISIT_NOTES_REQUIRED', 'Notes are required to check out of this visit.');
   const client = activeVisit.clients as { latitude?: number | null; longitude?: number | null; gps_radius_meters?: number | null } | null;
   const distance = client?.latitude != null && client.longitude != null ? Math.round(distanceMeters(location.latitude, location.longitude, Number(client.latitude), Number(client.longitude))) : null;
-  const withinGeofence = distance === null ? null : distance <= Number(client?.gps_radius_meters ?? 150);
-  const { data, error } = await supabaseAdmin.from('field_visits').update({ check_out_lat: location.latitude, check_out_lng: location.longitude, check_out_accuracy_meters: location.accuracyMeters, check_out_distance_meters: distance, check_out_within_geofence: withinGeofence, check_out_time: new Date().toISOString(), notes: input.notes, outcome: input.outcome, status: 'checked_out' }).eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).in('status', ['checked_in', 'in_progress']).select('*, clients(client_code, client_name)').maybeSingle();
+  const withinGeofence = distance === null ? null : distance <= Number(client?.gps_radius_meters ?? visitConfig.radiusMeters);
+  // Settings → Visit Configuration → Mandatory GPS verification
+  if (visitConfig.mandatoryGpsVerification && withinGeofence === false) throw new AppError(422, 'OUTSIDE_GEOFENCE', `You are ${distance} m from the client, outside the allowed ${client?.gps_radius_meters ?? visitConfig.radiusMeters} m radius. Move closer to check out.`);
+  const { data, error } = await supabaseAdmin.from('field_visits').update({check_out_lat: location.latitude, check_out_lng: location.longitude, check_out_accuracy_meters: location.accuracyMeters, check_out_distance_meters: distance, check_out_within_geofence: withinGeofence, check_out_time: new Date().toISOString(), notes: input.notes, outcome: input.outcome, status: 'checked_out' }).eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).in('status', ['checked_in', 'in_progress']).select('*, clients(client_code, client_name)').maybeSingle();
   if (error) fail(error); if (!data) throw new AppError(404, 'ACTIVE_VISIT_NOT_FOUND', 'An active visit was not found.');
   // Automatic follow-up: only when the rep explicitly flagged the visit as
   // needing one, and only if this visit doesn't already have one (avoids
@@ -79,7 +103,27 @@ export async function checkOut(organizationId: string, representativeId: string,
   return data;
 }
 
+// Settings → Check-in/Check-out Configuration → Auto checkout (minutes).
+// This codebase has no background job runner (see syncOverdueCollectionFollowUps
+// in follow-ups.repository.ts for the same constraint), so this runs
+// opportunistically on read instead of on a schedule: any visit still
+// "checked_in"/"in_progress" past the threshold gets force-checked-out the
+// next time a visit list is fetched, by admin or by the rep's own app.
+async function sweepStaleCheckIns(organizationId: string) {
+  const checkInOutConfig = await getCheckInOutConfig(organizationId);
+  if (!checkInOutConfig.autoCheckoutAfterMinutes || checkInOutConfig.autoCheckoutAfterMinutes <= 0) return;
+  const cutoff = new Date(Date.now() - checkInOutConfig.autoCheckoutAfterMinutes * 60000).toISOString();
+  const { data: stale, error } = await supabaseAdmin.from('field_visits').select('id, notes').eq('organization_id', organizationId).in('status', ['checked_in', 'in_progress']).lt('check_in_time', cutoff);
+  if (error) { console.error('Auto checkout sweep failed', error); return; }
+  for (const visit of stale ?? []) {
+    const notes = `${visit.notes ? visit.notes + '\n' : ''}Auto checked-out by system after ${checkInOutConfig.autoCheckoutAfterMinutes} minute(s) with no check-out.`;
+    const { error: updateError } = await supabaseAdmin.from('field_visits').update({ status: 'checked_out', check_out_time: new Date().toISOString(), notes }).eq('id', visit.id).eq('organization_id', organizationId).in('status', ['checked_in', 'in_progress']);
+    if (updateError) console.error('Auto checkout failed for visit', visit.id, updateError);
+  }
+}
+
 export async function listVisits(organizationId: string, representativeId?: string, industryTypeId?: string | null) {
+  await sweepStaleCheckIns(organizationId);
   const select = industryTypeId
     ? '*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))'
     : '*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))';
@@ -108,6 +152,8 @@ export async function createVisitActivity(organizationId: string, representative
 }
 
 export async function listLiveVisits(organizationId: string, industryTypeId?: string | null) {
+  await sweepStaleCheckIns(organizationId);
+  const trackingConfig = await getTrackingRulesConfig(organizationId);
   const select = industryTypeId
     ? 'id, status, check_in_time, check_in_lat, check_in_lng, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))'
     : 'id, status, check_in_time, check_in_lat, check_in_lng, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))';
@@ -120,5 +166,15 @@ export async function listLiveVisits(organizationId: string, industryTypeId?: st
   const { data: pings, error: pingError } = await supabaseAdmin.from('field_activity_pings').select('visit_id, latitude, longitude, accuracy_meters, captured_at').in('visit_id', ids).order('captured_at', { ascending: false });
   if (pingError) fail(pingError);
   const latest = new Map<string, unknown>(); for (const ping of pings ?? []) if (!latest.has(ping.visit_id)) latest.set(ping.visit_id, ping);
-  return (visits ?? []).map((visit) => ({ ...visit, latest_ping: latest.get(visit.id) ?? null }));
+  // Settings → Tracking Rules → "Idle alert after (minutes)": flags a visit
+  // whose last known location (latest ping, or check-in if no ping yet) is
+  // older than the configured threshold. Informational only — never blocks
+  // or changes the visit itself.
+  return (visits ?? []).map((visit) => {
+    const lastPing = latest.get(visit.id) as { captured_at: string } | undefined;
+    const lastSeenAt = lastPing?.captured_at ?? visit.check_in_time;
+    const minutesSinceLastSeen = lastSeenAt ? (Date.now() - new Date(lastSeenAt).getTime()) / 60000 : null;
+    const idle = minutesSinceLastSeen !== null && minutesSinceLastSeen >= trackingConfig.idleAlertAfterMinutes;
+    return { ...visit, latest_ping: lastPing ?? null, idle };
+  });
 }

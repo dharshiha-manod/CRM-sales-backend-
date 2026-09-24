@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import { useIndustry, INDUSTRY_ORDER } from '../industry/IndustryContext';  
 import { INDUSTRY_CONFIGS } from '../industry/mockData';
 import type { IndustryKey } from '../industry/types';
+import { hydrateSettingsState } from '../settings/types';
 import './MasterDataPages.css';
 import './NotificationsPage.css';
 /* ────────────────────────────── Types ────────────────────────────── */
@@ -291,18 +292,36 @@ function buildLiveNotifications(sources: {
   return items;
 }
 
+// Settings → Notifications → "In-app" column. Live feed items are matched to the
+// Settings event rows by title; an item with no matching row is always shown.
+const SETTINGS_EVENT_BY_TITLE: Record<string, string> = {
+  'New Order Received': 'New Order',
+  'Payment Received': 'Collection Received',
+  'Follow-up Overdue': 'Follow-up Reminder',
+  'Low Stock Alert': 'Low Stock',
+  'Expiry Alert': 'Expiry Alert',
+};
+
 async function loadLiveNotifications(): Promise<NotificationItem[]> {
-  const [orders, collections, clients, followUps, products, industryTypes] = await Promise.all([
+  const [orders, collections, clients, followUps, products, industryTypes, orgSettings] = await Promise.all([
     api<{ data: LiveOrder[] }>('/orders').catch(() => ({ data: [] })),
     api<{ data: LiveCollection[] }>('/collections').catch(() => ({ data: [] })),
     api<{ data: LiveClient[] }>('/clients').catch(() => ({ data: [] })),
     api<{ data: LiveFollowUp[] }>('/follow-ups').catch(() => ({ data: [] })),
     api<{ data: LiveProduct[] }>('/products').catch(() => ({ data: [] })),
     api<{ data: LiveIndustryType[] }>('/industry-types?status=active').catch(() => ({ data: [] })),
+    api<{ data: { settings?: unknown } | null }>('/organization-settings').catch(() => ({ data: null })),
   ]);
-  return buildLiveNotifications({
+  const items = buildLiveNotifications({
     orders: orders.data ?? [], collections: collections.data ?? [], clients: clients.data ?? [],
     followUps: followUps.data ?? [], products: products.data ?? [], industryTypes: industryTypes.data ?? [],
+  });
+  const inAppOff = new Set(
+    hydrateSettingsState(orgSettings.data?.settings).notifications.filter((row) => !row.inApp).map((row) => row.category),
+  );
+  return items.filter((item) => {
+    const event = SETTINGS_EVENT_BY_TITLE[item.title];
+    return !event || !inAppOff.has(event);
   });
 }
 

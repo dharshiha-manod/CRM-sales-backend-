@@ -7,8 +7,11 @@ export function SalesConfigSection({ value, onChange }: { value: SalesConfig; on
       <Field label="Sales stages" hint="Comma-separated, in pipeline order.">
         <input value={value.stages.join(', ')} onChange={(e) => onChange({ ...value, stages: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} />
       </Field>
-      <div className="settings-form-grid">
-        <Field label="Order numbering prefix"><input value={value.orderNumberingPrefix} onChange={(e) => onChange({ ...value, orderNumberingPrefix: e.target.value })} /></Field>
+           <div className="settings-form-grid">
+        {/* Order numbering prefix removed — order numbers are controlled by
+            Order Configuration → Numbering format (numberingFormat), which
+            is the one actually used when orders are created. Keeping both
+            fields here made it look like either could control numbering. */}
         <Field label="Approval required above value (₹)">
           <input type="number" value={value.approvalRequiredAboveValue} onChange={(e) => onChange({ ...value, approvalRequiredAboveValue: Number(e.target.value) })} />
         </Field>

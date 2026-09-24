@@ -1,8 +1,15 @@
+
 import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { api } from '../lib/api';
 import { applyPriceListRates } from '../lib/priceListLookup';
+import { SendPurchaseEnquiryButton } from './SendPurchaseEnquiryButton';
 
 const STATUSES = ['Draft', 'Sent', 'Supplier Responded', 'Under Comparison', 'Negotiation', 'Approved', 'Rejected', 'Converted to Deal', 'Closed'];
+
+// Handed this page's own reload() via registerReload below, so the
+// Send-to-supplier button can refresh the list/detail after a real send
+// updates status to 'Sent' server-side.
+let reloadPurchaseEnquiries: () => void = () => {};
 
 // NEW — Step 5 of the Trading connectivity plan. The "Converted to Deal"
 // status option existed on this form already but did nothing when picked.
@@ -97,7 +104,10 @@ const config: TradingModuleConfig = {
     },
     { key: 'supplier_name', label: 'Supplier / vendor', type: 'lookup', lookupResource: '/trading/suppliers', lookupLabelKey: 'supplier_name', listColumn: true, group: 'Supplier response' },
     { key: 'requested_rate', label: 'Requested / quoted rate', type: 'number', group: 'Supplier response' },
-    { key: 'currency', label: 'Currency', type: 'text', group: 'Supplier response' },
+{
+      key: 'currency', label: 'Currency', type: 'lookup', group: 'Supplier response',
+      lookupResource: '/trading/currency-rates', lookupValueKey: 'currency_code', lookupLabelKey: 'currency_name',
+    },
     { key: 'delivery_location', label: 'Delivery location', type: 'text', group: 'Supplier response' },
     { key: 'delivery_terms', label: 'Delivery terms', type: 'text', group: 'Supplier response' },
     { key: 'payment_terms', label: 'Payment terms', type: 'text', group: 'Supplier response' },
@@ -106,7 +116,11 @@ const config: TradingModuleConfig = {
     { key: 'deal_number', label: 'Deal (once converted)', type: 'text', readOnly: true, listColumn: true, placeholder: 'Fills in automatically when status is set to "Converted to Deal"', group: 'Supplier response' },
     { key: 'notes', label: 'Notes', type: 'textarea', group: 'Supplier response' },
   ],
+
   afterSave: handleAfterSave,
+  registerReload: (reload) => { reloadPurchaseEnquiries = reload; },
+  rowActions: (r) => <SendPurchaseEnquiryButton enquiry={r} onSent={() => reloadPurchaseEnquiries()} />,
+  detailActions: (r) => <SendPurchaseEnquiryButton enquiry={r} onSent={() => reloadPurchaseEnquiries()} />,
   kpis: [
     { icon: '❓', iconClass: 'kpi-icon-ink', label: 'Total enquiries', value: (r) => String(r.length) },
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Pending supplier response', value: (r) => String(r.filter((x) => x.status === 'Sent').length) },

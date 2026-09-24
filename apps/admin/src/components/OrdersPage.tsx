@@ -37,6 +37,7 @@ type VisitRef = {
 };
 type AddClient = { id: string; client_code: string; client_name: string };
 type AddProduct = { id: string; product_code: string; product_name: string; selling_price: number };
+type AddRep = { id: string; employee_code: string; status: string; user_profiles?: { display_name?: string | null } | null };
 type AddOrderLine = { productId: string; quantity: string; discountPercent: string; freeQuantity: string };
 const emptyAddLine: AddOrderLine = { productId: '', quantity: '1', discountPercent: '0', freeQuantity: '0' };
 
@@ -169,6 +170,12 @@ export function OrdersPage() {
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [paymentMessage, setPaymentMessage] = useState<string | null>(null);
 
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelSaving, setCancelSaving] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [approveSaving, setApproveSaving] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
   // Add Order — direct entry, no active field visit required. Client and
   // product lines are picked here; the total updates automatically as
   // quantity/discount/free-qty change, same math as the visit order form.
@@ -181,6 +188,8 @@ export function OrdersPage() {
   const [addClientName, setAddClientName] = useState('');
   const [addLines, setAddLines] = useState<AddOrderLine[]>([emptyAddLine]);
   const [addNotes, setAddNotes] = useState('');
+  const [addReps, setAddReps] = useState<AddRep[]>([]);
+  const [addRepId, setAddRepId] = useState('');
   const [addSaving, setAddSaving] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [addSuccess, setAddSuccess] = useState<string | null>(null);
@@ -266,6 +275,9 @@ export function OrdersPage() {
   function closeOrder() {
     setSelected(null);
     setPaymentOpen(false);
+    setCancelOpen(false);
+    setCancelReason('');
+    setCancelError(null);
   }
   async function handleAddOrder() {
     setAddError(null);
@@ -275,15 +287,18 @@ export function OrdersPage() {
     setAddClientName('');
     setAddLines([emptyAddLine]);
     setAddNotes('');
+    setAddRepId('');
     setAddOpen(true);
     setAddOptionsLoading(true);
     try {
-      const [clientsRes, productsRes] = await Promise.all([
+      const [clientsRes, productsRes, repsRes] = await Promise.all([
         api<{ data: AddClient[] }>('/clients'),
         api<{ data: AddProduct[] }>('/products'),
+        api<{ data: AddRep[] }>('/sales-representatives').catch(() => ({ data: [] as AddRep[] })),
       ]);
       setAddClients((clientsRes.data ?? []).filter((c) => clientMatchesActiveIndustry(c.client_code)));
       setAddProducts(productsRes.data ?? []);
+      setAddReps((repsRes.data ?? []).filter((r) => r.status === 'active'));
     } catch (caught) {
       setAddError(caught instanceof Error ? caught.message : 'Unable to load clients and products.');
     } finally {
@@ -308,6 +323,7 @@ export function OrdersPage() {
     setAddError(null);
     if (addClientMode === 'existing' && !addClientId) return setAddError('Select a client.');
     if (addClientMode === 'outside' && !addClientName.trim()) return setAddError('Enter the client name.');
+    if (!addRepId) return setAddError('Select a sales representative.');
     const validLines = addLines.filter((line) => line.productId);
     if (!validLines.length) return setAddError('Add at least one product line.');
     for (const line of validLines) {
@@ -321,6 +337,7 @@ export function OrdersPage() {
               body: JSON.stringify({
           clientId: addClientMode === 'existing' ? addClientId : null,
           clientName: addClientMode === 'outside' ? addClientName.trim() : null,
+          representativeId: addRepId,
           items: validLines.map((line) => ({
             productId: line.productId,
             quantity: Number(line.quantity),
@@ -403,8 +420,41 @@ export function OrdersPage() {
       await load();
     } catch (caught) {
       setPaymentError(caught instanceof Error ? caught.message : 'Unable to record this payment.');
-    } finally {
+       } finally {
       setPaymentSaving(false);
+    }
+  }
+
+  async function submitCancel(order: Order) {
+    setCancelError(null);
+    setCancelSaving(true);
+    try {
+      await api(`/orders/${order.id}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: cancelReason.trim() || null }),
+      });
+      setCancelOpen(false);
+      setCancelReason('');
+      await load();
+      closeOrder();
+    } catch (caught) {
+      setCancelError(caught instanceof Error ? caught.message : 'Unable to cancel this order.');
+    } finally {
+      setCancelSaving(false);
+    }
+  }
+
+  async function submitApprove(order: Order) {
+    setApproveError(null);
+    setApproveSaving(true);
+    try {
+      await api(`/orders/${order.id}/approve`, { method: 'POST' });
+      await load();
+      closeOrder();
+    } catch (caught) {
+      setApproveError(caught instanceof Error ? caught.message : 'Unable to approve this order.');
+    } finally {
+      setApproveSaving(false);
     }
   }
 
@@ -446,7 +496,7 @@ export function OrdersPage() {
 
   // KPI cards reflect the full industry-scoped ledger, independent of the table's own filters.
   const totalOrders = scopedItems.length;
-  const pendingCount = scopedItems.filter((o) => o.status === 'pending').length;
+  const pendingCount = scopedItems.filter((o) => o.status === 'pending_approval').length;
   const confirmedCount = scopedItems.filter((o) => o.status === 'confirmed').length;
   const completedCount = scopedItems.filter((o) => o.status === 'completed').length;
   const cancelledCount = scopedItems.filter((o) => o.status === 'cancelled').length;
@@ -534,8 +584,8 @@ export function OrdersPage() {
             {repOptions.map((r) => <option key={r} value={r}>{r}</option>)}
           </select>
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All statuses</option>
-            <option value="pending">Pending</option>
+                       <option value="">All statuses</option>
+            <option value="pending_approval">Pending approval</option>
             <option value="confirmed">Confirmed</option>
             <option value="completed">Completed</option>
             <option value="cancelled">Cancelled</option>
@@ -662,13 +712,44 @@ export function OrdersPage() {
                       : <span className="text-faint-inline">Visit {selected.visit_id.slice(0, 8)}</span>
                   ) : <span className="text-faint-inline">Not linked</span>}
                 </dd>
-                {selected.quotation_id && (
+                             {selected.quotation_id && (
                   <>
                     <dt>Related quotation</dt>
                     <dd><span className="text-faint-inline">Quotation {selected.quotation_id.slice(0, 8)}</span></dd>
                   </>
                 )}
               </dl>
+
+                         {selected.status === 'pending_approval' && (
+                <>
+                  {approveError && <p className="error-message">{approveError}</p>}
+                  <div className="modal-actions">
+                    <button type="button" className="primary-action" onClick={() => void submitApprove(selected)} disabled={approveSaving}>{approveSaving ? 'Approving…' : 'Approve order'}</button>
+                  </div>
+                </>
+              )}
+
+              {selected.status !== 'cancelled' && selected.status !== 'completed' && (
+                <>
+                  {cancelError && <p className="error-message">{cancelError}</p>}
+                  {cancelOpen ? (
+                    <form className="master-form" onSubmit={(e) => { e.preventDefault(); void submitCancel(selected); }}>
+                      <label>
+                        Reason (optional)
+                        <input value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} placeholder={selected.status === 'pending_approval' ? 'Why is this order being rejected?' : 'Why is this order being cancelled?'} />
+                      </label>
+                      <div className="modal-actions">
+                        <button type="button" className="quiet-button" onClick={() => { setCancelOpen(false); setCancelReason(''); setCancelError(null); }} disabled={cancelSaving}>Back</button>
+                        <button type="submit" className="primary-action icon-action--danger" disabled={cancelSaving}>{cancelSaving ? 'Saving…' : selected.status === 'pending_approval' ? 'Confirm rejection' : 'Confirm cancellation'}</button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div className="modal-actions">
+                      <button type="button" className="quiet-button" onClick={() => setCancelOpen(true)}>{selected.status === 'pending_approval' ? 'Reject order' : 'Cancel order'}</button>
+                    </div>
+                  )}
+                </>
+              )}
 
               <div className="data-table-wrap">
                 <table>
@@ -817,6 +898,13 @@ export function OrdersPage() {
                   ) : (
                     <input required value={addClientName} placeholder="Type the client's name" onChange={(e) => setAddClientName(e.target.value)} />
                   )}
+                          </label>
+                <label className="order-builder-field">
+                  <span>Sales representative</span>
+                  <select value={addRepId} onChange={(e) => setAddRepId(e.target.value)}>
+                    <option value="">Select a sales representative</option>
+                    {addReps.map((r) => <option key={r.id} value={r.id}>{r.user_profiles?.display_name || r.employee_code}</option>)}
+                  </select>
                 </label>
                 <strong>Products</strong>
                 <div className="order-line order-line-header" aria-hidden="true">
@@ -859,7 +947,7 @@ export function OrdersPage() {
                   <button
                     type="button"
                     className="primary-action"
-                    disabled={addSaving || (addClientMode === 'existing' ? !addClientId : !addClientName.trim()) || !addLines.some((line) => line.productId && Number(line.quantity) > 0)}
+                    disabled={addSaving || !addRepId || (addClientMode === 'existing' ? !addClientId : !addClientName.trim()) || !addLines.some((line) => line.productId && Number(line.quantity) > 0)}
                     onClick={() => void submitAddOrder()}
                   >
                     {addSaving ? 'Saving…' : 'Create order'}

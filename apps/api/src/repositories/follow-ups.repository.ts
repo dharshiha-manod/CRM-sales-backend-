@@ -1,9 +1,11 @@
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
+import { getFollowUpConfig, getCollectionConfig } from '../lib/settings.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 const fail = (error: unknown): never => { throw error; };
-const OVERDUE_DAYS = 3;
+// OVERDUE_DAYS removed — this used to disagree with the Collections page's
+// own overdue threshold (Step 4). Now both read the same Settings value.
 type LeadFollowUpInput = { leadId: string; representativeId: string | null; companyName: string; dueAt: string; priority: string; notes?: string | null };
 
 /** Creates, or refreshes, the one open follow-up associated with a lead. */
@@ -42,7 +44,14 @@ export async function createManual(organizationId: string, input: { clientId: st
 // this codebase has no background job runner, so "automatic" means it
 // runs on read instead of on a schedule.
 async function syncOverdueCollectionFollowUps(organizationId: string) {
-  const cutoff = new Date(Date.now() - OVERDUE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const followUpConfig = await getFollowUpConfig(organizationId);
+  if (!followUpConfig.overdueAlerts) return; // ← NEW: Settings can disable this whole feature
+
+  // ↓ CHANGED: reuse Collection Configuration's overdueThresholdDays instead
+  // of a separate hardcoded number — one definition of "overdue," used
+  // consistently by both the Collections page and this auto-follow-up.
+  const collectionConfig = await getCollectionConfig(organizationId);
+  const cutoff = new Date(Date.now() - collectionConfig.overdueThresholdDays * 24 * 60 * 60 * 1000).toISOString();
   const { data: candidateOrders, error: ordersError } = await supabaseAdmin.from('sale_orders').select('id, order_number, client_id, representative_id, total_amount, created_at').eq('organization_id', organizationId).eq('status', 'confirmed').lte('created_at', cutoff);
   if (ordersError) { console.error('Overdue collection scan failed', ordersError); return; }
   for (const order of candidateOrders ?? []) {

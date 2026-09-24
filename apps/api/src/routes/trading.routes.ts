@@ -1,3 +1,4 @@
+// NEW
 import { Router } from 'express';
 import { trading } from '../controllers/trading.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
@@ -15,3 +16,7 @@ for (const resource of TRADING_RESOURCES) {
   tradingRouter.patch(`${base}/:id`, authenticate, manager, trading.update(resource));
   tradingRouter.delete(`${base}/:id`, authenticate, manager, trading.remove(resource));
 }
+
+// Real "Send to supplier" for Purchase Enquiry (actually emails the
+// supplier) — a specific route alongside the generic CRUD ones above.
+tradingRouter.post('/trading/purchase-enquiries/:id/send', authenticate, manager, trading.sendPurchaseEnquiry);

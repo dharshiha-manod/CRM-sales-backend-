@@ -1,9 +1,11 @@
+
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import type { TradingResource } from '../lib/trading-resources.js';
 import { resolveIndustryTypeId, assertRecordInScope } from '../lib/industry-scope.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { logger } from '../lib/logger.js';
+import { sendPurchaseEnquiryEmail } from '../services/purchase-enquiry-email.service.js';
 
 const fail = (error: unknown): never => { throw error; };
 
@@ -137,9 +139,34 @@ async function autoCreateShipmentLogistics(org: string, shipment: Record<string,
       status: 'Dispatched',
       notes: `Automatically created from shipment ${shipmentNumber}.`,
     });
+// NEW
     if (error && error.code !== '23505') throw error;
   } catch (error) {
     logger.error({ err: error, shipmentNumber: shipment.shipment_number }, 'Automatic logistics creation failed');
+  }
+}
+
+// Goods physically arrive when a shipment reaches "Delivered" — that's
+// the moment stock should increase, matched to the product by name.
+// Only ever called on the actual transition INTO Delivered (see the
+// previousStatus check in updateTradingRecord below), so re-saving an
+// already-delivered shipment can never double-count the stock.
+async function autoUpdateInventoryOnDelivery(org: string, shipment: Record<string, unknown>) {
+  try {
+    const productName = typeof shipment.product_name === 'string' ? shipment.product_name.trim() : '';
+    if (!productName) return;
+    const quantity = Number(shipment.quantity) || 0;
+    if (quantity <= 0) return;
+    const { data: product, error: productError } = await supabaseAdmin
+      .from('products').select('id, stock_quantity')
+      .eq('organization_id', org).ilike('product_name', productName).limit(1).maybeSingle();
+    if (productError) throw productError;
+    if (!product) return; // no matching product in the catalog — nothing to update
+    const nextStock = (Number(product.stock_quantity) || 0) + quantity;
+    const { error } = await supabaseAdmin.from('products').update({ stock_quantity: nextStock }).eq('id', product.id).eq('organization_id', org);
+    if (error) throw error;
+  } catch (error) {
+    logger.error({ err: error, shipmentNumber: shipment.shipment_number }, 'Automatic inventory update on delivery failed');
   }
 }
 
@@ -275,7 +302,7 @@ export async function createTradingRecord(resource: TradingResource, org: string
 
 export async function updateTradingRecord(resource: TradingResource, org: string, id: string, input: Record<string, unknown>, scope: IndustryScope) {
   const notFound = new AppError(404, 'RECORD_NOT_FOUND', `${resource.path} record was not found.`);
-  const { data: existing, error: existingError } = await supabaseAdmin.from(resource.table).select('industry_type_id').eq('organization_id', org).eq('id', id).maybeSingle();
+  const { data: existing, error: existingError } = await supabaseAdmin.from(resource.table).select('industry_type_id, status').eq('organization_id', org).eq('id', id).maybeSingle();
   if (existingError) fail(existingError);
   if (!existing) throw notFound;
   assertRecordInScope(scope, (existing as { industry_type_id?: string | null }).industry_type_id, notFound);
@@ -294,10 +321,14 @@ export async function updateTradingRecord(resource: TradingResource, org: string
   // Trading module saves unchanged.
    if (resource.table === 'trading_shipments') {
     const shipment = data as Record<string, unknown>;
+    const previousStatus = typeof (existing as { status?: string | null }).status === 'string' ? (existing as { status?: string | null }).status : '';
     await cascadeShipmentStatus(org, shipment);
     const status = typeof shipment.status === 'string' ? shipment.status : '';
     if (DOCUMENT_TRIGGER_STATUSES.has(status)) await autoCreateShipmentDocuments(org, shipment);
     if (LOGISTICS_TRIGGER_STATUSES.has(status)) await autoCreateShipmentLogistics(org, shipment);
+    // Only on the actual transition INTO Delivered — never re-fires on a
+    // later, unrelated save of an already-delivered shipment.
+    if (status === 'Delivered' && previousStatus !== 'Delivered') await autoUpdateInventoryOnDelivery(org, shipment);
   }
   if (resource.table === 'trading_deals') {
     const deal = data as Record<string, unknown>;
@@ -306,6 +337,7 @@ export async function updateTradingRecord(resource: TradingResource, org: string
   return data;
 }
 
+// NEW (end of file)
 export async function deleteTradingRecord(resource: TradingResource, org: string, id: string, scope: IndustryScope) {
   const notFound = new AppError(404, 'RECORD_NOT_FOUND', `${resource.path} record was not found.`);
   const { data: existing, error: existingError } = await supabaseAdmin.from(resource.table).select('industry_type_id').eq('organization_id', org).eq('id', id).maybeSingle();
@@ -316,4 +348,40 @@ export async function deleteTradingRecord(resource: TradingResource, org: string
   if (error) fail(error);
   if (!data) throw notFound;
   return data;
+}
+
+// Real "Send to supplier" for Purchase Enquiry — actually emails the
+// supplier (unlike the status dropdown alone, which was just a label).
+// Looks the supplier up by name to get their saved email, sends via SMTP,
+// then flips status to 'Sent' only after the mail server accepts it —
+// so a failed send never falsely marks the enquiry as sent.
+export async function sendPurchaseEnquiry(org: string, id: string, scope: IndustryScope) {
+  const notFound = new AppError(404, 'RECORD_NOT_FOUND', 'Purchase enquiry record was not found.');
+  const { data: enquiry, error } = await supabaseAdmin
+    .from('trading_purchase_enquiries').select('*')
+    .eq('organization_id', org).eq('id', id).maybeSingle();
+  if (error) fail(error);
+  if (!enquiry) throw notFound;
+  assertRecordInScope(scope, (enquiry as { industry_type_id?: string | null }).industry_type_id, notFound);
+
+  const supplierName = typeof enquiry.supplier_name === 'string' ? enquiry.supplier_name.trim() : '';
+  if (!supplierName) throw new AppError(422, 'SUPPLIER_REQUIRED', 'Pick a supplier on this enquiry before sending it.');
+
+  const { data: supplier, error: supplierError } = await supabaseAdmin
+    .from('trading_suppliers').select('supplier_name, email')
+    .eq('organization_id', org).eq('supplier_name', supplierName).limit(1).maybeSingle();
+  if (supplierError) fail(supplierError);
+  if (!supplier?.email) throw new AppError(422, 'SUPPLIER_EMAIL_REQUIRED', 'This supplier has no saved email address. Add one in Supplier / Vendor Management before sending.');
+
+  const { data: organization } = await supabaseAdmin.from('organizations').select('name').eq('id', org).maybeSingle();
+  const companyName = organization?.name ?? 'Our company';
+
+  await sendPurchaseEnquiryEmail(enquiry as Record<string, unknown> as Parameters<typeof sendPurchaseEnquiryEmail>[0], supplier.supplier_name ?? supplierName, supplier.email, companyName);
+
+  const { data: updated, error: updateError } = await supabaseAdmin
+    .from('trading_purchase_enquiries').update({ status: 'Sent' })
+    .eq('organization_id', org).eq('id', id).select().maybeSingle();
+  if (updateError) fail(updateError);
+  if (!updated) throw notFound;
+  return updated;
 }

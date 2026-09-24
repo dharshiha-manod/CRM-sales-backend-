@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useIndustry } from '../industry/IndustryContext';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { api } from '../lib/api';
+import { useOrgSettings } from '../settings/useOrgSettings';
 import type { IndustryKey } from '../industry/types';
 import './InventoryPage.css';
 
@@ -54,6 +55,7 @@ interface InventoryItem {
   unitValue: number;
   barcode: string;
   assignedRep?: string;
+  expiryWarnDays?: number;
   // industry-specific extras
   mrp?: number;
   storageRequirement?: string;
@@ -95,6 +97,7 @@ interface StockRequest {
   requiredDate: string;
   remarks: string;
   status: 'Pending' | 'Approved' | 'Rejected' | 'Fulfilled';
+  requestedTo?: string;
   rep: string;
 }
 
@@ -114,14 +117,7 @@ function fmtDate(iso: string | null): string {
 let seq = 1000;
 function nextId(prefix: string) { seq += 1; return `${prefix}-${seq}`; }
 
-const REPS: Record<IndustryKey, string[]> = {
-  fmcg: ['Arun Kumar', 'Priya Singh', 'Ravi Menon'],
-  school: ['Deepa Nair', 'Suresh Babu'],
-  textile: ['Kavya R', 'Mohan Das'],
-  pharma: ['Anjali P', 'Vignesh S'],
-  trading: ['Sundar T', 'Farah Sheikh'],
-  vehicle: ['Karthik V', 'Meera J'],
-};
+// Rep names now come from the real /sales-representatives API (see loadReps below).
 
 // FMCG-style per-product extras (min/max stock level, batch, location, etc.)
 // have no backend column yet — ProductsPage already persists its own
@@ -146,7 +142,7 @@ function readFmcgMeta(productId: string): { minStockLevel: string; batchNumber: 
  * table exists, they default to 0/blank rather than being invented, so we
  * never show a fake number next to a real one.
  */
-function buildInventoryFromProducts(products: ApiProduct[]): InventoryItem[] {
+function buildInventoryFromProducts(products: ApiProduct[], rules: { minStock: number; expiryWarnDays: number }): InventoryItem[] {
   return products.map((p) => {
     const meta = readFmcgMeta(p.id);
     const industry = (p as { industry?: IndustryKey }).industry; // resolved by caller via industry_type_id lookup
@@ -165,11 +161,12 @@ function buildInventoryFromProducts(products: ApiProduct[]): InventoryItem[] {
       totalStock: p.stock_quantity ?? 0,
       reserved: 0,
       assigned: 0,
-      minStock: meta.minStockLevel ? Number(meta.minStockLevel) : 0,
+      minStock: meta.minStockLevel ? Number(meta.minStockLevel) : rules.minStock,
       maxStock: 0,
       location: '—',
       unitValue: p.selling_price ?? 0,
-      barcode: meta.barcode || '',
+       barcode: meta.barcode || '',
+      expiryWarnDays: rules.expiryWarnDays,
     };
   });
 }
@@ -215,7 +212,7 @@ function computeStatus(item: InventoryItem): StockStatus {
   if (item.expiryDate) {
     const days = Math.ceil((new Date(item.expiryDate).getTime() - Date.now()) / 86400000);
     if (days < 0) return 'expired';
-    if (days <= 30) return 'expiring_soon';
+      if (days <= (item.expiryWarnDays ?? 30)) return 'expiring_soon';
   }
   if (available <= 0) return 'out_of_stock';
   if (available < item.minStock) return 'low_stock';
@@ -266,6 +263,7 @@ type ModalKind =
 export function InventoryPage() {
   const { activeIndustry } = useIndustry();
   const { matchesActiveIndustry } = useIndustryScope();
+  const { settings: orgSettings } = useOrgSettings();
 
   const [role, setRole] = useState<UserRole>('admin');
   const [rawProducts, setRawProducts] = useState<ApiProduct[]>([]);
@@ -286,6 +284,43 @@ export function InventoryPage() {
   }
   useEffect(() => { void loadProducts(); }, []);
 
+  // Real sales representatives (same endpoint RepresentativesPage uses).
+  const [reps, setReps] = useState<string[]>([]);
+
+  // Admins / managers a rep can send a stock request to.
+  const [approvers, setApprovers] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api<{ data: { email?: string | null; status: string; user_profiles?: { display_name?: string | null } | null; roles?: { code?: string | null } | null }[] }>('/users');
+        const names = (res.data ?? [])
+          .filter((u) => u.status === 'active' && ['super_admin', 'admin', 'sales_manager'].includes(u.roles?.code ?? ''))
+          .map((u) => u.user_profiles?.display_name || u.email || '')
+          .filter(Boolean);
+        if (!cancelled) setApprovers(Array.from(new Set(names)));
+      } catch {
+        if (!cancelled) setApprovers([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api<{ data: { employee_code: string; status: string; user_profiles?: { display_name?: string | null } | null }[] }>('/sales-representatives');
+        const names = (res.data ?? [])
+          .filter((r) => r.status === 'active')
+          .map((r) => r.user_profiles?.display_name || r.employee_code);
+        if (!cancelled) setReps(Array.from(new Set(names)));
+      } catch {
+        if (!cancelled) setReps([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // Products scoped to the active industry — same rule every other module
   // (Products, Clients, Orders) already uses, so switching industries here
   // shows exactly the same items Products would show.
@@ -295,8 +330,14 @@ export function InventoryPage() {
   );
 
   const productItems = useMemo(
-    () => buildInventoryFromProducts(scopedProducts.map((p) => ({ ...p, industry: activeIndustry }))),
-    [scopedProducts, activeIndustry],
+       () => buildInventoryFromProducts(
+      scopedProducts.map((p) => ({ ...p, industry: activeIndustry })),
+      {
+        minStock: orgSettings.inventory.lowStockAlert ? orgSettings.inventory.minStockThreshold : 0,
+        expiryWarnDays: orgSettings.inventory.expiryAlert ? orgSettings.inventory.expiryWarningDays : -1,
+      },
+    ),
+    [scopedProducts, activeIndustry, orgSettings.inventory.lowStockAlert, orgSettings.inventory.minStockThreshold, orgSettings.inventory.expiryAlert, orgSettings.inventory.expiryWarningDays],
   );
 
   // Local-only overrides from the Add Stock / Transfer / Assign / Adjust
@@ -310,9 +351,7 @@ export function InventoryPage() {
     [productItems, overrides],
   );
   const [movements, setMovements] = useState<MovementRecord[]>([]);
-  const [requests, setRequests] = useState<StockRequest[]>([
-    { id: nextId('req'), product: 'Toothpaste 100g', quantity: 50, reason: 'Running low at outlet visits', requiredDate: daysFromNow(5), remarks: 'Urgent for weekend route', status: 'Pending', rep: 'Priya Singh' },
-  ]);
+  const [requests, setRequests] = useState<StockRequest[]>([]);
 
   // filters
   const [search, setSearch] = useState('');
@@ -326,7 +365,20 @@ export function InventoryPage() {
 
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
   const [selectedRep, setSelectedRep] = useState<string | null>(null);
-  const [modal, setModal] = useState<ModalKind>({ kind: 'none' });
+  const [modal, setModalRaw] = useState<ModalKind>({ kind: 'none' });
+  // Settings → Inventory Configuration: blocks the actions an org has switched off.
+  // Every existing setModal({...}) call site keeps working unchanged.
+  function setModal(next: ModalKind) {
+    const rules: Partial<Record<ModalKind['kind'], [boolean, string]>> = {
+      transfer: [orgSettings.inventory.allowStockTransfer, 'Stock transfer is turned off in Settings → Inventory Configuration.'],
+      adjust: [orgSettings.inventory.allowStockAdjustment, 'Stock adjustment is turned off in Settings → Inventory Configuration.'],
+      assign: [orgSettings.inventory.repStockAssignment, 'Assigning stock to reps is turned off in Settings → Inventory Configuration.'],
+      viewBatch: [orgSettings.inventory.batchTracking, 'Batch tracking is turned off in Settings → Inventory Configuration.'],
+    };
+    const rule = rules[next.kind];
+    if (rule && !rule[0]) { showToast(rule[1]); return; }
+    setModalRaw(next);
+  }
   const [toast, setToast] = useState<string | null>(null);
   const [tab, setTab] = useState<'overview' | 'products' | 'movement' | 'reps' | 'requests'>('overview');
 
@@ -342,7 +394,7 @@ export function InventoryPage() {
 
   const categories = useMemo(() => Array.from(new Set(industryItems.map((i) => i.category))), [industryItems]);
   const brands = useMemo(() => Array.from(new Set(industryItems.map((i) => i.brand))), [industryItems]);
-  const reps = useMemo(() => REPS[activeIndustry], [activeIndustry]);
+ 
   const locations = useMemo(() => Array.from(new Set(industryItems.map((i) => i.location))), [industryItems]);
 
   const filtered = useMemo(() => {
@@ -394,12 +446,19 @@ export function InventoryPage() {
   }
 
   /* ---------- action handlers ---------- */
-
-  function handleAddStock(data: { productId: string; batch: string; mfgDate: string; expiryDate: string; quantity: number; location: string; supplierRef: string; purchaseRef: string; remarks: string }) {
+  async function handleAddStock(data: { productId: string; batch: string; mfgDate: string; expiryDate: string; quantity: number; location: string; supplierRef: string; purchaseRef: string; remarks: string }) {
     const item = allItems.find((i) => i.id === data.productId);
     if (!item) return;
+    const newStock = item.totalStock + data.quantity;
+    try {
+      await api(`/products/${item.id}`, { method: 'PATCH', body: JSON.stringify({ stockQuantity: newStock }) });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Unable to save the stock change.');
+      return;
+    }
+    await loadProducts();
     updateItem(item.id, {
-      totalStock: item.totalStock + data.quantity,
+      totalStock: newStock,
       batch: data.batch || item.batch,
       mfgDate: data.mfgDate || item.mfgDate,
       expiryDate: data.expiryDate || item.expiryDate,
@@ -428,8 +487,16 @@ export function InventoryPage() {
     setModal({ kind: 'none' });
   }
 
-  function handleAdjust(item: InventoryItem, delta: number, reason: string, remarks: string) {
-    updateItem(item.id, { totalStock: Math.max(0, item.totalStock + delta) });
+  async function handleAdjust(item: InventoryItem, delta: number, reason: string, remarks: string) {
+    const newStock = orgSettings.stockRules.negativeStockAllowed ? item.totalStock + delta : Math.max(0, item.totalStock + delta);
+    try {
+      await api(`/products/${item.id}`, { method: 'PATCH', body: JSON.stringify({ stockQuantity: newStock }) });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Unable to save the stock adjustment.');
+      return;
+    }
+    await loadProducts();
+    updateItem(item.id, { totalStock: newStock });
     recordMovement({ itemId: item.id, date: new Date().toISOString().slice(0, 10), type: 'Stock Adjustment', reference: `ADJ-${item.sku}-${reason.slice(0, 3).toUpperCase()}`, quantity: delta, from: remarks || reason, to: item.location, user: 'Admin' });
     showToast('✓ Stock adjustment completed.');
     setModal({ kind: 'none' });
@@ -444,8 +511,8 @@ export function InventoryPage() {
     setModal({ kind: 'none' });
   }
 
-  function handleRequest(data: { product: string; quantity: number; reason: string; requiredDate: string; remarks: string }) {
-    setRequests((prev) => [{ id: nextId('req'), ...data, status: 'Pending', rep: reps[0] }, ...prev]);
+  function handleRequest(data: { product: string; quantity: number; reason: string; requiredDate: string; remarks: string; requestedTo: string }) {
+    setRequests((prev) => [{ id: nextId('req'), ...data, status: 'Pending', rep: reps[0] ?? 'Sales rep' }, ...prev]);
     showToast('✓ Stock request submitted.');
     setModal({ kind: 'none' });
   }
@@ -704,7 +771,7 @@ export function InventoryPage() {
       {activeTab === 'requests' && (isManagerUp || role === 'rep') && (
         <section className="inv-table-wrap">
           <table className="inv-table">
-            <thead><tr><th>Product</th><th>Qty</th><th>Reason</th><th>Required Date</th><th>Rep</th><th>Status</th>{isManagerUp && <th>Action</th>}</tr></thead>
+              <thead><tr><th>Product</th><th>Qty</th><th>Reason</th><th>Required Date</th><th>Rep</th><th>Request To</th><th>Status</th>{isManagerUp && <th>Action</th>}</tr></thead>
             <tbody>
               {requests.map((r) => (
                 <tr key={r.id}>
@@ -712,7 +779,8 @@ export function InventoryPage() {
                   <td>{r.quantity}</td>
                   <td>{r.reason}</td>
                   <td>{fmtDate(r.requiredDate)}</td>
-                  <td>{r.rep}</td>
+                          <td>{r.rep}</td>
+                  <td>{r.requestedTo ?? '—'}</td>
                   <td><span className={`badge badge-${r.status === 'Approved' || r.status === 'Fulfilled' ? 'good' : r.status === 'Rejected' ? 'bad' : 'warn'}`}>{r.status}</span></td>
                   {isManagerUp && (
                     <td className="inv-row-actions">
@@ -725,9 +793,9 @@ export function InventoryPage() {
                   )}
                 </tr>
               ))}
-              {requests.length === 0 && <tr><td colSpan={isManagerUp ? 7 : 6} className="inv-cell-sub">No stock requests.</td></tr>}
+                      {requests.length === 0 && <tr><td colSpan={isManagerUp ? 8 : 7} className="inv-cell-sub">No stock requests.</td></tr>}
             </tbody>
-          </table>
+          </table>  
         </section>
       )}
 
@@ -769,7 +837,7 @@ export function InventoryPage() {
         <ReturnModal items={industryItems} reps={reps} onCancel={() => setModal({ kind: 'none' })} onSubmit={handleReturn} />
       )}
       {modal.kind === 'request' && (
-        <RequestModal items={industryItems} onCancel={() => setModal({ kind: 'none' })} onSubmit={handleRequest} />
+          <RequestModal items={industryItems} approvers={approvers} onCancel={() => setModal({ kind: 'none' })} onSubmit={handleRequest} />
       )}
       {modal.kind === 'scan' && (
         <ScanModal items={industryItems} onClose={() => setModal({ kind: 'none' })} onView={(it) => { setModal({ kind: 'none' }); setSelectedItem(it); }} onAddStock={() => setModal({ kind: 'addStock' })} onTransfer={(it) => setModal({ kind: 'transfer', item: it })} onAssign={(it) => setModal({ kind: 'assign', item: it })} />
@@ -1158,17 +1226,22 @@ function ReturnModal({ items, reps, onCancel, onSubmit }: {
   );
 }
 
-function RequestModal({ items, onCancel, onSubmit }: {
-  items: InventoryItem[]; onCancel: () => void;
-  onSubmit: (d: { product: string; quantity: number; reason: string; requiredDate: string; remarks: string }) => void;
+function RequestModal({ items, approvers, onCancel, onSubmit }: {
+  items: InventoryItem[]; approvers: string[]; onCancel: () => void;
+  onSubmit: (d: { product: string; quantity: number; reason: string; requiredDate: string; remarks: string; requestedTo: string }) => void;
 }) {
   const [product, setProduct] = useState(items[0]?.name ?? '');
   const [quantity, setQuantity] = useState(0);
   const [reason, setReason] = useState('');
   const [requiredDate, setRequiredDate] = useState('');
   const [remarks, setRemarks] = useState('');
+  const [requestedTo, setRequestedTo] = useState('');
   return (
-    <ModalShell title="Request Stock" onCancel={onCancel} submitLabel="Submit Request" onSubmit={() => quantity > 0 && onSubmit({ product, quantity, reason, requiredDate, remarks })}>
+    <ModalShell title="Request Stock" onCancel={onCancel} submitLabel="Submit Request" onSubmit={() => quantity > 0 && onSubmit({ product, quantity, reason, requiredDate, remarks, requestedTo: requestedTo || 'Any manager / Admin' })}>
+      <label>Request To<select value={requestedTo} onChange={(e) => setRequestedTo(e.target.value)}>
+        <option value="">Any manager / Admin</option>
+        {approvers.map((a) => <option key={a} value={a}>{a}</option>)}
+      </select></label>
       <label>Product<select value={product} onChange={(e) => setProduct(e.target.value)}>{items.map((i) => <option key={i.id} value={i.name}>{i.name}</option>)}</select></label>
       <label>Quantity<input type="number" min={1} value={quantity || ''} onChange={(e) => setQuantity(Number(e.target.value))} /></label>
       <label>Reason<textarea value={reason} onChange={(e) => setReason(e.target.value)} /></label>

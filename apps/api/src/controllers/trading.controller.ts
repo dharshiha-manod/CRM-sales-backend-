@@ -27,6 +27,7 @@ function asBody(req: Parameters<RequestHandler>[0]): Record<string, unknown> {
 }
 
 
+// NEW
 export const trading = {
   list: (resource: TradingResource): RequestHandler => async (req, res) => {
     const requested = typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : undefined;
@@ -46,5 +47,8 @@ export const trading = {
   },
   remove: (resource: TradingResource): RequestHandler => async (req, res) => {
     res.json({ data: await tradingService.remove(resource, org(req), idParam(req.params.id), req.industryScope!) });
+  },
+  sendPurchaseEnquiry: async (req, res) => {
+    res.json({ data: await tradingService.sendPurchaseEnquiry(org(req), idParam(req.params.id), req.industryScope!) });
   },
 };

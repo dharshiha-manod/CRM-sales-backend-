@@ -1,15 +1,11 @@
 import type { CheckInOutConfig, GpsConfig, TrackingRulesConfig } from './types';
 import { Field, SubSection, Toggle } from './ui';
-
 export function GpsLocationSection({ value, onChange }: { value: GpsConfig; onChange: (next: GpsConfig) => void }) {
   return (
-    <SubSection title="Field Visit Verification & Operations Tracking" description="Confirms a visit happened at the customer location and keeps location data accurate during active visits.">
+    <SubSection title="Field Visit Verification & Operations Tracking" description="Keeps location data accurate during active visits. Visit radius and required-GPS toggles now live under Field Ops → Visit Configuration.">
       <div className="settings-form-grid">
         <Field label="GPS verification" inline><Toggle checked={value.verificationEnabled} onChange={(next) => onChange({ ...value, verificationEnabled: next })} /></Field>
-        <Field label="Allowed visit radius (meters)"><input type="number" value={value.radiusMeters} onChange={(e) => onChange({ ...value, radiusMeters: Number(e.target.value) })} /></Field>
         <Field label="Minimum GPS accuracy (meters)"><input type="number" value={value.minAccuracyMeters} onChange={(e) => onChange({ ...value, minAccuracyMeters: Number(e.target.value) })} /></Field>
-        <Field label="Require check-in GPS" inline><Toggle checked={value.requireCheckinGps} onChange={(next) => onChange({ ...value, requireCheckinGps: next })} /></Field>
-        <Field label="Require check-out GPS" inline><Toggle checked={value.requireCheckoutGps} onChange={(next) => onChange({ ...value, requireCheckoutGps: next })} /></Field>
         <Field label="Allow offline capture" inline><Toggle checked={value.allowOfflineCapture} onChange={(next) => onChange({ ...value, allowOfflineCapture: next })} /></Field>
         <Field label="Track location during active visit" inline><Toggle checked={value.trackDuringActiveVisit} onChange={(next) => onChange({ ...value, trackDuringActiveVisit: next })} /></Field>
       </div>

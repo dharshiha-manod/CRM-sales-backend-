@@ -1,5 +1,7 @@
 import { AppError } from '../errors/app-error.js';
+import { getOrderConfig, getSalesConfig } from '../lib/settings.js';
 import { supabaseAdmin } from '../lib/supabase.js';
+import { formatOrderNumber } from './orders.repository.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import { logger } from '../lib/logger.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
@@ -86,7 +88,8 @@ export async function convertToOrder(organizationId: string, representativeId: s
   if (representativeId && quotation.representative_id !== representativeId) throw new AppError(404, 'QUOTATION_NOT_FOUND', 'Quotation not found in this organization.');
   if (quotation.converted_order_id) return quotation;
   if (quotation.status !== 'accepted' || !quotation.approved_at) throw new AppError(422, 'QUOTATION_NOT_APPROVED', 'Only a manager-approved quotation can be converted into an order.');
-  const number = `FS-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+   const orderConfig = await getOrderConfig(organizationId);
+  const number = formatOrderNumber(orderConfig.numberingFormat);
   const { data: order, error } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: number, client_id: quotation.client_id, representative_id: quotation.representative_id, discount_amount: quotation.discount_amount, tax_amount: quotation.tax_amount, total_amount: quotation.total_amount, notes: `Converted from quotation ${quotation.quotation_number}`, status: 'confirmed' }).select().single();
   if (error) fail(error);
   const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal, tax_percent: item.tax_percent ?? 0, tax_amount: item.tax_amount ?? 0 }));
@@ -125,8 +128,32 @@ export async function sendQuotation(organizationId: string, representativeId: st
 }
 async function publicQuotation(token: string) { const { data, error } = await supabaseAdmin.from('quotations').select(`${PUBLIC}, public_token, token_expires_at`).eq('public_token', token).maybeSingle(); if (error) fail(error); if (!data || !data.token_expires_at || new Date(data.token_expires_at).getTime() < Date.now()) throw new AppError(404, 'QUOTATION_LINK_NOT_FOUND', 'This quotation link is invalid or has expired.'); return data; }
 export async function getPublicQuotation(token: string) { const { public_token: _token, token_expires_at: _expiry, organization_id, clients, ...quotation } = await publicQuotation(token); const industryTypeId = (clients as { industry_type_id?: string | null } | null)?.industry_type_id; const template = industryTypeId ? await getQuotationEmailTemplate(organization_id, industryTypeId) : null; return { ...quotation, clients: clients ? { client_name: (clients as { client_name?: string }).client_name } : null, company_logo_url: template?.logo_url ?? null }; }
-export async function recordPublicDecision(token: string, input: PublicDecision) { const quotation = await publicQuotation(token); if (quotation.status !== 'sent') throw new AppError(409, 'QUOTATION_ALREADY_DECIDED', 'This quotation has already been decided.'); const update = input.decision === 'accepted' ? { status: 'client_accepted', decision_source: 'client_portal', decided_at: new Date().toISOString(), decided_by: null } : { status: 'rejected', decision_source: 'client_portal', decided_at: new Date().toISOString(), decided_by: null, rejection_reason: input.reason?.trim() ?? null }; const { data, error } = await supabaseAdmin.from('quotations').update(update).eq('id', quotation.id).eq('status', 'sent').select(PUBLIC).maybeSingle(); if (error) fail(error); if (!data) throw new AppError(409, 'QUOTATION_ALREADY_DECIDED', 'This quotation has already been decided.'); return data; }
+export async function recordPublicDecision(token: string, input: PublicDecision) {
+  const quotation = await publicQuotation(token);
+  if (quotation.status !== 'sent') throw new AppError(409, 'QUOTATION_ALREADY_DECIDED', 'This quotation has already been decided.');
+  const update = input.decision === 'accepted'
+    ? { status: 'client_accepted', decision_source: 'client_portal', decided_at: new Date().toISOString(), decided_by: null }
+    : { status: 'rejected', decision_source: 'client_portal', decided_at: new Date().toISOString(), decided_by: null, rejection_reason: input.reason?.trim() ?? null };
+  const { data, error } = await supabaseAdmin.from('quotations').update(update).eq('id', quotation.id).eq('status', 'sent').select(PUBLIC).maybeSingle();
+  if (error) fail(error);
+  if (!data) throw new AppError(409, 'QUOTATION_ALREADY_DECIDED', 'This quotation has already been decided.');
 
+  // ↓ NEW: small quotations skip the manual manager-approval step entirely
+  if (input.decision === 'accepted') {
+    const salesConfig = await getSalesConfig(quotation.organization_id);
+    if (Number(data.total_amount) < salesConfig.approvalRequiredAboveValue) {
+      const { error: approveError } = await supabaseAdmin.from('quotations').update({ status: 'accepted', approved_at: new Date().toISOString(), approved_by: null }).eq('id', data.id).eq('organization_id', quotation.organization_id).eq('status', 'client_accepted');
+      if (approveError) fail(approveError);
+      await finalizeApprovedQuotation(quotation.organization_id, data.id);
+      const { data: refreshed, error: refreshError } = await supabaseAdmin.from('quotations').select(PUBLIC).eq('id', data.id).maybeSingle();
+      if (refreshError) fail(refreshError);
+      return refreshed ?? data;
+    }
+  }
+  return data;
+}
+
+// NEW
 async function createDealFromApprovedQuotation(quotation: Awaited<ReturnType<typeof getQuotation>>) {
   const { data: existing, error: existingError } = await supabaseAdmin
     .from('trading_deals')
@@ -154,7 +181,11 @@ async function createDealFromApprovedQuotation(quotation: Awaited<ReturnType<typ
     product_category: product?.category ?? null,
     quantity: item?.quantity ?? null,
     purchase_rate: product?.cost_price ?? null,
- selling_rate: item?.quantity ? Number(item.subtotal) / Number(item.quantity) : item?.unit_price ?? null,
+    // Use the quotation's tax-inclusive total_amount (not the item's
+    // pre-tax subtotal) so the deal's selling_rate × quantity matches
+    // what the Trading Sales Order and Collections modules show —
+    // ensureTradingSalesOrder() below already uses quotation.total_amount.
+    selling_rate: item?.quantity ? Number(quotation.total_amount) / Number(item.quantity) : item?.unit_price ?? null,
     sales_rep: (quotation.sales_representatives as { user_profiles?: { display_name?: string | null } | null } | null)?.user_profiles?.display_name ?? null,
     currency: 'INR',
     deal_date: new Date().toISOString().slice(0, 10),
@@ -174,7 +205,6 @@ async function createDealFromApprovedQuotation(quotation: Awaited<ReturnType<typ
   }
   return data;
 }
-
 // Deal Management only exists in the Trading workspace, so only Trading
 // quotations get a Deal + Trading Sales Order. Matched on code, ignoring case,
 // because industry_types can hold both 'TRADING' and 'trading'.
@@ -307,11 +337,11 @@ async function linkCoreOrderToDeal(organizationId: string, deal: Record<string, 
   }
 }
 
-export async function approveQuotation(organizationId: string, managerUserId: string, id: string, scope?: IndustryScope) {
+// Shared by both approveQuotation (manager clicks "Approve") and
+// recordPublicDecision's auto-approval path below — same finishing steps
+// either way, so we only maintain this logic in one place.
+async function finalizeApprovedQuotation(organizationId: string, id: string, scope?: IndustryScope) {
   const quotation = await getQuotation(organizationId, id, scope);
-  if (quotation.status !== 'client_accepted') throw new AppError(422, 'QUOTATION_NOT_AWAITING_APPROVAL', 'Only a client-accepted quotation can be approved.');
-  const { error } = await supabaseAdmin.from('quotations').update({ status: 'accepted', approved_at: new Date().toISOString(), approved_by: managerUserId }).eq('id', id).eq('organization_id', organizationId).eq('status', 'client_accepted');
-  if (error) fail(error);
   const tradingDeal = await runTradingChain(quotation);
   const converted = await convertToOrder(organizationId, null, id, scope);
   if (tradingDeal && converted.converted_order_id) {
@@ -319,5 +349,13 @@ export async function approveQuotation(organizationId: string, managerUserId: st
     if (coreOrder) await linkCoreOrderToDeal(organizationId, tradingDeal, coreOrder);
   }
   return converted;
+}
+
+export async function approveQuotation(organizationId: string, managerUserId: string, id: string, scope?: IndustryScope) {
+  const quotation = await getQuotation(organizationId, id, scope);
+  if (quotation.status !== 'client_accepted') throw new AppError(422, 'QUOTATION_NOT_AWAITING_APPROVAL', 'Only a client-accepted quotation can be approved.');
+  const { error } = await supabaseAdmin.from('quotations').update({ status: 'accepted', approved_at: new Date().toISOString(), approved_by: managerUserId }).eq('id', id).eq('organization_id', organizationId).eq('status', 'client_accepted');
+  if (error) fail(error);
+  return finalizeApprovedQuotation(organizationId, id, scope);
 }
 export async function denyQuotation(organizationId: string, managerUserId: string, id: string, reason: string, scope?: IndustryScope) { const quotation = await getQuotation(organizationId, id, scope); if (quotation.status !== 'client_accepted') throw new AppError(422, 'QUOTATION_NOT_AWAITING_APPROVAL', 'Only a client-accepted quotation can be denied.'); const { data, error } = await supabaseAdmin.from('quotations').update({ status: 'rejected', approved_by: managerUserId, rejection_reason: reason }).eq('id', id).eq('organization_id', organizationId).eq('status', 'client_accepted').select().maybeSingle(); if (error) fail(error); if (!data) throw new AppError(409, 'QUOTATION_NOT_AWAITING_APPROVAL', 'This quotation is no longer awaiting approval.'); return data; }

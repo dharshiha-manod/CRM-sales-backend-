@@ -26,15 +26,16 @@ export function DataDisplaySection({ value, onChange }: { value: DataDisplaySett
   );
 }
 
-export function AuditLogSection({ entries }: { entries: AuditLogEntry[] }) {
+export function AuditLogSection({ entries, activeIndustry }: { entries: AuditLogEntry[]; activeIndustry: AuditLogEntry['industryTypeId'] }) {
   const [user, setUser] = useState('');
   const [module, setModule] = useState('');
   const [date, setDate] = useState('');
-  const filtered = useMemo(() => entries.filter((e) =>
+  const scoped = useMemo(() => entries.filter((e) => e.industryTypeId === activeIndustry), [entries, activeIndustry]);
+  const filtered = useMemo(() => scoped.filter((e) =>
     (!user || e.user.toLowerCase().includes(user.toLowerCase())) &&
     (!module || e.module.toLowerCase().includes(module.toLowerCase())) &&
     (!date || e.date.toLowerCase().includes(date.toLowerCase()))
-  ), [entries, user, module, date]);
+  ), [scoped, user, module, date]);
   return (
     <SubSection title="Audit Log" description="Recent configuration changes across Settings.">
       <div className="settings-audit-filters">

@@ -1,10 +1,11 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustry } from '../industry/IndustryContext';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { useOrgSettings } from '../settings/useOrgSettings';           // ← NEW
+import type { TargetConfig } from '../settings/types';                 // ← NEW
 import './MasterDataPages.css';
 import './TargetsPage.css';
-
 type TargetApiRow = {
   id: string;
   representative_id: string;
@@ -79,15 +80,17 @@ function targetTypeLabel(type: string) { return TARGET_TYPE_LABELS[type] ?? type
 function targetSource(type: string) { return TARGET_SOURCES[type] ?? 'Live CRM activity'; }
 function repName(t: TargetApiRow) { return t.sales_representatives?.user_profiles?.display_name ?? t.sales_representatives?.employee_code ?? 'Unassigned'; }
 function achievementPct(t: TargetApiRow) { return t.target_value > 0 ? Math.round((t.achieved_value / t.target_value) * 100) : 0; }
-function computeStatus(t: TargetApiRow): 'not_started' | 'on_track' | 'at_risk' | 'achieved' | 'exceeded' {
+// ↓ CHANGED: thresholds now come from Settings → Target Configuration
+// instead of fixed numbers (40 / 50 / 100 / 110) baked into the code.
+function computeStatus(t: TargetApiRow, config: TargetConfig): 'not_started' | 'on_track' | 'at_risk' | 'achieved' | 'exceeded' {
   const pct = achievementPct(t);
   const now = new Date(); const end = new Date(t.period_end);
   if (t.achieved_value <= 0 && now < end) return 'not_started';
-  if (pct >= 110) return 'exceeded';
-  if (pct >= 100) return 'achieved';
+  if (pct >= config.achievedAtPercent + 10) return 'exceeded';
+  if (pct >= config.achievedAtPercent) return 'achieved';
   const daysLeft = Math.ceil((end.getTime() - now.getTime()) / 86400000);
-  if (pct < 50 && daysLeft <= 10) return 'at_risk';
-  if (pct < 40) return 'at_risk';
+  if (pct < config.onTrackBelowPercent && daysLeft <= 10) return 'at_risk';
+  if (pct < config.atRiskBelowPercent) return 'at_risk';
   return 'on_track';
 }
 function periodRange(period: 'today' | 'week' | 'month' | 'quarter' | 'year'): { start: string; end: string; label: string } {
@@ -106,8 +109,17 @@ export function TargetsPage() {
   const { config: industryConfig } = useIndustry();
   const { activeIndustryTypeId } = useIndustryScope();
   const industryLabel = industryConfig.label.toUpperCase();
+  const { settings: orgSettings, loading: settingsLoading } = useOrgSettings(); // ← NEW
 
+  // Settings → Target Configuration → Default period
+  const DEFAULT_PERIOD_MAP: Record<TargetConfig['defaultPeriod'], 'week' | 'month' | 'quarter'> = { Weekly: 'week', Monthly: 'month', Quarterly: 'quarter' };
   const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'quarter' | 'year'>('month');
+  const periodSeeded = useRef(false);
+  useEffect(() => {
+    if (periodSeeded.current || settingsLoading) return;
+    periodSeeded.current = true;
+    setPeriod(DEFAULT_PERIOD_MAP[orgSettings.target.defaultPeriod]);
+  }, [settingsLoading, orgSettings]);
   const [targets, setTargets] = useState<TargetApiRow[]>([]);
   const [reps, setReps] = useState<RepOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -145,24 +157,24 @@ export function TargetsPage() {
 
   const filtered = useMemo(() => targets.filter((t) => {
     if (search && !repName(t).toLowerCase().includes(search.toLowerCase())) return false;
-    if (statusFilter && computeStatus(t) !== statusFilter) return false;
+if (statusFilter && computeStatus(t, orgSettings.target) !== statusFilter) return false;
     return true;
-  }), [targets, search, statusFilter]);
+}), [targets, search, statusFilter, orgSettings.target]);
 
   const kpi = useMemo(() => {
     const totalTarget = filtered.reduce((s, t) => s + Number(t.target_value), 0);
     const achieved = filtered.reduce((s, t) => s + t.achieved_value, 0);
     const remaining = Math.max(0, totalTarget - achieved);
     const pct = totalTarget > 0 ? Math.round((achieved / totalTarget) * 100) : 0;
-    const atRisk = filtered.filter((t) => computeStatus(t) === 'at_risk').length;
-    return { totalTarget, achieved, remaining, pct, atRisk };
-  }, [filtered]);
+   const atRisk = filtered.filter((t) => computeStatus(t, orgSettings.target) === 'at_risk').length;
+return { totalTarget, achieved, remaining, pct, atRisk };
+}, [filtered, orgSettings.target]);
   const metricTypes = useMemo(() => [...new Set(filtered.map((target) => target.target_type))], [filtered]);
   const oneMetricType = metricTypes.length === 1 ? metricTypes[0] : null;
   const kpiLabel = oneMetricType ? targetTypeLabel(oneMetricType) : 'Selected targets';
   const formatKpi = (value: number) => oneMetricType ? formatByType(value, oneMetricType) : '—';
 
-  const alerts = useMemo(() => filtered.filter((t) => computeStatus(t) === 'at_risk'), [filtered]);
+const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings.target) === 'at_risk'), [filtered, orgSettings.target]);
 
   function openCreate() { setEditing(null); setFormMessage(''); setModal(true); }
   function openEdit(t: TargetApiRow) { setEditing(t); setFormMessage(''); setModal(true); }
@@ -248,11 +260,11 @@ export function TargetsPage() {
           <tbody>
             {loading ? (
               [0, 1, 2].map((i) => <tr key={i} className="skeleton-row"><td colSpan={9}><span className="skeleton-block" style={{ width: '100%' }} /></td></tr>)
-            ) : filtered.length === 0 ? (
+                 ) : filtered.length === 0 ? (
               <tr><td colSpan={9} className="empty-row"><div className="empty-state"><p>No targets for this period yet.</p><button type="button" className="primary-action" onClick={openCreate}>+ Create Target</button></div></td></tr>
             ) : filtered.map((t) => {
-              const pct = achievementPct(t); const status = computeStatus(t);
-              return (
+              const pct = achievementPct(t); const status = computeStatus(t, orgSettings.target);
+              return (  
                 <tr key={t.id}>
                   <td>{repName(t)}</td>
                   <td><strong>{targetTypeLabel(t.target_type)}</strong><small>{targetSource(t.target_type)}</small></td>
@@ -277,8 +289,7 @@ export function TargetsPage() {
       {alerts.length > 0 && (
         <>
           <h3>Alerts &amp; Attention Required</h3>
-          {alerts.map((t) => <p key={t.id} className="error-message">{repName(t)} is below 60% achievement ({achievementPct(t)}%).</p>)}
-        </>
+{alerts.map((t) => <p key={t.id} className="error-message">{repName(t)} is below {orgSettings.target.atRiskBelowPercent}% achievement ({achievementPct(t)}%).</p>)}        </>
       )}
 
       {modal && (

@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import './SettingsPage.css';
 import { useIndustry } from '../industry/IndustryContext';
 import type { RoleView, SectionId, SettingsState } from '../settings/types';
-import { AUDIT_LOG, createInitialSettingsState } from '../settings/types';
+import { AUDIT_LOG, createInitialSettingsState, hydrateSettingsState } from '../settings/types';
 import { EmptyGate } from '../settings/ui';
 import { OrganizationSection, IndustryConfigurationSection, LocalizationSection, WorkingHoursSection } from '../settings/GeneralSettings';
 import { RolesPermissionsSection, UserPreferencesSection } from '../settings/AccessSettings';
@@ -15,6 +15,7 @@ import { DataDisplaySection, AuditLogSection } from '../settings/SystemSettings'
 import { IndustrySpecificSection } from '../settings/IndustrySettings';
 import { QuotationEmailSettings } from '../settings/QuotationEmailSettings';
 import { api } from '../lib/api';
+import { publishOrgSettings } from '../settings/useOrgSettings';
 
 interface NavItem { id: SectionId; label: string; roles: RoleView[] }
 interface NavGroup { id: string; label: string; items: NavItem[] }
@@ -63,23 +64,6 @@ const NAV_GROUPS: NavGroup[] = [
   ]},
 ];
 
-function hydrateSettings(stored: unknown): SettingsState {
-  const defaults = createInitialSettingsState();
-  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return defaults;
-  const raw = stored as Record<string, unknown>;
-  const merged = { ...defaults } as SettingsState;
-  for (const key of Object.keys(defaults) as (keyof SettingsState)[]) {
-    const savedValue = raw[key];
-    const defaultValue = defaults[key];
-    if (Array.isArray(defaultValue)) {
-      if (Array.isArray(savedValue)) merged[key] = savedValue as SettingsState[typeof key];
-    } else if (defaultValue && typeof defaultValue === 'object' && savedValue && typeof savedValue === 'object' && !Array.isArray(savedValue)) {
-      merged[key] = { ...defaultValue, ...savedValue } as SettingsState[typeof key];
-    }
-  }
-  merged.industrySpecific = { ...defaults.industrySpecific, ...(raw.industrySpecific as Partial<SettingsState['industrySpecific']> | undefined) };
-  return merged;
-}
 
 export function SettingsPage() {
   const { activeIndustry, setActiveIndustry, config } = useIndustry();
@@ -104,7 +88,7 @@ export function SettingsPage() {
       try {
         const response = await api<{ data: { settings?: unknown; updated_at?: string } | null }>('/organization-settings');
         if (!active) return;
-        const hydrated = hydrateSettings(response.data?.settings);
+  const hydrated = hydrateSettingsState(response.data?.settings);
         if (response.data?.updated_at) hydrated.organization.lastUpdated = new Date(response.data.updated_at).toLocaleString();
         setSettings(hydrated);
         setSaved(hydrated);
@@ -144,10 +128,11 @@ export function SettingsPage() {
         method: 'PUT',
         body: JSON.stringify({ settings: next }),
       });
-      const persisted = hydrateSettings(response.data.settings);
+const persisted = hydrateSettingsState(response.data.settings);
       if (response.data.updated_at) persisted.organization.lastUpdated = new Date(response.data.updated_at).toLocaleString();
       setSettings(persisted);
-      setSaved(persisted);
+        setSaved(persisted);
+      publishOrgSettings(persisted);
       setToast('✓ Settings saved successfully.');
       window.setTimeout(() => setToast(''), 3000);
     } catch (caught) {
@@ -215,7 +200,7 @@ export function SettingsPage() {
       case 'dataDisplay':
         return <DataDisplaySection value={settings.dataDisplay} onChange={(next) => update('dataDisplay', () => next)} />;
       case 'auditLog':
-        return <AuditLogSection entries={AUDIT_LOG} />;
+            return <AuditLogSection entries={AUDIT_LOG} activeIndustry={activeIndustry} />;
       default:
         return null;
     }

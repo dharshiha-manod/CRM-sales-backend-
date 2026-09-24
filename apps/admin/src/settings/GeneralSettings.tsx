@@ -80,11 +80,7 @@ export function LocalizationSection({ value, onChange }: { value: LocalizationSe
           </select>
         </Field>
         <Field label="Number format"><input value={value.numberFormat} onChange={(e) => onChange({ ...value, numberFormat: e.target.value })} /></Field>
-        <Field label="Language">
-          <select value={value.language} onChange={(e) => onChange({ ...value, language: e.target.value })}>
-            <option>English</option><option>Tamil</option><option>Hindi</option>
-          </select>
-        </Field>
+    
       </div>
     </SubSection>
   );

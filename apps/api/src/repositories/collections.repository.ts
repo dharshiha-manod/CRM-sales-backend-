@@ -2,11 +2,34 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
+import { getCollectionConfig } from '../lib/settings.js';
+
+// Maps your app's internal mode codes to the labels shown in Settings →
+// Collection Configuration → Payment Methods, so we can check the right toggle.
+const PAYMENT_MODE_LABELS: Record<string, string> = {
+  cash: 'Cash',
+  upi: 'UPI',
+  bank_transfer: 'Bank Transfer',
+  cheque: 'Cheque',
+  other: 'Other',
+};
+
+async function assertPaymentAllowed(organizationId: string, mode: string, referenceNo: string | null | undefined) {
+  const config = await getCollectionConfig(organizationId);
+  const label = PAYMENT_MODE_LABELS[mode] ?? mode;
+  if (config.paymentMethods[label] === false) {
+    throw new AppError(422, 'PAYMENT_METHOD_DISABLED', `${label} is not an enabled payment method. An Admin can enable it in Settings → Collection Configuration.`);
+  }
+  if (config.receiptRequired && !referenceNo?.trim()) {
+    throw new AppError(422, 'RECEIPT_NUMBER_REQUIRED', 'A reference/receipt number is required for this collection. This can be turned off in Settings → Collection Configuration.');
+  }
+}
 
 export async function createFromVisit(organizationId: string, representativeId: string, visitId: string, input: { amount: number; mode: string; referenceNo?: string | null; saleOrderId?: string | null; notes?: string | null }) {
   const { data: visit, error: visitError } = await supabaseAdmin.from('field_visits').select('id, client_id').eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).in('status', ['checked_in', 'in_progress']).maybeSingle();
   if (visitError) throw visitError;
   if (!visit?.client_id) throw new AppError(422, 'COLLECTION_REQUIRES_CLIENT', 'A collection requires a visit linked to a client.');
+  await assertPaymentAllowed(organizationId, input.mode, input.referenceNo);
   if (input.saleOrderId) {
     const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, total_amount').eq('id', input.saleOrderId).eq('organization_id', organizationId).eq('visit_id', visit.id).eq('client_id', visit.client_id).eq('representative_id', representativeId).maybeSingle();
     if (error) throw error;
@@ -24,6 +47,7 @@ export async function createFromVisit(organizationId: string, representativeId: 
 }
 
 export async function createForOrder(organizationId: string, input: { orderId: string; amount: number; mode: string; referenceNo?: string | null; notes?: string | null }, scope: IndustryScope) {
+    await assertPaymentAllowed(organizationId, input.mode, input.referenceNo);
   const { data: order, error: orderError } = await supabaseAdmin
     .from('sale_orders')
     .select('id, client_id, representative_id, total_amount, status, clients!inner(industry_type_id)')

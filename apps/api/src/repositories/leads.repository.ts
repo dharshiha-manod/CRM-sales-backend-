@@ -3,6 +3,7 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { createRequirement } from './requirements.repository.js';
 import { createFromRequirement } from './quotations.repository.js';
 import { listProducts } from './products.repository.js';
+import { getFollowUpConfig } from '../lib/settings.js';
 
 const fail = (error: unknown): never => {
   throw error;
@@ -406,7 +407,10 @@ export async function changeLeadStatus(organizationId: string, id: string, actor
   }
   if (status === 'unqualified') {
     const lead = data as LeadForFollowUp;
-    const dueAt = lead.next_action_due_at ?? new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+    // ↓ CHANGED: default follow-up window now comes from Settings →
+    // Follow-up Configuration → "Default Duration (Days)", not a fixed 2 days.
+    const followUpConfig = await getFollowUpConfig(organizationId);
+    const dueAt = lead.next_action_due_at ?? new Date(Date.now() + followUpConfig.defaultDurationDays * 24 * 60 * 60 * 1000).toISOString();
     const priority = ['low', 'normal', 'high', 'critical'].includes(lead.priority ?? '') ? lead.priority! : 'normal';
     const values = {
       representative_id: lead.representative_id,

@@ -37,6 +37,18 @@ const schema = z.object({
   // Public base URL of THIS api (e.g. https://api.yourcompany.com/api) used
   // to build the webhook URLs the telephony provider needs to call back into.
   TELEPHONY_PUBLIC_BASE_URL: z.string().url().optional(),
-  TWILIO_VOICE_ANSWER_URL: z.string().url().optional()
+  TWILIO_VOICE_ANSWER_URL: z.string().url().optional(),
+  // NEW — Purchase Enquiry supplier-reply polling. All optional: if
+  // SUPPLIER_REPLY_IMAP_HOST/USER/PASS are unset, the poller simply never
+  // starts and "Send to supplier" keeps working exactly as before (manual
+  // status updates). This is a separate mailbox connection from SMTP
+  // because Gmail (and most providers) use a different host for IMAP than
+  // for SMTP, even on the same account — USER/PASS default to the SMTP
+  // credentials since it's normally the same mailbox sending and receiving.
+  SUPPLIER_REPLY_IMAP_HOST: z.string().min(1).optional(),
+  SUPPLIER_REPLY_IMAP_PORT: z.coerce.number().int().positive().default(993),
+  SUPPLIER_REPLY_IMAP_USER: z.string().min(1).optional(),
+  SUPPLIER_REPLY_IMAP_PASS: z.string().min(1).optional(),
+  SUPPLIER_REPLY_POLL_MINUTES: z.coerce.number().int().positive().default(5),
 });
 export const env = schema.parse(process.env);

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { useOrgSettings } from '../settings/useOrgSettings';
 import './MasterDataPages.css';
 import './CollectionsPage.css';
 
@@ -55,7 +56,8 @@ const STATUS_CLASS: Record<PaymentStatus, string> = { pending: 'status-pending',
 // Orders page already uses for payment type / dispatch status (fields the
 // backend doesn't carry) — we assume a standard 30-day credit window from
 // the order date. Only used to flag "Overdue"; doesn't touch the backend.
-const CREDIT_DAYS = 30;
+// CREDIT_DAYS removed — now sourced live from Settings → Collection
+// Configuration → "Overdue Threshold (Days)" via useOrgSettings(), below.
 
 const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Number(value || 0));
 const dateLabel = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value));
@@ -93,9 +95,9 @@ function computeStatus(balance: number, paidAmount: number, dueDateIso: string):
 type SortField = 'client' | 'orderId' | 'rep' | 'invoiceAmount' | 'paid' | 'balance' | 'status' | 'lastPayment';
 type SortDir = 'asc' | 'desc';
 type Toast = { id: number; message: string; tone: 'success' | 'info' };
-
 export function CollectionsPage() {
   const { clientMatchesActiveIndustry } = useIndustryScope();
+  const { settings: orgSettings, loading: settingsLoading } = useOrgSettings(); // ← NEW
 
   const [orders, setOrders] = useState<OrderRef[]>([]);
   const [payments, setPayments] = useState<CollectionApiRecord[]>([]);
@@ -113,7 +115,16 @@ export function CollectionsPage() {
 
   const [sort, setSort] = useState<{ field: SortField; dir: SortDir }>({ field: 'lastPayment', dir: 'desc' });
   const [page, setPage] = useState(1);
+  // Settings → Data & Display → Default page size (Step 4). Seeded once
+  // settings finish loading; the dropdown below can still be changed
+  // per-session without a later settings refresh resetting it.
   const [pageSize, setPageSize] = useState(10);
+  const pageSizeSeeded = useRef(false);
+  useEffect(() => {
+    if (pageSizeSeeded.current || settingsLoading) return;
+    pageSizeSeeded.current = true;
+    setPageSize(orgSettings.dataDisplay.pageSize);
+  }, [settingsLoading, orgSettings]);
  
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [followedUp, setFollowedUp] = useState<Set<string>>(new Set());
@@ -179,7 +190,7 @@ export function CollectionsPage() {
         const invoiceAmount = Number(order.total_amount || 0);
         const paidAmount = pays.reduce((sum, p) => sum + Number(p.amount || 0), 0);
         const balance = Math.max(0, invoiceAmount - paidAmount);
-        const dueDate = addDays(order.created_at, CREDIT_DAYS);
+             const dueDate = addDays(order.created_at, orgSettings.collection.overdueThresholdDays);
         const lastPaymentDate = pays.length
           ? [...pays].sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? '')).at(-1)!.created_at ?? null
           : null;
@@ -200,7 +211,7 @@ export function CollectionsPage() {
           payments: pays,
         };
       });
-  }, [orders, paymentsByOrder, clientMatchesActiveIndustry]);
+  }, [orders, paymentsByOrder, clientMatchesActiveIndustry, orgSettings.collection.overdueThresholdDays]);
 
   const repOptions = useMemo(() => [...new Set(rows.map((r) => r.repName))].sort(), [rows]);
 
@@ -518,10 +529,10 @@ export function CollectionsPage() {
         <div className="table-pagination">
           <div className="page-size">
             <span>Rows per page</span>
-            <select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}>
-              <option value={10}>10</option>
-              <option value={20}>20</option>
-              <option value={50}>50</option>
+                     <select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}>
+              {Array.from(new Set([10, 20, 50, pageSize])).sort((a, b) => a - b).map((size) => (
+                <option key={size} value={size}>{size}</option>
+              ))}
             </select>
           </div>
           <span className="page-range">{(page - 1) * pageSize + 1}–{Math.min(page * pageSize, sorted.length)} of {sorted.length}</span>

@@ -13,13 +13,21 @@ import './MasterDataPages.css';
  * migration under apps/api), not localStorage or jsonb blobs.
  */
 
-export type FieldType = 'text' | 'number' | 'select' | 'date' | 'textarea' | 'lookup' | 'multi-lookup';
+export type FieldType = 'text' | 'number' | 'select' | 'combo' | 'date' | 'textarea' | 'lookup' | 'multi-lookup';
 export type DynamicSelectOption = { value: string; label: string };
 export interface FieldDef {
   key: string;
   label: string;
   type: FieldType;
+
   options?: string[];
+  /**
+   * for type: 'combo' — default suggestions shown in the dropdown. The
+   * user can still type anything else; whatever they type is merged with
+   * this list (deduped) so it becomes a selectable suggestion from then on,
+   * since it's picked up from the values already saved in existing records.
+   */
+  comboOptions?: string[];
   required?: boolean;
   placeholder?: string;
   /** groups fields under a <fieldset> legend; omit for the ungrouped top section */
@@ -392,7 +400,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     setModal(true);
   }
 
-// NEW
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
@@ -661,7 +669,8 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
                           {ungrouped.map((f) => (
                   <label key={f.key}>
                     {f.label}{f.required ? ' *' : ''}
-                    {renderInput(f, form, setForm, lookupData, fields, dynamicOptions, (key, options) => setDynamicOptions((prev) => ({ ...prev, [key]: options })))}
+
+                    {renderInput(f, form, setForm, lookupData, fields, dynamicOptions, (key, options) => setDynamicOptions((prev) => ({ ...prev, [key]: options })), records)}
                   </label>
                 ))}
               </div>
@@ -672,7 +681,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
                                  {groups.get(g)!.map((f) => (
                       <label key={f.key}>
                         {f.label}{f.required ? ' *' : ''}
-                        {renderInput(f, form, setForm, lookupData, fields, dynamicOptions, (key, options) => setDynamicOptions((prev) => ({ ...prev, [key]: options })))}
+                        {renderInput(f, form, setForm, lookupData, fields, dynamicOptions, (key, options) => setDynamicOptions((prev) => ({ ...prev, [key]: options })), records)}
                       </label>
                     ))}
                   </div>
@@ -860,6 +869,7 @@ function renderInput(
   fields: FieldDef[] = [],
   dynamicOptions: Record<string, DynamicSelectOption[]> = {},
   setDynamicOptions: (key: string, options: DynamicSelectOption[]) => void = () => undefined,
+  records: TextileRecord[] = [],
 ) {
  const valueKey = f.dynamicOptionsValueKey ?? f.key;
  const value = form[valueKey] ?? '';
@@ -878,6 +888,31 @@ function renderInput(
   };
   if (f.readOnly) {
     return <input type="text" value={value} readOnly disabled />;
+  }
+  if (f.type === 'combo') {
+    // Dropdown of comboOptions defaults, merged with whatever values
+    // already exist on saved records for this field — so once someone
+    // types a new category and saves, it becomes a suggestion for
+    // everyone else from then on. Still a plain text input underneath,
+    // so typing something not in the list is always allowed.
+    const existing = records.map((r) => String(r[f.key] ?? '').trim()).filter(Boolean);
+    const merged = Array.from(new Set([...(f.comboOptions ?? []), ...existing]));
+    const listId = `combo-${f.key}`;
+    return (
+      <>
+        <input
+          type="text"
+          list={listId}
+          required={f.required}
+          value={value}
+          placeholder={f.placeholder}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <datalist id={listId}>
+          {merged.map((option) => <option key={option} value={option} />)}
+        </datalist>
+      </>
+    );
   }
   if (f.type === 'multi-lookup') {
     const options = lookupData[f.key] ?? [];

@@ -439,6 +439,7 @@
 .kpi-icon-blue { background: var(--accent-blue-soft); color: var(--accent-blue); }
 
 .status-badge.status-confirmed { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.status-badge.status-pending_approval { background: var(--amber-soft); color: var(--amber-strong); }
 .status-badge.status-cancelled { background: var(--red-soft); color: var(--red); }
 .status-badge.status-packed { background: var(--accent-blue-soft); color: var(--accent-blue); }
 .status-badge.status-dispatched { background: var(--amber-soft); color: var(--amber-strong); }

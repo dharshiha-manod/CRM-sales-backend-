@@ -60,11 +60,7 @@ export function UserPreferencesSection({ value, onChange }: { value: UserPrefere
             <option value="comfortable">Comfortable</option><option value="compact">Compact</option>
           </select>
         </Field>
-        <Field label="Language">
-          <select value={value.language} onChange={(e) => onChange({ ...value, language: e.target.value })}>
-            <option>English</option><option>Tamil</option><option>Hindi</option>
-          </select>
-        </Field>
+      
         <Field label="Weekly email digest" inline>
           <Toggle checked={value.emailDigest} onChange={(next) => onChange({ ...value, emailDigest: next })} />
         </Field>

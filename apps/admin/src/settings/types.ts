@@ -68,8 +68,8 @@ export interface FollowUpConfig {
 }
 
 export interface GpsConfig {
-  verificationEnabled: boolean; radiusMeters: number; minAccuracyMeters: number;
-  requireCheckinGps: boolean; requireCheckoutGps: boolean; allowOfflineCapture: boolean; trackDuringActiveVisit: boolean;
+  verificationEnabled: boolean; minAccuracyMeters: number;
+  allowOfflineCapture: boolean; trackDuringActiveVisit: boolean;
 }
 
 export interface CheckInOutConfig {
@@ -109,6 +109,7 @@ export interface DataDisplaySettings {
 
 export interface AuditLogEntry {
   date: string; user: string; action: string; module: string; record: string; status: 'Successful' | 'Failed';
+  industryTypeId: IndustryKey;
 }
 
 export interface IndustryFieldRow { label: string; value: string }
@@ -138,11 +139,11 @@ export interface SettingsState {
 }
 
 export const AUDIT_LOG: AuditLogEntry[] = [
-  { date: '03 Sep 2026', user: 'Admin', action: 'Updated GPS Radius', module: 'GPS Settings', record: 'Visit Configuration', status: 'Successful' },
-  { date: '02 Sep 2026', user: 'Admin', action: 'Changed Industry to FMCG', module: 'Industry Configuration', record: 'Global Settings', status: 'Successful' },
-  { date: '01 Sep 2026', user: 'Priya M.', action: 'Updated Collection Overdue Threshold', module: 'Collection Configuration', record: 'Sales CRM', status: 'Successful' },
-  { date: '30 Aug 2026', user: 'Admin', action: 'Added Manager role permission', module: 'Roles & Permissions', record: 'Users & Access', status: 'Successful' },
-  { date: '29 Aug 2026', user: 'Karthik R.', action: 'Attempted to edit Organization Settings', module: 'Organization', record: 'General', status: 'Failed' },
+  { date: '03 Sep 2026', user: 'Admin', action: 'Updated GPS Radius', module: 'GPS Settings', record: 'Visit Configuration', status: 'Successful', industryTypeId: 'fmcg' },
+  { date: '02 Sep 2026', user: 'Admin', action: 'Changed Industry to FMCG', module: 'Industry Configuration', record: 'Global Settings', status: 'Successful', industryTypeId: 'fmcg' },
+  { date: '01 Sep 2026', user: 'Priya M.', action: 'Updated Collection Overdue Threshold', module: 'Collection Configuration', record: 'Sales CRM', status: 'Successful', industryTypeId: 'trading' },
+  { date: '30 Aug 2026', user: 'Admin', action: 'Added Manager role permission', module: 'Roles & Permissions', record: 'Users & Access', status: 'Successful', industryTypeId: 'trading' },
+  { date: '29 Aug 2026', user: 'Karthik R.', action: 'Attempted to edit Organization Settings', module: 'Organization', record: 'General', status: 'Failed', industryTypeId: 'trading' },
 ];
 
 function defaultIndustryRows(): Record<IndustryKey, IndustryFieldRow[]> {
@@ -244,9 +245,9 @@ export function createInitialSettingsState(): SettingsState {
       types: { Call: true, Visit: true, WhatsApp: true, Email: false, Meeting: true, Other: false },
       defaultDurationDays: 3, overdueAlerts: true, reminderBeforeHours: 24,
     },
-    gps: {
-      verificationEnabled: true, radiusMeters: 100, minAccuracyMeters: 50,
-      requireCheckinGps: true, requireCheckoutGps: true, allowOfflineCapture: true, trackDuringActiveVisit: true,
+       gps: {
+      verificationEnabled: true, minAccuracyMeters: 50,
+      allowOfflineCapture: true, trackDuringActiveVisit: true,
     },
     checkInOut: { requirePhotoAtCheckin: false, requireSignatureAtCheckout: false, allowManualOverride: true, autoCheckoutAfterMinutes: 120 },
     tracking: { pingIntervalMinutes: 5, idleAlertAfterMinutes: 30, geofenceAlerts: true, retainHistoryDays: 90 },
@@ -275,4 +276,24 @@ export function createInitialSettingsState(): SettingsState {
     },
     industrySpecific: defaultIndustryRows(),
   };
+}
+// Shared by SettingsPage.tsx and useOrgSettings.ts (and any future page
+// that reads Settings), so this "fill in missing fields with defaults"
+// logic only needs to be written once.
+export function hydrateSettingsState(stored: unknown): SettingsState {
+  const defaults = createInitialSettingsState();
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return defaults;
+  const raw = stored as Record<string, unknown>;
+  const merged = { ...defaults } as SettingsState;
+  for (const key of Object.keys(defaults) as (keyof SettingsState)[]) {
+    const savedValue = raw[key];
+    const defaultValue = defaults[key];
+    if (Array.isArray(defaultValue)) {
+      if (Array.isArray(savedValue)) merged[key] = savedValue as SettingsState[typeof key];
+    } else if (defaultValue && typeof defaultValue === 'object' && savedValue && typeof savedValue === 'object' && !Array.isArray(savedValue)) {
+      merged[key] = { ...defaultValue, ...savedValue } as SettingsState[typeof key];
+    }
+  }
+  merged.industrySpecific = { ...defaults.industrySpecific, ...(raw.industrySpecific as Partial<SettingsState['industrySpecific']> | undefined) };
+  return merged;
 }

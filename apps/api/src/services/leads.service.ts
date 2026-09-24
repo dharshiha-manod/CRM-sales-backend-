@@ -1,4 +1,6 @@
 import { AppError } from '../errors/app-error.js';
+import { getSalesConfig } from '../lib/settings.js';
+
 import { assertRecordInScope, isGlobalRole, resolveIndustryTypeId, type IndustryScope } from '../lib/industry-scope.js';
 import * as repository from '../repositories/leads.repository.js';
 
@@ -61,12 +63,15 @@ function computeLeadScore(input: { phone?: string | null; email?: string | null;
 }
 
 async function create(organizationId: string, createdBy: string, input: Parameters<typeof repository.createLead>[2], scope: IndustryScope, representativeId?: string) {
+  const salesConfig = await getSalesConfig(organizationId); // ← NEW
+
   if (representativeId) {
     await assertRepresentativeCanAccessIndustry(organizationId, representativeId, input.industryTypeId!);
     input = { ...input, representativeId: input.representativeId ?? representativeId };
   } else {
     input = { ...input, industryTypeId: resolveIndustryTypeId(scope, input.industryTypeId) ?? input.industryTypeId };
-    if (!input.representativeId) {
+    // ↓ CHANGED: only auto-suggest a rep if the setting is turned on
+    if (!input.representativeId && salesConfig.autoAssignReps) {
       const suggestion = await repository.suggestRepresentativeForIndustry(organizationId, input.industryTypeId!);
       if (suggestion) input = { ...input, representativeId: suggestion.id };
     }

@@ -24,7 +24,15 @@ const config: TradingModuleConfig = {
     { key: 'city', label: 'City', type: 'text', listColumn: true, group: 'Contact' },
     { key: 'country', label: 'Country', type: 'text', group: 'Contact' },
     { key: 'tax_number', label: 'Tax / GST / VAT number', type: 'text', group: 'Commercial' },
-    { key: 'supplier_category', label: 'Supplier category', type: 'text', listColumn: true, group: 'Commercial' },
+
+    {
+      key: 'supplier_category',
+      label: 'Supplier category',
+      type: 'combo',
+      listColumn: true,
+      group: 'Commercial',
+      comboOptions: ['Raw Materials', 'Steel & Metal', 'Packaging', 'Logistics', 'Chemicals', 'Electronics', 'Textiles', 'Other'],
+    },
     { key: 'products_supplied', label: 'Products supplied', type: 'multi-lookup', lookupResource: '/products?status=active', lookupValueKey: 'product_name', lookupLabelKey: 'product_code', group: 'Commercial' },
     { key: 'payment_terms', label: 'Payment terms', type: 'text', group: 'Commercial' },
     { key: 'credit_limit', label: 'Credit limit', type: 'number', group: 'Commercial' },

@@ -23,13 +23,13 @@ export async function saveOrganizationSettings(organizationId: string, userId: s
     .from('organizations')
     .update({ name: organizationName.trim() })
     .eq('id', organizationId);
-  if (organizationError) throw organizationError;
+  if (organizationError) throw new AppError(500, 'ORGANIZATION_UPDATE_FAILED', `Could not update organization: ${organizationError.message}`, organizationError);
 
   const { data, error } = await supabaseAdmin
     .from('organization_settings')
     .upsert({ organization_id: organizationId, settings, updated_by: userId }, { onConflict: 'organization_id' })
     .select('settings, updated_at')
     .single();
-  if (error) throw error;
+  if (error) throw new AppError(500, 'ORGANIZATION_SETTINGS_SAVE_FAILED', `Could not save settings: ${error.message}`, error);
   return data;
 }
