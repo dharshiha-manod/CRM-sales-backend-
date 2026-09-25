@@ -37,9 +37,16 @@ const config: TradingModuleConfig = {
     },
 
     // Scope — all optional. Blank means "applies to everything".
+       // Free text, not a constrained lookup: the Deal (and every other Trading
+    // record) stores sales_rep as whatever the user typed there — see
+    // TradingDealPage.tsx. This field used to be a lookup against
+    // /sales-representatives storing an employee_code ("EMP-2026-0007"),
+    // which could never equal that free text, so a rep-scoped rule silently
+    // never matched (see matches() in commissionRules.ts) and commission
+    // quietly fell back to a more generic rule instead of the intended one.
     {
-      key: 'sales_rep', label: 'Sales representative', type: 'lookup', group: 'Scope (leave blank for all)',
-      lookupResource: '/sales-representatives', lookupValueKey: 'employee_code', lookupLabelKey: 'employee_code',
+      key: 'sales_rep', label: 'Sales representative', type: 'text', group: 'Scope (leave blank for all)',
+      placeholder: 'Type it exactly as it appears on the Deal (see the Sales representative column)',
     },
     {
       key: 'customer_name', label: 'Customer', type: 'lookup', group: 'Scope (leave blank for all)',
