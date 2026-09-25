@@ -35,7 +35,7 @@ async function convertSalesOrderToShipment(order: Record<string, unknown>, reloa
     // Sales Order and Purchase Enquiry -> Deal, so two orders confirmed at
     // the same moment can never collide on SHP-....
     const shipmentNumber = `SHP-${String(order.order_number ?? '').replace(/^SO-/, '')}`;
-    await api('/trading/shipments', {
+       await api('/trading/shipments', {
       method: 'POST',
       body: JSON.stringify({
         shipment_number: shipmentNumber,
@@ -47,6 +47,11 @@ async function convertSalesOrderToShipment(order: Record<string, unknown>, reloa
         unit: order.unit ?? '',
         shipment_date: new Date().toISOString().slice(0, 10),
         status: 'Ready to Ship',
+        // This shipment carries goods OUT to the customer — delivery must
+        // reduce stock, not add to it. Every other shipment in this system
+        // (added manually) represents a supplier delivery IN, so it keeps
+        // the 'inbound' default set at the database level.
+        direction: 'outbound',
       }),
     });
     // Link back: this Sales Order now shows which Shipment it became.

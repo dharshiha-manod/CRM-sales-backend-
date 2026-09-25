@@ -138,6 +138,15 @@
 .master-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin: 1.1rem 0 .9rem; }
 .master-actions { display: flex; align-items: center; gap: .35rem; white-space: nowrap; }
 .data-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
+/* overflow-x: auto above also clips vertical overflow (CSS computes the
+   other axis to non-visible once one axis isn't visible) — that silently
+   cut off the "⋮" row-actions dropdown for any row near the table's edge,
+   even after it was fixed to flip open upward via JS, since it's still
+   position:absolute inside this clipping ancestor. ClientsPage and the
+   Leads table already had their own scoped fix for this; this applies the
+   same fix generically so every module built on the shared master-page
+   engine (all Trading modules included) gets it too. */
+.data-table-wrap td.master-actions { overflow: visible; text-overflow: clip; }
 .data-table-wrap table { margin-top: 0; }
 .data-table-wrap thead { background: var(--paper); }
 .data-table-wrap th { white-space: nowrap; padding: .75rem 1rem; text-align: left; font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); border-bottom: 1px solid var(--line); }

@@ -1,6 +1,8 @@
 // FILE: admin/src/components/TextileMasterPage.tsx
 import { CSSProperties, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '../lib/api';
+import { supabase } from '../lib/supabase';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
 import { consumeRecordFocus } from '../lib/recordFocus';
@@ -13,7 +15,7 @@ import './MasterDataPages.css';
  * migration under apps/api), not localStorage or jsonb blobs.
  */
 
-export type FieldType = 'text' | 'number' | 'select' | 'combo' | 'date' | 'textarea' | 'lookup' | 'multi-lookup';
+export type FieldType = 'text' | 'number' | 'select' | 'combo' | 'date' | 'textarea' | 'lookup' | 'multi-lookup' | 'file';
 export type DynamicSelectOption = { value: string; label: string };
 export interface FieldDef {
   key: string;
@@ -56,8 +58,15 @@ export interface FieldDef {
   regenerateOn?: string[];
   /** for type: 'lookup' — API resource to fetch options from, e.g. '/textile/designs' */
   lookupResource?: string;
-  /** for type: 'lookup' — which field on the looked-up record to show as the label */
+    /** for type: 'lookup' — which field on the looked-up record to show as the label */
   lookupLabelKey?: string;
+  /**
+   * for type: 'lookup' — an extra field on the looked-up record shown
+   * alongside `lookupLabelKey`, e.g. the client's code next to their name
+   * ("Dharshiha irons — CLI-2609-00038"), so two similarly-named records
+   * are still easy to tell apart.
+   */
+  lookupSecondaryLabelKey?: string;
   /**
    * for type: 'lookup' — which field on the looked-up record supplies the
    * value that gets stored/matched against. Defaults to this field's own
@@ -75,6 +84,12 @@ export interface FieldDef {
    * e.g. { customer_name: 'customer_name', product_name: 'product_name' }
    */
   autoFillMap?: Record<string, string>;
+    /**
+   * for type: 'file' — the Supabase Storage bucket the file uploads into.
+   * Must already exist (created once in the Supabase dashboard). The field's
+   * stored value becomes the uploaded file's public URL.
+   */
+  fileBucket?: string;
   /**
    * for type: 'lookup' — optional extra async auto-fill step, beyond the
    * simple same-list copy that autoFillMap does. Fires after the user picks
@@ -584,18 +599,16 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
                       )}
                     </td>
                   )}
-                  <td className="master-actions">
-                    <button type="button" className="icon-action" title="View" aria-label={`View ${String(r[nameField] ?? r[codeField] ?? '')}`} onClick={() => setViewing(r)}>◉</button>
-                    <button type="button" className="icon-action" title="Edit" aria-label={`Edit ${String(r[nameField] ?? r[codeField] ?? '')}`} onClick={() => openEdit(r)}>✎</button>
-                    {config.rowActions?.(r)}
-                    <button
-                      type="button"
-                      className="icon-action icon-action--danger"
-                      title={usingDemoData ? 'Sample row — add a real record to enable delete' : 'Delete'}
-                      aria-label={`Delete ${String(r[nameField] ?? r[codeField] ?? '')}`}
-                      disabled={usingDemoData}
-                      onClick={() => { setDeleteError(''); setDeleting(r); }}
-                    >🗑</button>
+                                 <td className="master-actions">
+                    <RowActionsMenu
+                      label={String(r[nameField] ?? r[codeField] ?? '')}
+                      onView={() => setViewing(r)}
+                      onEdit={() => openEdit(r)}
+                      onDelete={() => { setDeleteError(''); setDeleting(r); }}
+                      deleteDisabled={usingDemoData}
+                      deleteTitle={usingDemoData ? 'Sample row — add a real record to enable delete' : 'Delete'}
+                      extra={config.rowActions?.(r)}
+                    />
                   </td>
                 </tr>
               ))}
@@ -727,6 +740,139 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
   );
 }
 
+/**
+ * Compact 3-dot ("⋮") menu for a table row's actions — replaces what used
+ * to be 3-4 separate icon buttons (View, Edit, Delete, plus any page-
+ * specific extras like "Send" or "Generate document") sitting side by
+ * side. Those buttons together made the Actions column wide enough that
+ * many list pages needed horizontal scrolling just to see everything.
+ * One narrow button here, with the same options inside a popup menu,
+ * fixes that everywhere at once since every list page shares this file.
+ * Same open/close-on-outside-click pattern as SearchableLookup above.
+ */
+// NEW
+function RowActionsMenu({
+  label,
+  onView,
+  onEdit,
+  onDelete,
+  deleteDisabled,
+  deleteTitle,
+  extra,
+}: {
+  label: string;
+  onView: () => void;
+  onEdit: () => void;
+  onDelete?: () => void;
+  deleteDisabled?: boolean;
+  deleteTitle?: string;
+  extra?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top: number; left: number; openUpward: boolean } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (
+        buttonRef.current && !buttonRef.current.contains(e.target as Node) &&
+        menuRef.current && !menuRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    }
+    function handleReposition() { setOpen(false); }
+    document.addEventListener('mousedown', handleClickOutside);
+    window.addEventListener('scroll', handleReposition, true);
+    window.addEventListener('resize', handleReposition);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('scroll', handleReposition, true);
+      window.removeEventListener('resize', handleReposition);
+    };
+  }, [open]);
+
+  const toggleOpen = () => {
+    if (!open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      const estimatedMenuHeight = 160;
+      const estimatedMenuWidth = 160;
+      const openUpward = window.innerHeight - rect.bottom < estimatedMenuHeight && rect.top > window.innerHeight - rect.bottom;
+      setCoords({
+        top: openUpward ? rect.top - 4 : rect.bottom + 4,
+        left: Math.max(4, rect.right - estimatedMenuWidth),
+        openUpward,
+      });
+    }
+    setOpen((prev) => !prev);
+  };
+
+  const itemStyle: CSSProperties = {
+    display: 'block',
+    width: '100%',
+    textAlign: 'left',
+    padding: '6px 12px',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: 13,
+    borderRadius: 4,
+    whiteSpace: 'nowrap',
+  };
+
+  return (
+    <div style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="icon-action"
+        title="More actions"
+        aria-label={`Actions for ${label}`}
+        onClick={toggleOpen}
+      >
+        ⋮
+      </button>
+      {open && coords && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          style={{
+            position: 'fixed',
+            zIndex: 1000,
+            top: coords.openUpward ? undefined : coords.top,
+            bottom: coords.openUpward ? window.innerHeight - coords.top : undefined,
+            left: coords.left,
+            minWidth: 160,
+            background: '#fff',
+            border: '1px solid #ddd',
+            borderRadius: 6,
+            boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
+            padding: 4,
+          }}
+        >
+          <button type="button" style={itemStyle} onClick={() => { setOpen(false); onView(); }}>◉ View</button>
+          <button type="button" style={itemStyle} onClick={() => { setOpen(false); onEdit(); }}>✎ Edit</button>
+            {extra && <div className="row-actions-menu-extra">{extra}</div>}
+          {onDelete && (
+            <button
+              type="button"
+              style={{ ...itemStyle, color: '#c0392b' }}
+              disabled={deleteDisabled}
+              title={deleteTitle}
+              onClick={() => { setOpen(false); onDelete(); }}
+            >
+              🗑 Delete
+            </button>
+          )}
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+}
+
 function dedupeByValue(rows: TextileRecord[], f: FieldDef): TextileRecord[] {
   const seen = new Set<string>();
   const out: TextileRecord[] = [];
@@ -752,6 +898,7 @@ function SearchableLookup({
   options,
   valueKey,
   labelKey,
+  secondaryLabelKey,
   onChange,
 }: {
   value: string;
@@ -759,6 +906,7 @@ function SearchableLookup({
   options: TextileRecord[];
   valueKey?: string;
   labelKey?: string;
+  secondaryLabelKey?: string;
   onChange: (v: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -766,11 +914,18 @@ function SearchableLookup({
   const containerRef = useRef<HTMLDivElement>(null);
 
   const getValue = (o: TextileRecord) => String(o[valueKey ?? 'id'] ?? o.id);
+  // labelKey can be a nested path like 'user_profiles.display_name' for
+  // lookups whose display name lives inside a joined record.
+  const resolvePath = (o: TextileRecord, path: string) =>
+    path.split('.').reduce<unknown>((acc, part) => (acc && typeof acc === 'object' ? (acc as Record<string, unknown>)[part] : undefined), o);
   const getLabel = (o: TextileRecord) => {
-    const v = getValue(o);
-    return labelKey ? `${v} — ${String(o[labelKey] ?? '')}` : v;
+    if (!labelKey) return getValue(o);
+    const label = resolvePath(o, labelKey);
+    const primary = label ? String(label) : getValue(o);
+    if (!secondaryLabelKey) return primary;
+    const secondary = resolvePath(o, secondaryLabelKey);
+    return secondary ? `${primary} — ${String(secondary)}` : primary;
   };
-
   const selected = options.find((o) => getValue(o) === value);
   const displayValue = open ? search : selected ? getLabel(selected) : '';
   const filtered = search.trim()
@@ -972,6 +1127,7 @@ function renderInput(
         options={options}
         valueKey={f.lookupValueKey ?? f.key}
         labelKey={f.lookupLabelKey}
+        secondaryLabelKey={f.lookupSecondaryLabelKey}
         onChange={handleLookupChange}
       />
     );
@@ -991,8 +1147,65 @@ function renderInput(
   if (f.type === 'date') {
     return <input type="date" required={f.required} value={value} onChange={(e) => onChange(e.target.value)} />;
   }
+ // NEW
   if (f.type === 'number') {
     return <input type="number" required={f.required} value={value} placeholder={f.placeholder} onChange={(e) => onChange(e.target.value)} />;
   }
+  if (f.type === 'file') {
+    return <FileUploadField value={value} required={f.required} bucket={f.fileBucket ?? 'trade-documents'} onChange={onChange} />;
+  }
   return <input type="text" required={f.required} value={value} placeholder={f.placeholder} onChange={(e) => onChange(e.target.value)} />;
+}
+
+function FileUploadField({
+  value,
+  required,
+  bucket,
+  onChange,
+}: {
+  value: string;
+  required?: boolean;
+  bucket: string;
+  onChange: (v: string) => void;
+}) {
+  const { activeIndustry } = useIndustry();
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleFile(file: File | undefined) {
+    if (!file) return;
+    if (!supabase) { setError('File storage is not configured for this environment.'); return; }
+    setUploading(true);
+    setError('');
+    try {
+      const orgId = (import.meta.env.VITE_ORGANIZATION_ID as string | undefined) ?? 'org';
+      const path = `${orgId}/${activeIndustry}/${crypto.randomUUID()}-${file.name}`;
+      const { error: uploadError } = await supabase.storage.from(bucket).upload(path, file, { upsert: false });
+      if (uploadError) throw uploadError;
+      const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+      onChange(data.publicUrl);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Upload failed.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <div>
+      {value && (
+        <div style={{ marginBottom: 6, fontSize: 13 }}>
+          <a href={value} target="_blank" rel="noreferrer">View current file</a> — choose a file below to replace it.
+        </div>
+      )}
+      <input
+        type="file"
+        required={required && !value}
+        disabled={uploading}
+        onChange={(e) => void handleFile(e.target.files?.[0])}
+      />
+      {uploading && <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Uploading…</div>}
+      {error && <div style={{ fontSize: 12, color: '#c0392b', marginTop: 4 }}>{error}</div>}
+    </div>
+  );
 }

@@ -26,20 +26,19 @@ export interface TradingResource {
 }
 
 export const TRADING_RESOURCES: TradingResource[] = [
-
   {
     path: 'deals',
     table: 'trading_deals',
     codeField: 'deal_number',
     requiredFields: ['deal_number', 'deal_name', 'customer_name'],
-    columns: ['deal_number', 'deal_name', 'customer_name', 'customer_id', 'customer_address', 'customer_city', 'customer_gstin', 'customer_contact_person', 'customer_phone', 'supplier_name', 'supplier_id', 'supplier_address', 'supplier_phone', 'supplier_contact_person', 'supplier_tax_number', 'product_name', 'product_category', 'quantity', 'unit', 'currency', 'purchase_rate', 'selling_rate', 'deal_date', 'expected_delivery_date', 'sales_rep', 'payment_terms', 'delivery_terms', 'priority', 'industry_type_id', 'notes', 'order_number'],
+    columns: ['deal_number', 'deal_name', 'customer_name', 'customer_id', 'customer_address', 'customer_city', 'customer_gstin', 'customer_contact_person', 'customer_phone', 'supplier_name', 'supplier_id', 'supplier_address', 'supplier_phone', 'supplier_contact_person', 'supplier_tax_number', 'product_name', 'product_category', 'quantity', 'customer_quantity', 'unit', 'currency', 'purchase_rate', 'selling_rate', 'discount_percent', 'tax_percent', 'deal_date', 'expected_delivery_date', 'sales_rep', 'payment_terms', 'delivery_terms', 'priority', 'industry_type_id', 'notes', 'order_number'],
   },
   {
     path: 'shipments',
     table: 'trading_shipments',
     codeField: 'shipment_number',
     requiredFields: ['shipment_number'],
-    columns: ['shipment_number', 'deal_number', 'order_number', 'customer_name', 'supplier_name', 'product_name', 'quantity', 'unit', 'batch_serial', 'shipment_date', 'expected_delivery_date', 'actual_delivery_date', 'origin', 'destination', 'transporter', 'tracking_number', 'vehicle_container_number', 'shipping_mode', 'freight_cost', 'notes', 'industry_type_id'],
+    columns: ['shipment_number', 'deal_number', 'order_number', 'customer_name', 'supplier_name', 'product_name', 'quantity', 'unit', 'batch_serial', 'shipment_date', 'expected_delivery_date', 'actual_delivery_date', 'origin', 'destination', 'transporter', 'tracking_number', 'vehicle_container_number', 'shipping_mode', 'freight_cost', 'notes', 'industry_type_id', 'direction'],
   },
   {
     path: 'suppliers',
@@ -49,11 +48,11 @@ export const TRADING_RESOURCES: TradingResource[] = [
        columns: ['supplier_id', 'supplier_name', 'company_name', 'contact_person', 'phone', 'email', 'address', 'city', 'country', 'tax_number', 'supplier_category', 'products_supplied', 'payment_terms', 'credit_limit', 'bank_details', 'notes', 'industry_type_id'],
   },
   {
-    path: 'purchase-enquiries',
+      path: 'purchase-enquiries',
     table: 'trading_purchase_enquiries',
     codeField: 'enquiry_number',
     requiredFields: ['enquiry_number', 'product_name'],
-      columns: ['enquiry_number', 'enquiry_date', 'required_by_date', 'product_name', 'quantity', 'unit', 'specification', 'supplier_name', 'customer_name', 'customer_id', 'requested_rate', 'currency', 'delivery_location', 'delivery_terms', 'payment_terms', 'procurement_person', 'notes', 'industry_type_id', 'deal_number'],
+      columns: ['enquiry_number', 'enquiry_date', 'required_by_date', 'product_name', 'quantity', 'customer_quantity', 'unit', 'specification', 'supplier_name', 'customer_name', 'customer_id', 'requested_rate', 'discount_percent', 'tax_percent', 'currency', 'delivery_location', 'delivery_terms', 'payment_terms', 'procurement_person', 'notes', 'industry_type_id', 'deal_number'],
   },
   {
     path: 'price-lists',

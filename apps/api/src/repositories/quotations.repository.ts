@@ -90,7 +90,10 @@ export async function convertToOrder(organizationId: string, representativeId: s
   if (quotation.status !== 'accepted' || !quotation.approved_at) throw new AppError(422, 'QUOTATION_NOT_APPROVED', 'Only a manager-approved quotation can be converted into an order.');
    const orderConfig = await getOrderConfig(organizationId);
   const number = formatOrderNumber(orderConfig.numberingFormat);
-  const { data: order, error } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: number, client_id: quotation.client_id, representative_id: quotation.representative_id, discount_amount: quotation.discount_amount, tax_amount: quotation.tax_amount, total_amount: quotation.total_amount, notes: `Converted from quotation ${quotation.quotation_number}`, status: 'confirmed' }).select().single();
+  // quotation_id must be set here so the Orders page can correctly show
+  // this as "converted from a quotation" instead of "Manual entry" — the
+  // notes text alone isn't enough, the frontend only trusts quotation_id.
+  const { data: order, error } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: number, client_id: quotation.client_id, representative_id: quotation.representative_id, discount_amount: quotation.discount_amount, tax_amount: quotation.tax_amount, total_amount: quotation.total_amount, notes: `Converted from quotation ${quotation.quotation_number}`, status: 'confirmed', quotation_id: quotation.id }).select().single();
   if (error) fail(error);
   const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal, tax_percent: item.tax_percent ?? 0, tax_amount: item.tax_amount ?? 0 }));
   const { error: itemError } = await supabaseAdmin.from('sale_order_items').insert(items);

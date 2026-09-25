@@ -18,7 +18,15 @@ export const representatives: Record<string, RequestHandler> = {
 export const clients: Record<string, RequestHandler> = {
   list: async (req, res) => res.json({ data: await clientService.list(org(req), req.query.search as string | undefined, req.query.type as string | undefined, req.query.status as string | undefined, req.query.industryTypeId as string | undefined, scope(req)) }),
   get: async (req, res) => res.json({ data: await clientService.get(org(req), id(req.params.id), scope(req)) }),
-  tradingSnapshot: async (req, res) => res.json({ data: await clientService.tradingSnapshot(org(req), id(req.params.id), scope(req)) }),
+// quotationStatuses is optional and comma-separated (e.g. "accepted,converted").
+// Omitted entirely, tradingSnapshot() falls back to its own default
+// (['accepted']) — so any existing caller that doesn't pass it, like Deal
+// Management, behaves exactly as before.
+tradingSnapshot: async (req, res) => {
+  const rawStatuses = req.query.quotationStatuses as string | undefined;
+  const quotationStatuses = rawStatuses ? rawStatuses.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+  res.json({ data: await clientService.tradingSnapshot(org(req), id(req.params.id), scope(req), ...(quotationStatuses ? [quotationStatuses] : [])) });
+},
   create: async (req, res) => res.status(201).json({ data: await clientService.create(org(req), clientCreateSchema.parse(req.body), scope(req)) }),
   update: async (req, res) => res.json({ data: await clientService.update(org(req), id(req.params.id), clientUpdateSchema.parse(req.body), scope(req)) }),
   syncAddressFromLead: async (req, res) => res.json({ data: await clientService.syncAddressFromLead(org(req), id(req.params.id), scope(req)) }),

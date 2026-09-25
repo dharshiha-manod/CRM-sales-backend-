@@ -41,8 +41,8 @@ const AUTO_MANAGED = new Set(['', 'Not Started', 'Documentation Pending', 'Decla
 function deriveClearance(form: Record<string, string>): Record<string, string> | void {
   if (!AUTO_MANAGED.has(form.clearance_status ?? '')) return;
   if (form.clearance_date) return { clearance_status: 'Cleared', status: 'Cleared' };
-  if (form.duty_paid_date) return { clearance_status: 'Duty Paid' };
-  if (form.declaration_date) return { clearance_status: 'Declaration Submitted' };
+  if (form.duty_paid_date) return { clearance_status: 'Duty Paid', status: 'Duty Paid' };
+  if (form.declaration_date) return { clearance_status: 'Declaration Submitted', status: 'Declaration Submitted' };
   return;
 }
 
@@ -142,7 +142,14 @@ const config: TradingModuleConfig = {
     { key: 'duty_paid_date', label: 'Duty paid date', type: 'date', group: 'Clearance', onValueChange: (_v, f) => deriveClearance(f) },
     { key: 'inspection_status', label: 'Inspection status', type: 'select', options: INSPECTION_STATUSES, group: 'Clearance' },
     { key: 'clearance_date', label: 'Clearance date', type: 'date', group: 'Clearance', onValueChange: (_v, f) => deriveClearance(f) },
-    { key: 'clearance_status', label: 'Clearance status', type: 'select', options: CLEARANCE_STATUSES, listColumn: true, group: 'Clearance' },
+        {
+      key: 'clearance_status', label: 'Clearance status', type: 'select', options: CLEARANCE_STATUSES, listColumn: true, group: 'Clearance',
+      // Mirror into the generic `status` column so the toolbar's "All
+      // statuses" filter and the plain Status badge (both hardcoded to
+      // r.status in the shared engine) actually track the real clearance
+      // state, not just the one auto-derived "Cleared" transition.
+      onValueChange: (v) => ({ status: v }),
+    },
     { key: 'notes', label: 'Remarks', type: 'textarea', group: 'Clearance' },
   ],
   kpis: [

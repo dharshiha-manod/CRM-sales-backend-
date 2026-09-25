@@ -19,8 +19,11 @@ export function SendPurchaseEnquiryButton({ enquiry, onSent }: { enquiry: Record
   // before firing another real email — a plain click on "Resend" alone
   // isn't enough to accidentally re-trigger delivery.
   const [confirmingResend, setConfirmingResend] = useState(false);
-
-  const alreadySent = enquiry.status === 'Sent' && !message;
+  // Anything past "Draft" means this enquiry was sent at least once —
+  // not just when status is literally still "Sent". Without this, moving
+  // to "Supplier Responded" (or any later status) made the plain "Send to
+  // supplier" button reappear, as if it had never gone out.
+  const alreadySent = enquiry.status !== 'Draft' && !message;
 
   const send = async () => {
     setSending(true);

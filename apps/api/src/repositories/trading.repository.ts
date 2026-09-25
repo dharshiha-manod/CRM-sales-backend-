@@ -1,4 +1,3 @@
-
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import type { TradingResource } from '../lib/trading-resources.js';
@@ -162,14 +161,18 @@ async function autoUpdateInventoryOnDelivery(org: string, shipment: Record<strin
       .eq('organization_id', org).ilike('product_name', productName).limit(1).maybeSingle();
     if (productError) throw productError;
     if (!product) return; // no matching product in the catalog — nothing to update
-    const nextStock = (Number(product.stock_quantity) || 0) + quantity;
+    // 'outbound' = goods leaving to a customer (from a Sales Order) —
+    // stock goes down. Anything else ('inbound', or missing on an older
+    // row) = goods arriving from a supplier — stock goes up, same as before.
+    const direction = typeof shipment.direction === 'string' ? shipment.direction : 'inbound';
+    const currentStock = Number(product.stock_quantity) || 0;
+    const nextStock = direction === 'outbound' ? currentStock - quantity : currentStock + quantity;
     const { error } = await supabaseAdmin.from('products').update({ stock_quantity: nextStock }).eq('id', product.id).eq('organization_id', org);
     if (error) throw error;
   } catch (error) {
     logger.error({ err: error, shipmentNumber: shipment.shipment_number }, 'Automatic inventory update on delivery failed');
   }
 }
-
 // Step 8 of the Trading connectivity plan: a Deal reaching "Confirmed" by
 // ANY route — not just the automated Lead→Quotation→Deal chain — must end
 // up with both a Trading Sales Order (SO-..., what the rest of Trading
@@ -186,9 +189,23 @@ async function convertConfirmedDealToOrders(org: string, deal: Record<string, un
     if (!dealNumber) return;
     const suffix = dealNumber.replace(/^DEAL-/, '');
     const orderNumber = `SO-${suffix}`;
-    const quantity = Number(deal.quantity) || 0;
+    // The customer only gets what they actually ordered, not the whole
+    // purchased quantity — falls back to the full quantity for older
+    // deals or deals that never set this (same behaviour as before).
+    const quantity = Number(deal.customer_quantity ?? deal.quantity) || 0;
     const sellingRate = Number(deal.selling_rate) || 0;
-    const totalAmount = quantity * sellingRate;
+    // Discount/tax come from the Price List row that filled this deal's
+    // rate (see admin/src/lib/priceListLookup.ts) — previously typed into
+    // the deal but never actually carried into the real order (both were
+    // hardcoded to 0 below), so an "offer" never reached the customer's
+    // invoice. Standard trading-CRM order: discount off the gross, then
+    // tax on top of the discounted amount.
+    const discountPercent = Number(deal.discount_percent) || 0;
+    const taxPercent = Number(deal.tax_percent) || 0;
+    const grossAmount = quantity * sellingRate;
+    const discountAmount = grossAmount * (discountPercent / 100);
+    const taxAmount = (grossAmount - discountAmount) * (taxPercent / 100);
+    const totalAmount = grossAmount - discountAmount + taxAmount;
 
     const { data: existingSO } = await supabaseAdmin.from('trading_sales_orders').select('id').eq('organization_id', org).eq('order_number', orderNumber).limit(1).maybeSingle();
     if (!existingSO) {
@@ -199,7 +216,7 @@ async function convertConfirmedDealToOrders(org: string, deal: Record<string, un
         deal_number: dealNumber,
         customer_name: deal.customer_name ?? null,
         product_name: deal.product_name ?? null,
-        quantity: deal.quantity ?? null,
+        quantity: quantity || null,
         unit: deal.unit ?? null,
         currency: deal.currency ?? null,
         selling_rate: deal.selling_rate ?? null,
@@ -208,11 +225,12 @@ async function convertConfirmedDealToOrders(org: string, deal: Record<string, un
         expected_delivery_date: deal.expected_delivery_date ?? null,
         payment_terms: deal.payment_terms ?? null,
         delivery_terms: deal.delivery_terms ?? null,
-        status: 'Confirmed',
-        notes: `Automatically created from deal ${dealNumber}.`,
-      });
-      if (error && error.code !== '23505') throw error;
-    }
+             status: 'Confirmed',
+      notes: `Automatically created from deal ${dealNumber}.`,
+    });
+    if (error && error.code !== '23505') throw error;
+  }
+  await autoCreateShipmentForConfirmedOrder(org, orderNumber, deal);
 
     const customerId = typeof deal.customer_id === 'string' ? deal.customer_id : undefined;
     const productName = typeof deal.product_name === 'string' ? deal.product_name : undefined;
@@ -222,26 +240,34 @@ async function convertConfirmedDealToOrders(org: string, deal: Record<string, un
         const coreOrderNumber = `FS-${suffix}`;
         const { data: existingCore } = await supabaseAdmin.from('sale_orders').select('id, order_number').eq('organization_id', org).eq('order_number', coreOrderNumber).limit(1).maybeSingle();
         let coreOrder = existingCore;
-        if (!coreOrder) {
+             if (!coreOrder) {
+          // quotation_id carries through only if this Deal itself came from
+          // an approved quotation (createDealFromApprovedQuotation sets it
+          // on trading_deals) — same fix as convertToOrder() in
+          // quotations.repository.ts, so the Orders page shows the right
+          // "converted from quotation" source instead of "Manual entry"
+          // whenever that link genuinely exists. A Deal built from a
+          // Purchase Enquiry has no quotation_id, so this stays null there.
           const { data: inserted, error: coreError } = await supabaseAdmin.from('sale_orders').insert({
             organization_id: org,
             order_number: coreOrderNumber,
             client_id: customerId,
             representative_id: null,
-            discount_amount: 0,
-            tax_amount: 0,
+            discount_amount: discountAmount,
+            tax_amount: taxAmount,
             total_amount: totalAmount,
             notes: `Automatically created from Trading deal ${dealNumber}.`,
             status: 'confirmed',
+            quotation_id: (deal.quotation_id as string | null | undefined) ?? null,
           }).select('id, order_number').single();
           if (coreError) throw coreError;
           coreOrder = inserted;
           const { error: itemError } = await supabaseAdmin.from('sale_order_items').insert({
             order_id: coreOrder!.id,
             product_id: product.id,
-            quantity: deal.quantity ?? 0,
+            quantity: quantity || 0,
             unit_price: deal.selling_rate ?? 0,
-            discount_amount: 0,
+            discount_amount: discountAmount,
             subtotal: totalAmount,
           });
           if (itemError) throw itemError;
@@ -336,7 +362,32 @@ export async function updateTradingRecord(resource: TradingResource, org: string
   }
   return data;
 }
-
+async function autoCreateShipmentForConfirmedOrder(org: string, orderNumber: string, deal: Record<string, unknown>) {
+  try {
+    const { data: existingShipment } = await supabaseAdmin.from('trading_shipments').select('id').eq('organization_id', org).eq('order_number', orderNumber).limit(1).maybeSingle();
+    if (existingShipment) return;
+    const shipmentNumber = `SHP-${orderNumber.replace(/^SO-/, '')}`;
+    const { error } = await supabaseAdmin.from('trading_shipments').insert({
+      organization_id: org,
+      industry_type_id: deal.industry_type_id ?? null,
+      shipment_number: shipmentNumber,
+      order_number: orderNumber,
+      deal_number: deal.deal_number ?? null,
+      customer_name: deal.customer_name ?? null,
+      product_name: deal.product_name ?? null,
+      quantity: deal.customer_quantity ?? deal.quantity ?? null,
+      unit: deal.unit ?? null,
+      shipment_date: new Date().toISOString().slice(0, 10),
+      status: 'Ready to Ship',
+      direction: 'outbound',
+      notes: `Automatically created from order ${orderNumber}.`,
+    });
+    if (error && error.code !== '23505') throw error;
+    await supabaseAdmin.from('trading_sales_orders').update({ shipment_number: shipmentNumber }).eq('organization_id', org).eq('order_number', orderNumber);
+  } catch (error) {
+    logger.error({ err: error, orderNumber }, 'Automatic shipment creation for confirmed order failed');
+  }
+}
 // NEW (end of file)
 export async function deleteTradingRecord(resource: TradingResource, org: string, id: string, scope: IndustryScope) {
   const notFound = new AppError(404, 'RECORD_NOT_FOUND', `${resource.path} record was not found.`);

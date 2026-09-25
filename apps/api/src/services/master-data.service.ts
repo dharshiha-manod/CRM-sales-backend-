@@ -63,23 +63,31 @@ export const clientService = {
   },
   contacts: { list: repo.listContacts, create: repo.createContact, update: repo.updateContact, remove: repo.deleteContact },
   assignments: { list: repo.listAssignedClients, assign: repo.assignClient, remove: repo.unassignClient },
-  /**
-   * NEW — powers Trading > Deal Management's "select a customer, auto-fill
-   * the rest" flow. Reuses the existing requirements/quotations repository
-   * functions as-is (no new tables, no new duplicate logic) and just shapes
-   * their output for the Deal form. Priority, per the Deal auto-fill spec:
-   * an accepted quotation first, then the customer's latest open
-   * requirement, so the frontend can auto-select when there's exactly one
-   * candidate and otherwise offer a picker.
-   */
-  async tradingSnapshot(org: string, id: string, scope: IndustryScope) {
-    const client = await clientService.get(org, id, scope); // also enforces industry scope / 404
-    const [requirements, quotations] = await Promise.all([
-      listRequirements(org, { clientId: id }),
-      listQuotations(org, { clientId: id }),
-    ]);
-    const openRequirements = (requirements ?? []).filter((r: any) => r.status === 'open' || r.status === 'quoted');
-    const acceptedQuotations = (quotations ?? []).filter((q: any) => q.status === 'accepted');
-    return { client, requirements: openRequirements, quotations: acceptedQuotations };
+/**
+ * NEW — powers Trading > Deal Management's "select a customer, auto-fill
+ * the rest" flow. Reuses the existing requirements/quotations repository
+ * functions as-is (no new tables, no new duplicate logic) and just shapes
+ * their output for the Deal form. Priority, per the Deal auto-fill spec:
+ * an accepted quotation first, then the customer's latest open
+ * requirement, so the frontend can auto-select when there's exactly one
+ * candidate and otherwise offer a picker.
+ *
+ * quotationStatuses defaults to just ['accepted'] so Deal Management's
+ * existing "auto-select when there's exactly one candidate" behavior is
+ * completely unchanged. Purchase Enquiry's customer-quantity auto-fill
+ * (a read-only lookup, not a candidate picker) passes a wider set —
+ * ['accepted', 'converted'] — because a quotation the customer already
+ * converted to an order is at least as confirmed as an "accepted" one,
+ * and excluding it was why that auto-fill was coming up blank.
+ */
+async tradingSnapshot(org: string, id: string, scope: IndustryScope, quotationStatuses: string[] = ['accepted']) {
+  const client = await clientService.get(org, id, scope); // also enforces industry scope / 404
+  const [requirements, quotations] = await Promise.all([
+    listRequirements(org, { clientId: id }),
+    listQuotations(org, { clientId: id }),
+  ]);
+  const openRequirements = (requirements ?? []).filter((r: any) => r.status === 'open' || r.status === 'quoted');
+  const matchingQuotations = (quotations ?? []).filter((q: any) => quotationStatuses.includes(q.status));
+  return { client, requirements: openRequirements, quotations: matchingQuotations };
   },
 };

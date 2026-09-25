@@ -3,6 +3,7 @@ import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { api } from '../lib/api';
 import { consumeTradeDocumentDraft } from '../lib/tradeDocumentHandoff';
 import { TradeDocumentInsights } from './TradeDocumentInsights';
+import { supabase } from '../lib/supabase';
 
 const DOC_TYPES = [
   'Proforma Invoice', 'Commercial Invoice', 'Purchase Order', 'Sales Order', 'Packing List',
@@ -112,7 +113,53 @@ function DetailActions({ record }: { record: Record<string, unknown> }) {
   }
   return null;
 }
+// Stamps who actually uploaded the file, at the moment the file is set —
+// not on the "Mark as uploaded" button, which never fires because
+// onValueChange below already auto-advances Draft -> Uploaded the instant
+// a file is attached. Never overwrites an existing uploaded_by (e.g. if a
+// file is replaced later by someone else, the original uploader stands).
+async function stampUploader(
+  setForm: (u: (prev: Record<string, string>) => Record<string, string>) => void,
+) {
+  if (!supabase) return;
+  const { data } = await supabase.auth.getSession();
+  const user = data.session?.user;
+  if (!user) return;
+  const name =
+    (user.user_metadata?.full_name as string | undefined) ||
+    (user.user_metadata?.display_name as string | undefined) ||
+    user.email ||
+    user.id;
+  setForm((prev) => (prev.uploaded_by ? prev : { ...prev, uploaded_by: name }));
+}
 
+// NEW — insert just above the config object
+function fillFromCustomer(
+  matched: Record<string, unknown>,
+  setForm: (u: (prev: Record<string, string>) => Record<string, string>) => void,
+) {
+  setForm((prev) => {
+    const next = { ...prev };
+    const gstin = matched.gstin ? String(matched.gstin) : '';
+    const pan = matched.pan ? String(matched.pan) : '';
+    if (gstin || pan) {
+      next.tax_details = [gstin && `GSTIN: ${gstin}`, pan && `PAN: ${pan}`].filter(Boolean).join(' · ');
+    }
+    const addressLine = [matched.address, matched.city, matched.state].filter(Boolean).join(', ');
+    if (addressLine) {
+      next.billing_address = addressLine;
+      if (!prev.shipping_address) next.shipping_address = addressLine;
+    }
+    const contacts = Array.isArray(matched.client_contacts) ? (matched.client_contacts as Record<string, unknown>[]) : [];
+    const primary = contacts.find((c) => c.is_primary) ?? contacts[0];
+    if (primary) {
+      const name = primary.name ? String(primary.name) : '';
+      const phone = primary.phone ? String(primary.phone) : '';
+      next.contact_person = [name, phone].filter(Boolean).join(' · ');
+    }
+    return next;
+  });
+}
 const config: TradingModuleConfig = {
   resource: '/trading/documents',
   eyebrowModule: 'TRADE DOCUMENTS',
@@ -153,7 +200,8 @@ const config: TradingModuleConfig = {
       group: 'Linked records',
     },
     { key: 'shipment_number', label: 'Shipment', type: 'lookup', lookupResource: '/trading/shipments', lookupLabelKey: 'shipment_number', autoFillMap: { customer_name: 'customer_name', supplier_name: 'supplier_name', product_name: 'product_name', quantity: 'quantity', unit: 'unit', expected_delivery_date: 'expected_delivery_date', shipping_mode: 'shipping_mode', transporter: 'transporter', tracking_number: 'tracking_number' }, group: 'Linked records' },
-    { key: 'customer_name', label: 'Customer', type: 'lookup', lookupResource: '/clients', lookupValueKey: 'client_name', lookupLabelKey: 'client_code', group: 'Linked records' },
+// NEW
+{ key: 'customer_name', label: 'Customer', type: 'lookup', lookupResource: '/clients', lookupValueKey: 'client_name', lookupLabelKey: 'client_code', group: 'Linked records', onLookupChange: fillFromCustomer },
     { key: 'supplier_name', label: 'Supplier', type: 'lookup', lookupResource: '/trading/suppliers', lookupLabelKey: 'supplier_name', group: 'Linked records' },
     { key: 'product_name', label: 'Product', type: 'text', group: 'Linked records' },
     { key: 'reference_number', label: 'Reference number', type: 'text', group: 'Linked records' },
@@ -176,18 +224,20 @@ const config: TradingModuleConfig = {
     { key: 'tracking_number', label: 'Tracking number', type: 'text', group: 'Transport' },
     { key: 'issued_by', label: 'Issued by', type: 'text', group: 'Status' },
     { key: 'uploaded_by', label: 'Uploaded by', type: 'text', group: 'Status' },
-    {
-      key: 'file_reference',
-      label: 'File (link / reference)',
-      type: 'text',
-      group: 'Status',
-      placeholder: 'Paste a link to the stored file',
-      // Filling this in is the "upload" action — status advances on its own
-      // per spec item 7 ("Upload file → Uploaded"), no manual status pick.
-      onValueChange: (value, form) => {
-        if (value && (!form.status || form.status === 'Draft')) return { status: 'Uploaded' };
-      },
-    },
+      {
+  key: 'file_reference',
+  label: 'File',
+  type: 'file',
+  fileBucket: 'trade-documents',
+  group: 'Status',
+  onValueChange: (value, form) => {
+    if (value && (!form.status || form.status === 'Draft')) return { status: 'Uploaded' };
+  },
+  onValueChangeAsync: (value, form, setForm) => {
+    if (!value || (form.status && form.status !== 'Draft') || form.uploaded_by) return;
+    void stampUploader(setForm);
+  },
+},
     { key: 'verification_status', label: 'Verification status', type: 'select', options: VERIFICATION_STATUSES, listColumn: true, readOnly: true, group: 'Status' },
     { key: 'status', label: 'Document status', type: 'select', options: STATUSES, listColumn: true, readOnly: true, autoGenerate: () => 'Draft', group: 'Status' },
     { key: 'notes', label: 'Remarks', type: 'textarea', group: 'Status' },

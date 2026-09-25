@@ -142,6 +142,15 @@ function sellingValue(r: Record<string, unknown>) {
 function purchaseValue(r: Record<string, unknown>) {
   return (Number(r.purchase_rate) || 0) * (Number(r.quantity) || 0);
 }
+// Same order of operations as convertConfirmedDealToOrders() in the API's
+// trading.repository.ts (discount off the gross, then tax on the
+// discounted amount) — this is what actually lands on the real Sales
+// Order once the deal is Confirmed, so the preview here must match it.
+function netSellingValue(r: Record<string, unknown>) {
+  const gross = sellingValue(r);
+  const afterDiscount = gross - gross * ((Number(r.discount_percent) || 0) / 100);
+  return afterDiscount + afterDiscount * ((Number(r.tax_percent) || 0) / 100);
+}
 // Step 7/8 of the Trading connectivity plan: creating the Sales Order(s)
 // for a Confirmed deal used to happen here, client-side. It's now done by
 // the backend in trading.repository.ts (convertConfirmedDealToOrders),
@@ -233,21 +242,49 @@ const config: TradingModuleConfig = {
   listColumn: true,
   group: 'Product & quantity',
   onLookupChange: (matched, setForm) => {
-    void applyPriceListRates(String(matched.product_name ?? ''), setForm, { selling: 'selling_rate', purchase: 'purchase_rate', currency: 'currency' });
+    void applyPriceListRates(String(matched.product_name ?? ''), setForm, { selling: 'selling_rate', purchase: 'purchase_rate', currency: 'currency', discount: 'discount_percent', tax: 'tax_percent' });
   },
 },
     { key: 'product_category', label: 'Product category', type: 'text', group: 'Product & quantity' },
-    { key: 'quantity', label: 'Quantity', type: 'number', group: 'Product & quantity' },
+    {
+      key: 'quantity', label: 'Quantity (purchased from supplier)', type: 'number', group: 'Product & quantity',
+      // Re-picks the rate once quantity is known, so a bulk purchase moves
+      // off the base rate onto a Wholesale-tier price-list row as soon as
+      // quantity crosses that row's Minimum quantity — same shared lookup
+      // the Product field above already triggers, just re-run now that
+      // quantity is in hand.
+      onValueChangeAsync: (_v, form, setForm) => {
+        if (form.product_name) void applyPriceListRates(form.product_name, setForm, { selling: 'selling_rate', purchase: 'purchase_rate', currency: 'currency', discount: 'discount_percent', tax: 'tax_percent' });
+      },
+    },
+    {
+      key: 'customer_quantity', label: 'Quantity for this customer', type: 'number', group: 'Product & quantity',
+      placeholder: 'Leave blank if the customer takes the full purchased quantity',
+      onValueChangeAsync: (_v, form, setForm) => {
+        if (form.product_name) void applyPriceListRates(form.product_name, setForm, { selling: 'selling_rate', purchase: 'purchase_rate', currency: 'currency', discount: 'discount_percent', tax: 'tax_percent' });
+      },
+    },
     { key: 'unit', label: 'Unit', type: 'text', group: 'Product & quantity' },
     { key: 'currency', label: 'Currency', type: 'text', group: 'Product & quantity', placeholder: 'e.g. INR, USD' },
     { key: 'purchase_rate', label: 'Purchase rate', type: 'number', group: 'Rates & margin' },
     { key: 'selling_rate', label: 'Selling rate', type: 'number', group: 'Rates & margin' },
+    { key: 'discount_percent', label: 'Discount (%)', type: 'number', group: 'Rates & margin', placeholder: 'Auto-fills from the matched Price List rate' },
+    { key: 'tax_percent', label: 'Tax (%)', type: 'number', group: 'Rates & margin', placeholder: 'Auto-fills from the matched Price List rate' },
     {
       key: 'gross_amount',
       label: 'Gross amount (Selling)',
       type: 'text',
       readOnly: true,
       format: (_v, r) => `₹${sellingValue(r).toLocaleString()}`,
+      group: 'Rates & margin',
+    },
+    {
+      key: 'net_amount',
+      label: 'Net amount (after discount & tax)',
+      type: 'text',
+      readOnly: true,
+      listColumn: true,
+      format: (_v, r) => `₹${netSellingValue(r).toLocaleString()}`,
       group: 'Rates & margin',
     },
     {

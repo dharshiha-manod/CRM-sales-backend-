@@ -95,6 +95,13 @@ async function pollOnce(): Promise<void> {
     auth: { user: env.SUPPLIER_REPLY_IMAP_USER!, pass: env.SUPPLIER_REPLY_IMAP_PASS! },
     logger: false,
   });
+  // Without this, a dropped connection (e.g. Gmail closing an idle IMAP
+  // session — ECONNRESET) is an unhandled 'error' event, which crashes
+  // the whole Node process, not just this poll. Logging it here lets
+  // the surrounding try/catch below handle the failure normally instead.
+  client.on('error', (err) => {
+    logger.error({ err }, 'IMAP connection error during supplier-reply poll');
+  });
   try {
     await client.connect();
     const lock = await client.getMailboxLock('INBOX');

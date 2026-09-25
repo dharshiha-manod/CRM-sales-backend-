@@ -12,7 +12,7 @@ import './NotificationsPage.css';
 type Role = 'admin' | 'manager' | 'rep';
 type Priority = 'normal' | 'important' | 'critical';
 type QuickFilter = 'all' | 'unread' | 'read' | 'important' | 'action';
-type NotifCategory = 'sales' | 'collections' | 'inventory' | 'field' | 'target' | 'followup' | 'system' | 'ivr';
+type NotifCategory = 'sales' | 'collections' | 'inventory' | 'field' | 'target' | 'followup' | 'system' | 'ivr' | 'purchase';
 type NotifIndustry = IndustryKey | 'global';
 type IconName = 'cart' | 'wallet' | 'package' | 'mapPin' | 'target' | 'clock' | 'settings' | 'phone' | 'user' | 'refresh' | 'bell' | 'moreHorizontal' | 'check' | 'x' | 'search' | 'filter' | 'chevronDown';
 
@@ -90,6 +90,7 @@ const CATEGORY_META: Record<NotifCategory, { label: string; icon: IconName; grou
   followup: { label: 'Follow-up', icon: 'clock', group: 'Follow-ups' },
   system: { label: 'System', icon: 'settings', group: 'System' },
   ivr: { label: 'IVR / Calls', icon: 'phone', group: 'IVR' },
+  purchase: { label: 'Purchase Enquiry', icon: 'package', group: 'Purchase Enquiry' },
 };
 
 /* System notifications cover both "User Management" and "Settings" modules —
@@ -145,6 +146,10 @@ type LiveFollowUp = {
 };
 type LiveProduct = { id: string; product_code: string; product_name: string; stock_quantity?: number | null; industry_type_id?: string | null };
 type LiveIndustryType = { id: string; code: string };
+type LivePurchaseEnquiry = {
+  id: string; enquiry_number: string; product_name?: string | null; supplier_name?: string | null;
+  status?: string | null; updated_at?: string | null; industry_type_id?: string | null;
+};
 
 // Same key ProductsPage/InventoryPage already write min-stock/expiry into —
 // there's no backend column for either yet, so we read the identical
@@ -181,7 +186,7 @@ function industryKeyFromCode(code?: string | null): NotifIndustry {
 
 function buildLiveNotifications(sources: {
   orders: LiveOrder[]; collections: LiveCollection[]; clients: LiveClient[]; followUps: LiveFollowUp[];
-  products: LiveProduct[]; industryTypes: LiveIndustryType[];
+  products: LiveProduct[]; industryTypes: LiveIndustryType[]; purchaseEnquiries: LivePurchaseEnquiry[];
 }): NotificationItem[] {
   const readIds = readIdSet(READ_KEY);
   const dismissed = readIdSet(DISMISSED_KEY);
@@ -289,6 +294,20 @@ function buildLiveNotifications(sources: {
     }
   }
 
+  for (const e of sources.purchaseEnquiries) {
+    if (e.status !== 'Supplier Responded') continue;
+    const id = `enquiry-${e.id}`;
+    if (dismissed.has(id)) continue;
+    items.push({
+      id, category: 'purchase', title: 'Supplier Responded',
+      description: `${e.supplier_name ?? 'A supplier'} replied to ${e.enquiry_number} (${e.product_name ?? 'enquiry'}).`,
+      module: 'Purchase Enquiry', navigateTo: 'industry:trading:purchase-enquiry', industry: industryKeyFromCode(industryTypeById.get(e.industry_type_id ?? '')), roles: ['admin', 'manager', 'rep'],
+      timestamp: e.updated_at ?? new Date().toISOString(), read: readIds.has(id), priority: 'important',
+      details: [{ label: 'Enquiry', value: e.enquiry_number }, { label: 'Supplier', value: e.supplier_name ?? '—' }, { label: 'Product', value: e.product_name ?? '—' }],
+      primaryAction: 'View Enquiry',
+    });
+  }
+
   return items;
 }
 
@@ -303,7 +322,7 @@ const SETTINGS_EVENT_BY_TITLE: Record<string, string> = {
 };
 
 async function loadLiveNotifications(): Promise<NotificationItem[]> {
-  const [orders, collections, clients, followUps, products, industryTypes, orgSettings] = await Promise.all([
+  const [orders, collections, clients, followUps, products, industryTypes, orgSettings, purchaseEnquiries] = await Promise.all([
     api<{ data: LiveOrder[] }>('/orders').catch(() => ({ data: [] })),
     api<{ data: LiveCollection[] }>('/collections').catch(() => ({ data: [] })),
     api<{ data: LiveClient[] }>('/clients').catch(() => ({ data: [] })),
@@ -311,10 +330,12 @@ async function loadLiveNotifications(): Promise<NotificationItem[]> {
     api<{ data: LiveProduct[] }>('/products').catch(() => ({ data: [] })),
     api<{ data: LiveIndustryType[] }>('/industry-types?status=active').catch(() => ({ data: [] })),
     api<{ data: { settings?: unknown } | null }>('/organization-settings').catch(() => ({ data: null })),
+    api<{ data: LivePurchaseEnquiry[] }>('/trading/purchase-enquiries').catch(() => ({ data: [] })),
   ]);
   const items = buildLiveNotifications({
     orders: orders.data ?? [], collections: collections.data ?? [], clients: clients.data ?? [],
     followUps: followUps.data ?? [], products: products.data ?? [], industryTypes: industryTypes.data ?? [],
+    purchaseEnquiries: purchaseEnquiries.data ?? [],
   });
   const inAppOff = new Set(
     hydrateSettingsState(orgSettings.data?.settings).notifications.filter((row) => !row.inApp).map((row) => row.category),
