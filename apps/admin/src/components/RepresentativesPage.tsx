@@ -1,39 +1,27 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { targetTypesForIndustry, formatTargetValue, monthRange, customPeriodLabel, TARGET_TYPE_LABELS } from '../lib/targetTypes';
 import './MasterDataPages.css';
+import './RepresentativesPage.css';
 
 type Representative = { id: string; employee_code: string; user_id: string; designation?: string | null; phone?: string | null; email?: string | null; status: 'active' | 'inactive'; user_profiles?: { display_name?: string | null } | null };
 type OrganizationUser = { user_id: string; email?: string | null; status: string; user_profiles?: { display_name?: string | null } | null; roles?: { code?: string | null; name?: string | null } | null };
 type RepresentativeForm = { userId: string; employeeCode: string; designation: string; status: 'active' | 'inactive' };
 const blank: RepresentativeForm = { userId: '', employeeCode: '', designation: '', status: 'active' };
 
-// Daily/monthly targets have no backend column yet — persisted client-side in
-// localStorage, keyed by representative id, same approach used on the Products page.
-const REP_TARGET_PREFIX = 'fs-rep-target:';
-type RepTargets = { dailyTarget: string; monthlyTarget: string };
-const blankTargets: RepTargets = { dailyTarget: '', monthlyTarget: '' };
-function loadRepTargets(repId: string): RepTargets {
-  try {
-    const raw = window.localStorage.getItem(`${REP_TARGET_PREFIX}${repId}`);
-    return raw ? { ...blankTargets, ...JSON.parse(raw) } : blankTargets;
-  } catch {
-    return blankTargets;
-  }
-}
-function saveRepTargets(repId: string, targets: RepTargets) {
-  try {
-    window.localStorage.setItem(`${REP_TARGET_PREFIX}${repId}`, JSON.stringify(targets));
-  } catch {
-    // Best-effort.
-  }
-}
+// Real targets for the rep, read from / written to the same /targets API the Targets page uses.
+type RepTarget = { id: string; target_type: string; target_value: number; achieved_value: number; period_label: string; period_start: string; period_end: string };
+type TargetDraft = { targetType: string; targetValue: string; periodStart: string; periodEnd: string };
+const targetTypeName = (type: string) => TARGET_TYPE_LABELS[type] ?? type.replaceAll('_', ' ');
+const progressTone = (pct: number) => (pct >= 100 ? 'good' : pct >= 40 ? 'warn' : pct > 0 ? 'bad' : 'idle');
+function initialsOf(name: string) { return name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join('') || '?'; }
 
 // Dashboard data — reuses existing endpoints (/clients, /field-visits, /orders,
 // /collections, /follow-ups) and matches rows to this rep via the nested
 // sales_representatives.employee_code, since none of these types expose a raw rep FK.
 type RepMatch = { sales_representatives?: { employee_code?: string } | null };
-type RepClient = { id: string; client_name: string; client_code?: string | null; city?: string | null; sales_representative_client_assignments?: { sales_representatives?: { employee_code?: string } | null }[] };
+type RepClient = { id: string; client_name: string; client_code?: string | null; city?: string | null; sales_representative_client_assignments?: { status?: string; sales_representatives?: { employee_code?: string } | null }[] };
 type RepVisit = RepMatch & { id: string; check_in_time: string; check_out_time?: string | null };
 type RepOrder = RepMatch & { id: string; order_number: string; status: string; total_amount: number; created_at: string };
 type RepCollection = RepMatch & { id: string; amount: number; collected_at: string };
@@ -52,7 +40,7 @@ type RepSummary = { clientCount: number; visitsToday: number; ordersToday: numbe
 const blankSummary: RepSummary = { clientCount: 0, visitsToday: 0, ordersToday: 0, collectionsToday: 0 };
 
 export function RepresentativesPage() {
-  const { activeIndustry, clientMatchesActiveIndustry } = useIndustryScope();
+  const { activeIndustry, activeIndustryTypeId, clientMatchesActiveIndustry } = useIndustryScope();
   const [items, setItems] = useState<Representative[]>([]);
   const [users, setUsers] = useState<OrganizationUser[]>([]);
   const [form, setForm] = useState<RepresentativeForm>(blank);
@@ -70,7 +58,11 @@ export function RepresentativesPage() {
   const [loading, setLoading] = useState(false);
   const [dashboard, setDashboard] = useState<RepDashboard>(blankDashboard);
   const [dashboardLoading, setDashboardLoading] = useState(false);
-  const [targetsForm, setTargetsForm] = useState<RepTargets>(blankTargets);
+  const [repTargets, setRepTargets] = useState<RepTarget[]>([]);
+  const [targetDraft, setTargetDraft] = useState<TargetDraft>({ targetType: '', targetValue: '', periodStart: '', periodEnd: '' });
+  const [targetMsg, setTargetMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const [targetSaving, setTargetSaving] = useState(false);
+  const [showTargetForm, setShowTargetForm] = useState(false);
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
 
   // List-wide summary rows(all clients/visits/orders/collections), scoped to
@@ -90,7 +82,7 @@ export function RepresentativesPage() {
     const map = new Map<string, RepSummary>();
     for (const item of items) {
       const code = item.employee_code;
-      const clientCount = scopedClients.filter((c) => c.sales_representative_client_assignments?.some((a) => a.sales_representatives?.employee_code === code)).length;
+      const clientCount = scopedClients.filter((c) => c.sales_representative_client_assignments?.some((a) => a.status === 'active' && a.sales_representatives?.employee_code === code)).length;
       const visitsToday = allVisits.filter((v) => v.sales_representatives?.employee_code === code && isToday(v.check_in_time)).length;
       const ordersToday = allOrders.filter((o) => o.sales_representatives?.employee_code === code && isToday(o.created_at)).length;
       const collectionsToday = allCollections.filter((c) => c.sales_representatives?.employee_code === code && isToday(c.collected_at)).reduce((sum, c) => sum + (c.amount ?? 0), 0);
@@ -160,7 +152,11 @@ export function RepresentativesPage() {
     try {
       const detail = (await api<{ data: Representative }>(`/sales-representatives/${id}`)).data;
       setViewing(detail);
-      setTargetsForm(loadRepTargets(id));
+      const month = monthRange();
+      setTargetDraft({ targetType: '', targetValue: '', periodStart: month.start, periodEnd: month.end });
+      setTargetMsg(null);
+      setShowTargetForm(false);
+      void fetchRepTargets(id);
       setDashboardLoading(true);
       const [clients, visits, orders, collections, followUps] = await Promise.all([
         api<{ data: RepClient[] }>('/clients').catch(() => ({ data: [] })),
@@ -171,7 +167,7 @@ export function RepresentativesPage() {
       ]);
       const mine = (row: RepMatch) => row.sales_representatives?.employee_code === detail.employee_code;
       setDashboard({
-        clients: (clients.data ?? []).filter((c) => c.sales_representative_client_assignments?.some((a) => a.sales_representatives?.employee_code === detail.employee_code)),
+        clients: (clients.data ?? []).filter((c) => c.sales_representative_client_assignments?.some((a) => a.status === 'active' && a.sales_representatives?.employee_code === detail.employee_code)),
         visits: (visits.data ?? []).filter(mine),
         orders: (orders.data ?? []).filter(mine),
         collections: (collections.data ?? []).filter(mine),
@@ -183,9 +179,38 @@ export function RepresentativesPage() {
       setDashboardLoading(false);
     }
   }
-  function saveTargets() {
-    if (!viewing) return;
-    saveRepTargets(viewing.id, targetsForm);
+  async function fetchRepTargets(repId: string) {
+    if (!activeIndustryTypeId) { setRepTargets([]); return; }
+    const month = monthRange();
+    const params = new URLSearchParams({ industryTypeId: activeIndustryTypeId, representativeId: repId, periodStart: month.start, periodEnd: month.end });
+    try {
+      const res = await api<{ data: RepTarget[] }>(`/targets?${params.toString()}`);
+      setRepTargets(res.data ?? []);
+    } catch {
+      setRepTargets([]);
+    }
+  }
+  async function addTarget(event: FormEvent) {
+    event.preventDefault();
+    if (!viewing || !activeIndustryTypeId) return;
+    const { targetType, targetValue, periodStart, periodEnd } = targetDraft;
+    if (periodEnd < periodStart) { setTargetMsg({ kind: 'error', text: 'End date cannot be before the start date.' }); return; }
+    const month = monthRange();
+    const isMonth = periodStart === month.start && periodEnd === month.end;
+    setTargetSaving(true); setTargetMsg(null);
+    try {
+      await api('/targets', { method: 'POST', body: JSON.stringify({
+        representativeId: viewing.id, industryTypeId: activeIndustryTypeId, targetType,
+        periodStart, periodEnd, periodLabel: isMonth ? month.label : customPeriodLabel(periodStart, periodEnd),
+        targetValue: Number(targetValue), priority: 'normal', remarks: null,
+      }) });
+      setTargetDraft({ ...targetDraft, targetType: '', targetValue: '' });
+      setTargetMsg({ kind: 'ok', text: 'Target added.' });
+      setShowTargetForm(false);
+      await fetchRepTargets(viewing.id);
+    } catch (error) {
+      setTargetMsg({ kind: 'error', text: (error as Error).message });
+    } finally { setTargetSaving(false); }
   }
   async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); setMessage(''); try { await api(editing ? `/sales-representatives/${editing.id}` : '/sales-representatives', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(form) }); setModal(false); setEditing(null); setMessage(editing ? 'Sales representative updated successfully.' : 'Sales representative created successfully.'); await load(); } catch (error) { setMessage((error as Error).message); } finally { setSaving(false); } }
     async function toggle(item: Representative) { try { await api(`/sales-representatives/${item.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: item.status === 'active' ? 'inactive' : 'active' }) }); setMessage('Sales representative status updated successfully.'); await load(); } catch (error) { setMessage((error as Error).message); } }
@@ -350,11 +375,15 @@ export function RepresentativesPage() {
       )}
 
         {assigning && (() => {
-        const assignedIds = new Set(
+              const assignedIds = new Set(
           scopedClients
-            .filter((c) => c.sales_representative_client_assignments?.some((a) => a.sales_representatives?.employee_code === assigning.employee_code))
+            .filter((c) => c.sales_representative_client_assignments?.some((a) => a.status === 'active' && a.sales_representatives?.employee_code === assigning.employee_code))
             .map((c) => c.id)
         );
+        // A client owned by another rep is hidden here until that rep is unassigned.
+        const ownedByOtherRep = (c: RepClient) =>
+          c.sales_representative_client_assignments?.some((a) => a.status === 'active' && a.sales_representatives?.employee_code !== assigning.employee_code);
+        const visibleClients = scopedClients.filter((c) => assignedIds.has(c.id) || !ownedByOtherRep(c));
         return (
           <div className="modal-backdrop" onMouseDown={() => setAssigning(null)}>
             <div className="master-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
@@ -367,13 +396,12 @@ export function RepresentativesPage() {
               </div>
               {assignMessage && <p role="alert" className="error" style={{ margin: '0 1.6rem' }}>{assignMessage}</p>}
               <p style={{ margin: '0 1.6rem .8rem', fontSize: 13, opacity: 0.75 }}>
-                {assignedIds.size} of {scopedClients.length} clients assigned. Toggle a client to assign or unassign this rep — this is what lets them check in from the mobile app.
-              </p>
+                {assignedIds.size} assigned to this rep · {visibleClients.length - assignedIds.size} available. Clients already owned by another rep are hidden. Assigned clients are the ones this rep can check in to from the mobile app.              </p>
               <div className="data-table-wrap" style={{ margin: '0 1.6rem 1rem', maxHeight: 420, overflowY: 'auto' }}>
                 <table>
                   <thead><tr><th>Client</th><th>City</th><th /></tr></thead>
                   <tbody>
-                    {scopedClients.map((client) => {
+                                      {visibleClients.map((client) => {
                       const isAssigned = assignedIds.has(client.id);
                       return (
                         <tr key={client.id}>
@@ -392,8 +420,7 @@ export function RepresentativesPage() {
                         </tr>
                       );
                     })}
-                    {scopedClients.length === 0 && <tr><td colSpan={3} className="empty-row">No clients found for this industry yet.</td></tr>}
-                  </tbody>
+                    {visibleClients.length === 0 && <tr><td colSpan={3} className="empty-row">No unassigned clients available.</td></tr>}                  </tbody>
                 </table>
               </div>
               <div className="modal-actions">
@@ -456,67 +483,136 @@ export function RepresentativesPage() {
         const totalCollected = dashboard.collections.reduce((sum, c) => sum + (c.amount ?? 0), 0);
         const outstandingCollection = Math.max(0, totalSales - totalCollected);
         const pendingFollowUps = dashboard.followUps.filter((f) => f.status === 'pending');
-        const dailyTarget = Number(targetsForm.dailyTarget || 0);
-        const monthlyTarget = Number(targetsForm.monthlyTarget || 0);
         const areas = [...new Set(dashboard.clients.map((c) => c.city).filter((c): c is string => Boolean(c)))];
         const recentOrders = [...dashboard.orders].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 5);
         const recentVisits = [...dashboard.visits].sort((a, b) => new Date(b.check_in_time).getTime() - new Date(a.check_in_time).getTime()).slice(0, 5);
+        const repName = viewing.user_profiles?.display_name ?? viewing.employee_code;
+        const typeOptions = targetTypesForIndustry(activeIndustry);
+        const shownClients = dashboard.clients.slice(0, 6);
 
         return (
           <div className="modal-backdrop" onMouseDown={() => setViewing(null)}>
-            <div className="master-modal detail-panel" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="master-modal detail-panel rp-panel" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
               <div className="modal-heading">
-                <div>
-                  <p className="eyebrow">REPRESENTATIVE PROFILE</p>
-                  <h3>{viewing.user_profiles?.display_name ?? viewing.employee_code}</h3>
+                <div className="rp-identity">
+                  <span className="rp-avatar">{initialsOf(repName)}</span>
+                  <div>
+                    <p className="eyebrow">REPRESENTATIVE PROFILE</p>
+                    <h3>{repName}</h3>
+                    <p className="rp-sub">{viewing.employee_code}{viewing.designation ? ` · ${viewing.designation}` : ''} <span className={`status-badge ${viewing.status}`}>{viewing.status}</span></p>
+                  </div>
                 </div>
                 <button className="icon-action" type="button" aria-label="Close" onClick={() => setViewing(null)}>×</button>
               </div>
-              <p className="eyebrow" style={{ margin: '1.2rem 1.6rem 0' }}>EMPLOYEE INFORMATION</p>
-              <dl className="detail-dl">
-                <dt>Employee code</dt><dd>{viewing.employee_code}</dd>
-                <dt>Designation</dt><dd>{viewing.designation ?? '—'}</dd>
-                <dt>Status</dt><dd><span className={`status-badge ${viewing.status}`}>{viewing.status}</span></dd>
-              </dl>
 
-              <p className="eyebrow" style={{ margin: '1rem 1.6rem 0' }}>CONTACT DETAILS</p>
-              <dl className="detail-dl">
-                <dt>Phone</dt><dd>{viewing.phone ?? '—'}</dd>
-                <dt>Email</dt><dd>{viewing.email ?? '—'}</dd>
-              </dl>
+              <div className="rp-body">
+                <section className="rp-section">
+                  <h4 className="rp-title">Contact &amp; assignment</h4>
+                  <dl className="rp-info">
+                    <div><dt>Phone</dt><dd>{viewing.phone ?? '—'}</dd></div>
+                    <div><dt>Email</dt><dd>{viewing.email ?? '—'}</dd></div>
+                    <div><dt>Assigned areas</dt><dd>{areas.join(', ') || 'None recorded'}</dd></div>
+                    <div>
+                     <dt>Assigned clients ({dashboard.clients.length})</dt>
+                      <dd>
+                        {shownClients.length === 0 ? 'None' : (
+                          <span className="rp-chips">
+                            {shownClients.map((c) => <span key={c.id} className="rp-chip">{c.client_name}</span>)}
+                            {dashboard.clients.length > shownClients.length && <span className="rp-chip rp-chip--more">+{dashboard.clients.length - shownClients.length} more</span>}
+                          </span>
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+                </section>
 
-              <p className="eyebrow" style={{ margin: '1rem 1.6rem 0' }}>ASSIGNED CLIENTS</p>
-              <dl className="detail-dl">
-                <dt>Assigned retailers</dt><dd>{dashboard.clients.length} — {dashboard.clients.map((c) => c.client_name).join(', ') || 'None'}</dd>
-                <dt>Assigned areas</dt><dd>{areas.join(', ') || 'None recorded'}</dd>
-              </dl>
-
-              {dashboardLoading ? <p style={{ margin: '0 1.6rem' }}>Loading today's activity…</p> : (
-                <>
-                  <p className="eyebrow" style={{ margin: '1rem 1.6rem 0' }}>TARGETS</p>
-                  <div className="target-inputs">                    <label>Daily target (₹)<input type="number" min="0" value={targetsForm.dailyTarget} onChange={(e) => setTargetsForm({ ...targetsForm, dailyTarget: e.target.value })} onBlur={saveTargets} /></label>
-                    <label>Monthly target (₹)<input type="number" min="0" value={targetsForm.monthlyTarget} onChange={(e) => setTargetsForm({ ...targetsForm, monthlyTarget: e.target.value })} onBlur={saveTargets} /></label>
+                <section className="rp-section">
+                  <div className="rp-title-row">
+                    <h4 className="rp-title">Targets · {monthRange().label}</h4>
+                    {!showTargetForm && <button type="button" className="rp-add-btn" onClick={() => { setShowTargetForm(true); setTargetMsg(null); }}>+ Add target</button>}
                   </div>
+                  {targetMsg?.kind === 'ok' && <p className="rp-msg rp-msg--ok" role="status" style={{ margin: '0 0 .7rem' }}>{targetMsg.text}</p>}
 
-                  <p className="eyebrow" style={{ margin: '1rem 1.6rem 0' }}>VISITS &amp; ORDERS — TODAY</p>
-                  <div className="sales-summary" style={{ margin: '0 1.6rem' }}>
-                    <div><span>Visits today</span><strong>{todaysVisits.length} ({completedVisits.length} done, {pendingVisits} pending)</strong></div>
-                    <div><span>Orders today</span><strong>{ordersTodayList.length}</strong></div>
-                    <div><span>Sales value today</span><strong>{money(salesToday)}</strong></div>
-                    <div><span>Collection today</span><strong>{money(collectionsTodayValue)}</strong></div>
-                    <div><span>Daily target vs achieved</span><strong>{dailyTarget > 0 ? `${Math.round((salesToday / dailyTarget) * 100)}%` : '—'} of {money(dailyTarget)}</strong></div>
-                    <div><span>Pending follow-ups</span><strong>{pendingFollowUps.length}</strong></div>
+                  {repTargets.length === 0 ? (
+                    <p className="rp-empty">No targets set for this month yet. Add one below.</p>
+                  ) : (
+                    <ul className="rp-target-list">
+                      {repTargets.map((t) => {
+                        const pct = t.target_value > 0 ? Math.round((t.achieved_value / t.target_value) * 100) : 0;
+                        return (
+                          <li key={t.id} className="rp-target">
+                            <div className="rp-target-top">
+                              <strong>{targetTypeName(t.target_type)}</strong>
+                              <span className="rp-target-period">{t.period_label}</span>
+                            </div>
+                            <div className="rp-target-figures">
+                              <span>{formatTargetValue(t.achieved_value, t.target_type)} <em>of</em> {formatTargetValue(t.target_value, t.target_type)}</span>
+                              <b>{pct}%</b>
+                            </div>
+                            <div className="rp-bar"><span className={`rp-bar-fill rp-bar-fill--${progressTone(pct)}`} style={{ width: `${Math.min(100, pct)}%` }} /></div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+
+                  {showTargetForm && (<form className="rp-target-form" onSubmit={(event) => void addTarget(event)}>
+                    <p className="rp-form-title">Add a target</p>
+                    <div className="rp-form-grid">
+                      <label>Target type
+                        <select required value={targetDraft.targetType} onChange={(e) => setTargetDraft({ ...targetDraft, targetType: e.target.value })}>
+                          <option value="">Select…</option>
+                          {typeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        </select>
+                      </label>
+                      <label>Target value
+                        <input type="number" required min={0} step="any" placeholder="e.g. 100000" value={targetDraft.targetValue} onChange={(e) => setTargetDraft({ ...targetDraft, targetValue: e.target.value })} />
+                      </label>
+                      <label>Period start
+                        <input type="date" required value={targetDraft.periodStart} onChange={(e) => setTargetDraft({ ...targetDraft, periodStart: e.target.value })} />
+                      </label>
+                      <label>Period end
+                        <input type="date" required value={targetDraft.periodEnd} onChange={(e) => setTargetDraft({ ...targetDraft, periodEnd: e.target.value })} />
+                      </label>
+                    </div>
+                    <div className="rp-form-actions">
+                      {targetMsg?.kind === 'error' && <span className="rp-msg rp-msg--error" role="alert">{targetMsg.text}</span>}
+                      <button type="button" className="quiet-button" onClick={() => { setShowTargetForm(false); setTargetMsg(null); }} disabled={targetSaving}>Cancel</button>
+                      <button type="submit" className="primary-action" disabled={targetSaving || !activeIndustryTypeId}>{targetSaving ? 'Saving…' : 'Add target'}</button>
+                    </div>
+                  </form>)}
+
+                  <div className="rp-target-footer">
+                    <span className="rp-empty" style={{ margin: 0 }}>Edit or delete targets, and compare all reps, in the Targets module.</span>
+                    <a className="rp-link" href="#target">Open Targets →</a>
                   </div>
+                </section>
 
-                  <p className="eyebrow" style={{ margin: '1rem 1.6rem 0' }}>COLLECTIONS &amp; TARGETS — OVERALL</p>
-                  <div className="sales-summary" style={{ margin: '0 1.6rem' }}>
-                    <div><span>Monthly sales</span><strong>{money(monthSales)}</strong></div>
-                    <div><span>Monthly target vs achieved</span><strong>{monthlyTarget > 0 ? `${Math.round((monthSales / monthlyTarget) * 100)}%` : '—'} of {money(monthlyTarget)}</strong></div>
-                    <div><span>Outstanding collection</span><strong>{money(outstandingCollection)}</strong></div>
-                  </div>
+                <section className="rp-section">
+                  <h4 className="rp-title">Today</h4>
+                  {dashboardLoading ? <p className="rp-empty">Loading today's activity…</p> : (
+                    <div className="rp-stats">
+                      <div className="rp-stat"><span>Visits</span><strong>{todaysVisits.length}</strong><small>{completedVisits.length} done · {pendingVisits} pending</small></div>
+                      <div className="rp-stat"><span>Orders</span><strong>{ordersTodayList.length}</strong><small>{money(salesToday)} sales value</small></div>
+                      <div className="rp-stat"><span>Collections</span><strong>{money(collectionsTodayValue)}</strong><small>collected today</small></div>
+                    </div>
+                  )}
+                </section>
 
-                  <p className="eyebrow" style={{ margin: '1rem 1.6rem 0' }}>RECENT ACTIVITY</p>
-                  <div className="data-table-wrap" style={{ margin: '0 1.6rem 1rem' }}>
+                <section className="rp-section">
+                  <h4 className="rp-title">Overall</h4>
+                  {dashboardLoading ? null : (
+                    <div className="rp-stats">
+                      <div className="rp-stat"><span>Sales this month</span><strong>{money(monthSales)}</strong></div>
+                      <div className="rp-stat"><span>Outstanding collection</span><strong>{money(outstandingCollection)}</strong></div>
+                      <div className="rp-stat"><span>Pending follow-ups</span><strong>{pendingFollowUps.length}</strong></div>
+                    </div>
+                  )}
+                </section>
+
+                <section className="rp-section">
+                  <h4 className="rp-title">Recent activity</h4>
+                  <div className="data-table-wrap">
                     <table>
                       <thead><tr><th>Type</th><th>Reference</th><th>When</th></tr></thead>
                       <tbody>
@@ -526,9 +622,9 @@ export function RepresentativesPage() {
                       </tbody>
                     </table>
                   </div>
-                </>
-              )}
-              <p className="detail-note">Use Field activity to check in, capture requirements, take orders, record collections, and check out.</p>
+                  <p className="rp-note">Use Field activity to check in, capture requirements, take orders, record collections, and check out.</p>
+                </section>
+              </div>
             </div>
           </div>
         );

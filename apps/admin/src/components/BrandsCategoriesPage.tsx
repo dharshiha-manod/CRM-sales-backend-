@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import './MasterDataPages.css';
+import './BrandsCategoriesPage.css';
 import { useIndustry } from '../industry/IndustryContext';
 import type { IndustryKey } from '../industry/types';
 
@@ -73,12 +74,50 @@ export function saveNameList(key: string, list: string[]) {
   }
 }
 
-type ListSection = { key: string; title: string; description: string; placeholder: string };
+type ListKind = 'brand' | 'category' | 'unit';
 
-function NameListEditor({ section }: { section: ListSection }) {
-  const [items, setItems] = useState<string[]>(() => loadNameList(section.key));
+const TABS: { kind: ListKind; title: string; singular: string; description: string }[] = [
+  { kind: 'brand', title: 'Brands', singular: 'brand' },
+  { kind: 'category', title: 'Categories', singular: 'category' },
+  { kind: 'unit', title: 'Units', singular: 'unit' },
+];
+
+function keyFor(kind: ListKind, industry: string): string {
+  if (kind === 'brand') return brandListKey(industry);
+  if (kind === 'category') return categoryListKey(industry);
+  return unitListKey(industry);
+}
+
+function BrandsCategoriesContent({ industry }: { industry: IndustryKey }) {
+  const examples = PLACEHOLDER_EXAMPLES[industry];
+  const [lists, setLists] = useState<Record<ListKind, string[]>>(() => ({
+    brand: loadNameList(brandListKey(industry)),
+    category: loadNameList(categoryListKey(industry)),
+    unit: loadNameList(unitListKey(industry)),
+  }));
+  const [tab, setTab] = useState<ListKind>('brand');
   const [input, setInput] = useState('');
+  const [search, setSearch] = useState('');
   const [error, setError] = useState('');
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+
+  const active = TABS.find((entry) => entry.kind === tab) ?? TABS[0];
+  const items = lists[tab];
+
+  function persist(kind: ListKind, next: string[]) {
+    setLists((prev) => ({ ...prev, [kind]: next }));
+    saveNameList(keyFor(kind, industry), next);
+  }
+
+  function selectTab(kind: ListKind) {
+    setTab(kind);
+    setInput('');
+      setSearch('');
+    setError('');
+    setEditing(null);
+    setEditValue('');
+  }
 
   function addItem() {
     const trimmed = input.trim();
@@ -87,82 +126,161 @@ function NameListEditor({ section }: { section: ListSection }) {
       setError(`"${trimmed}" already exists.`);
       return;
     }
-    const next = [...items, trimmed].sort();
-    setItems(next);
-    saveNameList(section.key, next);
+    persist(tab, [...items, trimmed].sort((a, b) => a.localeCompare(b)));
     setInput('');
     setError('');
   }
 
   function removeItem(name: string) {
     if (!window.confirm(`Remove "${name}"? Products already using it keep their existing value.`)) return;
-    const next = items.filter((item) => item !== name);
-    setItems(next);
-    saveNameList(section.key, next);
+    persist(tab, items.filter((item) => item !== name));
   }
 
+  function startEdit(name: string) {
+    setEditing(name);
+    setEditValue(name);
+    setError('');
+  }
+
+  function cancelEdit() {
+    setEditing(null);
+    setEditValue('');
+    setError('');
+  }
+
+  function saveEdit() {
+    if (editing === null) return;
+    const trimmed = editValue.trim();
+    if (!trimmed) { setError(`The ${active.singular} name can't be empty.`); return; }
+    if (trimmed === editing) { cancelEdit(); return; }
+    if (items.some((item) => item !== editing && item.toLowerCase() === trimmed.toLowerCase())) {
+      setError(`"${trimmed}" already exists.`);
+      return;
+    }
+    persist(tab, items.map((item) => (item === editing ? trimmed : item)).sort((a, b) => a.localeCompare(b)));
+    cancelEdit();
+  }
+
+  const term = search.trim().toLowerCase();
+  const visible = term ? items.filter((item) => item.toLowerCase().includes(term)) : items;
+
   return (
-    <div className="page-panel master-page" style={{ marginBottom: '1.5rem' }}>
-      <div className="page-panel-heading">
-        <div>
-          <p className="eyebrow">PRODUCT CATALOG</p>
-          <h2>{section.title}</h2>
-          <p>{section.description}</p>
-        </div>
+    <section className="bc-page">
+      <div className="bc-header">
+        <p className="bc-eyebrow">PRODUCT CATALOG</p>
+        <h2>Brands, categories &amp; units</h2>
+ 
       </div>
-      <div className="master-toolbar">
-        <div className="master-search" style={{ gap: '.5rem' }}>
+
+      <div className="bc-tabs" role="tablist">
+        {TABS.map((entry) => (
+          <button
+            key={entry.kind}
+            type="button"
+            role="tab"
+            aria-selected={tab === entry.kind}
+            className="bc-tab"
+            onClick={() => selectTab(entry.kind)}
+          >
+            {entry.title}
+            <span className="bc-tab-count">{lists[entry.kind].length}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="bc-section-head">
+        <div>
+          <h3>{active.title}</h3>
+          <p>{active.description}</p>
+        </div>
+        <div className="bc-add">
           <input
-            placeholder={section.placeholder}
+            placeholder={examples[tab]}
             value={input}
             onChange={(event) => { setInput(event.target.value); setError(''); }}
             onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addItem(); } }}
           />
-          <button type="button" className="primary-action" onClick={addItem}>+ Add</button>
+          <button type="button" onClick={addItem} disabled={!input.trim()}>+ Add {active.singular}</button>
         </div>
       </div>
-      {error && <p className="error-message">{error}</p>}
+      {error && <p className="bc-error">{error}</p>}
+
       {items.length === 0 ? (
-        <div className="empty-state empty-state-lg">
-          <div className="empty-state-icon">▣</div>
-          <p><strong>No {section.title.toLowerCase()} yet</strong><br />Add one above to make it available on the Add Product form.</p>
+        <div className="bc-empty">
+          <strong>No {active.title.toLowerCase()} yet</strong>
+          <span>Add your first {active.singular} above to use it on the Add Product form.</span>
         </div>
       ) : (
-        <div className="data-table-wrap">
-          <table>
-            <thead><tr><th>{section.title.slice(0, -1)} name</th><th>Actions</th></tr></thead>
-            <tbody>
-              {items.map((item) => (
-                <tr key={item}>
-                  <td>{item}</td>
-                  <td className="master-actions">
-                    <button type="button" className="quiet-button" onClick={() => removeItem(item)}>Remove</button>
-                  </td>
+        <>
+          {items.length > 6 && (
+            <div className="bc-toolbar">
+              <input
+                type="search"
+                className="bc-search"
+                placeholder={`Search ${active.title.toLowerCase()}…`}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <span className="bc-summary">Showing {visible.length} of {items.length}</span>
+            </div>
+          )}
+          <div className="bc-table-wrap">
+            <table className="bc-table">
+              <thead>
+                <tr>
+                  <th className="bc-col-index">#</th>
+                  <th>{active.singular} name</th>
+                  <th className="bc-col-actions">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {visible.map((item, index) => (
+                              <tr key={item}>
+                    <td className="bc-col-index">{index + 1}</td>
+                    <td className="bc-col-name">
+                      {editing === item ? (
+                        <input
+                          className="bc-edit-input"
+                          autoFocus
+                          value={editValue}
+                          onChange={(event) => { setEditValue(event.target.value); setError(''); }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') { event.preventDefault(); saveEdit(); }
+                            if (event.key === 'Escape') cancelEdit();
+                          }}
+                        />
+                      ) : item}
+                    </td>
+                    <td className="bc-col-actions">
+                      {editing === item ? (
+                        <div className="bc-actions">
+                          <button type="button" className="bc-save" onClick={saveEdit}>Save</button>
+                          <button type="button" className="bc-edit" onClick={cancelEdit}>Cancel</button>
+                        </div>
+                      ) : (
+                        <div className="bc-actions">
+                          <button type="button" className="bc-edit" onClick={() => startEdit(item)}>Edit</button>
+                          <button type="button" className="bc-remove" onClick={() => removeItem(item)}>Remove</button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {visible.length === 0 && (
+                  <tr><td colSpan={3} style={{ textAlign: 'center', color: '#8a8580' }}>No {active.title.toLowerCase()} match "{search}".</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
-    </div>
-  );
-}
-export function BrandsCategoriesPage() {
-  const { activeIndustry } = useIndustry();
-  const examples = PLACEHOLDER_EXAMPLES[activeIndustry];
-  const sections: ListSection[] = [
-    { key: brandListKey(activeIndustry), title: 'Brands', description: 'Manage the brand names available when adding a product.', placeholder: examples.brand },
-    { key: categoryListKey(activeIndustry), title: 'Categories', description: 'Manage the categories available when adding a product.', placeholder: examples.category },
-    { key: unitListKey(activeIndustry), title: 'Units', description: 'Manage the units of measure available when adding a product.', placeholder: examples.unit },
-  ];
-  return (
-    <section>
-      {sections.map((section) => (
-        // key includes the industry (via section.key) so switching Industry
-        // Type remounts each editor fresh, reloading that industry's own list
-        // instead of showing stale items left over from the previous one.
-        <NameListEditor key={section.key} section={section} />
-      ))}
     </section>
   );
+}
+
+export function BrandsCategoriesPage() {
+  const { activeIndustry } = useIndustry();
+  // key = industry, so switching Industry Type remounts and reloads that
+  // industry's own lists instead of showing stale items from the previous one.
+  return <BrandsCategoriesContent key={activeIndustry} industry={activeIndustry} />;
 }

@@ -475,12 +475,12 @@ export function CollectionsPage() {
               <th className="sortable" onClick={() => toggleSort('client')}>Client{sortIndicator('client')}</th>
               <th className="sortable" onClick={() => toggleSort('orderId')}>Order ID{sortIndicator('orderId')}</th>
               <th className="sortable" onClick={() => toggleSort('rep')}>Representative{sortIndicator('rep')}</th>
-              <th className="sortable" onClick={() => toggleSort('invoiceAmount')}>Invoice Amount{sortIndicator('invoiceAmount')}</th>
-              <th className="sortable" onClick={() => toggleSort('paid')}>Paid Amount{sortIndicator('paid')}</th>
-              <th className="sortable" onClick={() => toggleSort('balance')}>Balance{sortIndicator('balance')}</th>
+              <th className="sortable num" onClick={() => toggleSort('invoiceAmount')}>Invoice Amount{sortIndicator('invoiceAmount')}</th>
+              <th className="sortable num" onClick={() => toggleSort('paid')}>Paid Amount{sortIndicator('paid')}</th>
+              <th className="sortable num" onClick={() => toggleSort('balance')}>Balance{sortIndicator('balance')}</th>
               <th className="sortable" onClick={() => toggleSort('status')}>Payment Status{sortIndicator('status')}</th>
               <th className="sortable" onClick={() => toggleSort('lastPayment')}>Payment Date{sortIndicator('lastPayment')}</th>
-              <th>Actions</th>
+              <th className="col-actions">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -500,13 +500,13 @@ export function CollectionsPage() {
             ) : (
               pageItems.map((row) => (
                 <tr key={row.orderId} className={row.status === 'overdue' ? 'row-overdue' : ''}>
-                  <td>{row.collectionId}</td>
+                  <td className="col-id">{row.collectionId}</td>
                   <td><strong>{row.clientName}</strong></td>
                   <td>{row.orderNumber}</td>
                   <td>{row.repName}</td>
-                  <td>{money(row.invoiceAmount)}</td>
-                  <td>{money(row.paidAmount)}</td>
-                  <td>{money(row.balance)}</td>
+                  <td className="num">{money(row.invoiceAmount)}</td>
+                  <td className="num">{money(row.paidAmount)}</td>
+                  <td className={`num ${row.balance > 0 ? 'num-due' : ''}`}>{money(row.balance)}</td>
                   <td><span className={`status-badge ${STATUS_CLASS[row.status]}`}>{STATUS_LABEL[row.status]}</span></td>
                   <td>{row.lastPaymentDate ? dateLabel(row.lastPaymentDate) : '—'}</td>
                   <td className="master-actions">
@@ -589,6 +589,7 @@ export function CollectionsPage() {
         </div>
         <div className="chart-card">
           <h4>Monthly Collection Trend</h4>
+          {monthlyTrend.every((m) => m.value === 0) && <p className="chart-empty">No payments collected in this period yet.</p>}
           <div className="trend-chart">
             {monthlyTrend.map((m) => (
               <div className="trend-bar-col" key={m.key}>
@@ -750,4 +751,4 @@ export function CollectionsPage() {
       </div>
     </section>
   );
-} 
+}

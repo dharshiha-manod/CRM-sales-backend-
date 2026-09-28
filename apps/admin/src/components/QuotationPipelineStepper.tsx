@@ -23,8 +23,11 @@ function currentStageIndex(status: Props['status'], withDeal: boolean): number {
 export function QuotationPipelineStepper({ status, withDeal = false }: Props) {
   const activeIndex = currentStageIndex(status, withDeal);
   const stages = withDeal ? [...STAGES.slice(0, 3), DEAL_STAGE, STAGES[3]] : STAGES;
-  if (activeIndex === -1) {
-    return <p className="pipeline-ended">Quotation closed — {status}.</p>;
+   if (activeIndex === -1) {
+    if (status === 'draft') {
+      return <p className="pipeline-draft">Draft — not sent to the client yet.</p>;
+    }
+    return <p className="pipeline-ended">Quotation {status}.</p>;
   }
   return (
     <ol className="lead-pipeline-stepper">

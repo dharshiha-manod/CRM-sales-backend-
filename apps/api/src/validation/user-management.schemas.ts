@@ -18,3 +18,19 @@ export const userCreateSchema = z.object({
   status: z.enum(['active', 'invited', 'disabled']).default('active'),
   industryTypeId: industryTypeIdField,
 });
+
+const roleEnum = z.enum(['super_admin', 'admin', 'sales_manager', 'sales_representative']);
+
+export const userUpdateSchema = z.object({
+  displayName: z.string().trim().min(2).max(160),
+  phone: z.string().trim().max(32).optional().nullable(),
+  roleCode: roleEnum,
+  status: z.enum(['active', 'invited', 'disabled']),
+  industryTypeId: industryTypeIdField,
+});
+
+export const userStatusSchema = z.object({ status: z.enum(['active', 'disabled']) });
+
+export const userPasswordResetSchema = z.object({
+  password: z.string().min(12, 'Password must be at least 12 characters').max(72).regex(/[a-z]/, 'Password must include a lowercase letter').regex(/[A-Z]/, 'Password must include an uppercase letter').regex(/[0-9]/, 'Password must include a number'),
+});

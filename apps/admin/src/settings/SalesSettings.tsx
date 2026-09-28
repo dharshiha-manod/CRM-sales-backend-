@@ -19,7 +19,7 @@ export function SalesConfigSection({ value, onChange }: { value: SalesConfig; on
           <input type="number" value={value.defaultPaymentTermsDays} onChange={(e) => onChange({ ...value, defaultPaymentTermsDays: Number(e.target.value) })} />
         </Field>
         <Field label="Auto-assign customers to reps" inline><Toggle checked={value.autoAssignCustomers} onChange={(next) => onChange({ ...value, autoAssignCustomers: next })} /></Field>
-        <Field label="Auto-assign new sales reps to a manager" inline><Toggle checked={value.autoAssignReps} onChange={(next) => onChange({ ...value, autoAssignReps: next })} /></Field>
+        <Field label="Auto-assign new leads to a representative" inline><Toggle checked={value.autoAssignReps} onChange={(next) => onChange({ ...value, autoAssignReps: next })} /></Field>
       </div>
     </SubSection>
   );

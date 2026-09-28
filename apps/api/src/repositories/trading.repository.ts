@@ -36,7 +36,7 @@ async function cascadeShipmentStatus(org: string, shipment: Record<string, unkno
     }
     if (mapping.deal && dealNumber) {
       const { error } = await supabaseAdmin.from('trading_deals').update({ status: mapping.deal }).eq('organization_id', org).eq('deal_number', dealNumber);
-      if (error) throw error;
+      if (!error && mapping.deal === 'Completed') await autoCreateProfitabilitySnapshot(org, dealNumber, true);      if (error) throw error;
     }
   } catch (error) {
     logger.error({ err: error, shipmentNumber: shipment.shipment_number }, 'Shipment status cascade to order/deal failed');
@@ -112,7 +112,14 @@ async function autoCreateShipmentLogistics(org: string, shipment: Record<string,
       .from('trading_logistics').select('id')
       .eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
     if (existingError) throw existingError;
-    if (existing) return;
+       if (existing) {
+      if (shipment.status === 'Delivered') {
+        await supabaseAdmin.from('trading_logistics')
+          .update({ status: 'Delivered', actual_delivery_date: shipment.actual_delivery_date ?? new Date().toISOString().slice(0, 10) })
+          .eq('organization_id', org).eq('shipment_number', shipmentNumber).neq('status', 'Delivered');
+      }
+      return;
+    }
     const suffix = shipmentNumber.replace(/^SHP-/, '');
     const today = new Date().toISOString().slice(0, 10);
     const { error } = await supabaseAdmin.from('trading_logistics').insert({
@@ -135,7 +142,8 @@ async function autoCreateShipmentLogistics(org: string, shipment: Record<string,
       estimated_arrival_date: shipment.expected_delivery_date ?? null,
       actual_departure_date: today,
       freight_cost: shipment.freight_cost ?? null,
-      status: 'Dispatched',
+      status: shipment.status === 'Delivered' ? 'Delivered' : 'Dispatched',
+      actual_delivery_date: shipment.status === 'Delivered' ? (shipment.actual_delivery_date ?? today) : null,
       notes: `Automatically created from shipment ${shipmentNumber}.`,
     });
 // NEW
@@ -287,8 +295,158 @@ async function convertConfirmedDealToOrders(org: string, deal: Record<string, un
     logger.error({ err: error, dealNumber: deal.deal_number }, 'Confirmed-deal to sales order conversion failed');
   }
 }
-function sanitizePayload(resource: TradingResource, input: Record<string, unknown>): Record<string, unknown> {
-  const allowed = new Set([...resource.columns, 'status']);
+// Auto Profitability snapshot: when a Deal is Completed, save one Deal-level
+// analysis row. Same formulas as chainFinancials() in admin/src/lib/tradingChain.ts.
+// Missing costs stay null (never 0). Skips if a Deal-level analysis already exists.
+// Never throws, so it can never block a deal / shipment save.
+type Row = Record<string, unknown>;
+const EARNED_COMMISSION_STATUSES = ['Eligible', 'Approved', 'Payable', 'Paid'];
+const toNum = (v: unknown): number | null => {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+const sumOf = (rows: Row[], key: string): number | null => {
+  const values = rows.map((r) => toNum(r[key])).filter((n): n is number => n != null);
+  return values.length ? values.reduce((a, b) => a + b, 0) : null;
+};
+const mergeRows = (...lists: Row[][]): Row[] => {
+  const seen = new Map<string, Row>();
+  for (const list of lists) for (const row of list) seen.set(String(row.id ?? `${seen.size}`), row);
+  return [...seen.values()];
+};
+
+async function autoCreateProfitabilitySnapshot(org: string, dealNumber: string, requireDelivered = false) {
+  try {
+    const { data: already, error: alreadyError } = await supabaseAdmin.from('trading_profitability').select('id')
+      .eq('organization_id', org).eq('deal_number', dealNumber).eq('analysis_level', 'Deal').limit(1).maybeSingle();
+    if (alreadyError) throw alreadyError;
+    if (already) return;
+
+    const { data: deal, error: dealError } = await supabaseAdmin.from('trading_deals').select('*')
+      .eq('organization_id', org).eq('deal_number', dealNumber).maybeSingle();
+    if (dealError) throw dealError;
+    if (!deal) return;
+
+    const byColumn = async (table: string, column: string, values: string[]): Promise<Row[]> => {
+      if (!values.length) return [];
+      const { data, error } = await supabaseAdmin.from(table).select('*').eq('organization_id', org).in(column, values);
+      if (error) throw error;
+      return (data ?? []) as Row[];
+    };
+
+    const [orders, enquiries, shipments, tradeRows, commissions] = await Promise.all([
+      byColumn('trading_sales_orders', 'deal_number', [dealNumber]),
+      byColumn('trading_purchase_enquiries', 'deal_number', [dealNumber]),
+      byColumn('trading_shipments', 'deal_number', [dealNumber]),
+      byColumn('trading_import_export', 'deal_number', [dealNumber]),
+      byColumn('trading_commissions', 'deal_number', [dealNumber]),
+    ]);
+
+    // Shipment-driven completion: wait until every shipment of the deal is delivered.
+    if (requireDelivered && shipments.some((s) => !['Delivered', 'Completed', 'Cancelled'].includes(String(s.status ?? '')))) return;
+
+    const shipmentNumbers = shipments.map((s) => String(s.shipment_number ?? '')).filter(Boolean);
+    const transactionNumbers = tradeRows.map((t) => String(t.transaction_number ?? '')).filter(Boolean);
+    const [logistics, finance, customs] = await Promise.all([
+      Promise.all([byColumn('trading_logistics', 'deal_number', [dealNumber]), byColumn('trading_logistics', 'shipment_number', shipmentNumbers)]).then((l) => mergeRows(...l)),
+      Promise.all([byColumn('trading_trade_finance', 'deal_number', [dealNumber]), byColumn('trading_trade_finance', 'shipment_number', shipmentNumbers)]).then((l) => mergeRows(...l)),
+      Promise.all([byColumn('trading_customs', 'shipment_number', shipmentNumbers), byColumn('trading_customs', 'transaction_number', transactionNumbers)]).then((l) => mergeRows(...l)),
+    ]);
+
+    const dealRow = deal as Row;
+    const order = orders.find((o) => o.order_number === dealRow.order_number) ?? orders[0];
+    const enquiry = enquiries[0];
+    const currency = String(dealRow.currency ?? order?.currency ?? enquiry?.currency ?? '') || 'INR';
+    const quantity = toNum(order?.quantity) ?? toNum(dealRow.quantity);
+
+    const revQty = toNum(order?.quantity) ?? toNum(dealRow.customer_quantity) ?? toNum(dealRow.quantity);
+    const revRate = toNum(order?.selling_rate) ?? toNum(dealRow.selling_rate);
+    const revDiscount = toNum(dealRow.discount_percent) ?? 0;
+    let revenue: number | null = revQty != null && revRate != null ? revQty * revRate * (1 - revDiscount / 100) : null;
+    let revenueSource = revenue != null ? 'Sales Order · qty x rate (excl. tax)' : '';
+    if (revenue == null) { revenue = toNum(order?.total_amount); revenueSource = 'Sales Order · total amount'; }
+    if (revenue == null && order) {
+      const q = toNum(order.quantity); const rate = toNum(order.selling_rate);
+      if (q != null && rate != null) { revenue = q * rate; revenueSource = 'Sales Order · qty x rate'; }
+    }
+    if (revenue == null) {
+      const q = toNum(dealRow.quantity); const rate = toNum(dealRow.selling_rate);
+      if (q != null && rate != null) { revenue = q * rate; revenueSource = 'Deal · qty x selling rate'; }
+    }
+    if (revenue == null) revenueSource = '';
+
+    let purchaseCost: number | null = null;
+    let purchaseSource = '';
+    {
+      const q = toNum(dealRow.quantity); const rate = toNum(dealRow.purchase_rate);
+      if (q != null && rate != null) { purchaseCost = q * rate; purchaseSource = 'Deal · qty x purchase rate'; }
+    }
+    if (purchaseCost == null && enquiry) {
+      const q = toNum(enquiry.quantity); const rate = toNum(enquiry.requested_rate);
+      if (q != null && rate != null) { purchaseCost = q * rate; purchaseSource = 'Purchase Enquiry · requested rate'; }
+    }
+
+    const logisticsFreight = sumOf(logistics, 'freight_cost');
+    const freight = logisticsFreight ?? sumOf(shipments, 'freight_cost');
+    const freightSource = logisticsFreight != null ? 'Logistics · freight charges' : (freight != null ? 'Shipment · freight cost' : '');
+    const customsDuty = sumOf(customs, 'customs_duty');
+    const portCharges = sumOf(customs, 'other_charges');
+    const otherCosts = sumOf(logistics, 'other_charges');
+    const financeCharges = sumOf(finance, 'finance_charges');
+    const commission = sumOf(commissions.filter((c) => EARNED_COMMISSION_STATUSES.includes(String(c.status ?? ''))), 'commission_amount');
+
+    const lines: Array<{ key: string; label: string; amount: number | null; source: string }> = [
+      { key: 'purchase_cost', label: 'Purchase / product cost', amount: purchaseCost, source: purchaseSource },
+      { key: 'freight', label: 'Freight / logistics', amount: freight, source: freightSource },
+      { key: 'customs_duty', label: 'Customs duty', amount: customsDuty, source: customsDuty != null ? 'Customs & Clearance' : '' },
+      { key: 'port_charges', label: 'Port / clearance charges', amount: portCharges, source: portCharges != null ? 'Customs & Clearance · other charges' : '' },
+      { key: 'insurance', label: 'Insurance', amount: null, source: '' },
+      { key: 'other_costs', label: 'Other trade costs', amount: otherCosts, source: otherCosts != null ? 'Logistics · other charges' : '' },
+      { key: 'finance_charges', label: 'Trade finance charges', amount: financeCharges, source: financeCharges != null ? 'Trade Finance' : '' },
+      { key: 'commission', label: 'Commission', amount: commission, source: commission != null ? 'Commission Management · earned' : '' },
+    ];
+
+    const recorded = lines.map((l) => l.amount).filter((n): n is number => n != null);
+    const totalCost = recorded.length ? recorded.reduce((a, b) => a + b, 0) : null;
+    const netProfit = revenue != null && totalCost != null ? revenue - totalCost : null;
+    const netMargin = netProfit != null && revenue ? (netProfit / revenue) * 100 : null;
+    // Same thresholds as profitStatus() in TradeProfitabilityPage.tsx
+    const profitStatus = netMargin == null ? 'Incomplete'
+      : netMargin < 0 ? 'Loss'
+        : netMargin === 0 ? 'Break-even'
+          : netMargin < 10 ? 'Low Margin'
+            : netMargin < 20 ? 'Profitable' : 'Highly Profitable';
+
+    const record: Row = {
+      organization_id: org,
+      industry_type_id: dealRow.industry_type_id ?? null,
+      deal_number: dealNumber,
+      order_number: order?.order_number ?? dealRow.order_number ?? null,
+      shipment_number: shipmentNumbers[0] ?? null,
+      analysis_level: 'Deal',
+      analysis_date: new Date().toISOString().slice(0, 10),
+      customer_name: dealRow.customer_name ?? order?.customer_name ?? null,
+      supplier_name: dealRow.supplier_name ?? null,
+      product_name: dealRow.product_name ?? order?.product_name ?? null,
+      quantity,
+      currency,
+      revenue,
+      revenue_source: revenueSource || null,
+      cost_sources: lines.map((l) => `${l.label}: ${l.amount == null ? 'not recorded' : `${l.amount} (${l.source})`}`).join('\n'),
+      status: profitStatus,
+      notes: `Automatically created when deal ${dealNumber} was completed.`,
+    };
+    for (const line of lines) record[line.key] = line.amount;
+
+    const { error } = await supabaseAdmin.from('trading_profitability').insert(record);
+    if (error && error.code !== '23505') throw error;
+  } catch (error) {
+    logger.error({ err: error, dealNumber }, 'Automatic profitability snapshot failed');
+  }
+}
+
+function sanitizePayload(resource: TradingResource, input: Record<string, unknown>): Record<string, unknown> {  const allowed = new Set([...resource.columns, 'status']);
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
     if (allowed.has(key)) out[key] = value === '' ? null : value;
@@ -359,7 +517,7 @@ export async function updateTradingRecord(resource: TradingResource, org: string
   if (resource.table === 'trading_deals') {
     const deal = data as Record<string, unknown>;
     if (deal.status === 'Confirmed' && !deal.order_number) await convertConfirmedDealToOrders(org, deal);
-  }
+    if (deal.status === 'Completed' && (existing as { status?: string | null }).status !== 'Completed' && typeof deal.deal_number === 'string') await autoCreateProfitabilitySnapshot(org, deal.deal_number);  }
   return data;
 }
 async function autoCreateShipmentForConfirmedOrder(org: string, orderNumber: string, deal: Record<string, unknown>) {
@@ -384,7 +542,15 @@ async function autoCreateShipmentForConfirmedOrder(org: string, orderNumber: str
     });
     if (error && error.code !== '23505') throw error;
     await supabaseAdmin.from('trading_sales_orders').update({ shipment_number: shipmentNumber }).eq('organization_id', org).eq('order_number', orderNumber);
-  } catch (error) {
+    await autoCreateShipmentDocuments(org, {
+      shipment_number: shipmentNumber,
+      deal_number: deal.deal_number,
+      customer_name: deal.customer_name,
+      product_name: deal.product_name,
+      quantity: deal.customer_quantity ?? deal.quantity,
+      unit: deal.unit,
+      industry_type_id: deal.industry_type_id,
+    });  } catch (error) {
     logger.error({ err: error, orderNumber }, 'Automatic shipment creation for confirmed order failed');
   }
 }

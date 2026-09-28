@@ -672,90 +672,62 @@ export function OrdersPage() {
         const alreadyPaid = collected[selected.order_number] ?? 0;
         const balance = Number(selected.total_amount) - alreadyPaid;
         const relatedVisit = selected.visit_id ? visitMap.get(selected.visit_id) : undefined;
+        const quoteRef = /QT-[A-Za-z0-9-]+/.exec(selected.notes ?? '')?.[0];
+        const canCancel = selected.status !== 'cancelled' && selected.status !== 'completed';
+        const showCancelButton = canCancel && !cancelOpen;
+        const showPayButton = balance > 0.01 && !paymentOpen;
+        const showFooter = activeIndustry === 'trading' || selected.status === 'pending_approval' || showCancelButton || showPayButton;
 
         return (
           <div className="modal-backdrop" onMouseDown={closeOrder}>
-<div className="master-modal detail-panel order-detail" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="master-modal detail-panel order-detail quotation-detail" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
               <div className="modal-heading">
                 <div>
                   <p className="eyebrow">ORDER DETAILS</p>
-                  <h3>{selected.order_number}</h3>
+                  <h3>
+                    {selected.order_number}{' '}
+                    <span className={`status-badge status-${selected.status}`}>{selected.status.replace('_', ' ')}</span>
+                  </h3>
                 </div>
                 <button type="button" className="icon-action" aria-label="Close" onClick={closeOrder}>×</button>
               </div>
 
-              <div className="order-source-card">
-                <span className="order-source-label">Order Source</span>
-                {selected.quotation_id ? (
-                  <p className="order-source-trace">
-                    Quotation #{selected.quotation_id.slice(0, 8)} → Sales Order #{selected.order_number}
-                  </p>
-                ) : (
-                  <p className="order-source-trace">Manual entry — no Requirement or Quotation linked.</p>
-                )}
+              <div className="qd-info">
+                <div>
+                  <span>Client</span>
+                  <strong>{selected.clients?.client_name ?? '—'}</strong>
+                  <small>{selected.clients?.client_code ?? ''}</small>
+                </div>
+                <div>
+                  <span>Representative</span>
+                  <strong>{selected.sales_representatives?.user_profiles?.display_name ?? selected.sales_representatives?.employee_code ?? '—'}</strong>
+                </div>
+                <div>
+                  <span>Created</span>
+                  <strong>{dateLabel(selected.created_at)}</strong>
+                </div>
+                <div>
+                  <span>Source</span>
+                  <strong>{selected.quotation_id ? (quoteRef ?? 'Quotation') : 'Manual entry'}</strong>
+                  <small>{selected.quotation_id ? 'Converted from quotation' : 'No quotation linked'}</small>
+                </div>
+                <div>
+                  <span>Related visit</span>
+                  <strong>
+                    {selected.visit_id
+                      ? relatedVisit
+                        ? `Checked in ${dateLabel(relatedVisit.check_in_time)}${relatedVisit.outcome ? ` · ${relatedVisit.outcome}` : ''}`
+                        : `Visit ${selected.visit_id.slice(0, 8)}`
+                      : 'Not linked'}
+                  </strong>
+                </div>
               </div>
 
-              <dl className="detail-dl">
-                <dt>Client</dt>
-                <dd>{selected.clients?.client_name ?? '—'} {selected.clients?.client_code && <span className="text-faint-inline">({selected.clients.client_code})</span>}</dd>
-                <dt>Representative</dt>
-                <dd>{selected.sales_representatives?.user_profiles?.display_name ?? selected.sales_representatives?.employee_code ?? '—'}</dd>
-                <dt>Created</dt>
-                <dd>{dateLabel(selected.created_at)}</dd>
-                <dt>Order status</dt>
-                <dd><span className={`status-badge status-${selected.status}`}>{selected.status}</span></dd>
-                <dt>Related visit</dt>
-                <dd>
-                  {selected.visit_id ? (
-                    relatedVisit
-                      ? <>Checked in {dateLabel(relatedVisit.check_in_time)}{relatedVisit.outcome ? ` · ${relatedVisit.outcome}` : ''}</>
-                      : <span className="text-faint-inline">Visit {selected.visit_id.slice(0, 8)}</span>
-                  ) : <span className="text-faint-inline">Not linked</span>}
-                </dd>
-                             {selected.quotation_id && (
-                  <>
-                    <dt>Related quotation</dt>
-                    <dd><span className="text-faint-inline">Quotation {selected.quotation_id.slice(0, 8)}</span></dd>
-                  </>
-                )}
-              </dl>
-
-                         {selected.status === 'pending_approval' && (
-                <>
-                  {approveError && <p className="error-message">{approveError}</p>}
-                  <div className="modal-actions">
-                    <button type="button" className="primary-action" onClick={() => void submitApprove(selected)} disabled={approveSaving}>{approveSaving ? 'Approving…' : 'Approve order'}</button>
-                  </div>
-                </>
-              )}
-
-              {selected.status !== 'cancelled' && selected.status !== 'completed' && (
-                <>
-                  {cancelError && <p className="error-message">{cancelError}</p>}
-                  {cancelOpen ? (
-                    <form className="master-form" onSubmit={(e) => { e.preventDefault(); void submitCancel(selected); }}>
-                      <label>
-                        Reason (optional)
-                        <input value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} placeholder={selected.status === 'pending_approval' ? 'Why is this order being rejected?' : 'Why is this order being cancelled?'} />
-                      </label>
-                      <div className="modal-actions">
-                        <button type="button" className="quiet-button" onClick={() => { setCancelOpen(false); setCancelReason(''); setCancelError(null); }} disabled={cancelSaving}>Back</button>
-                        <button type="submit" className="primary-action icon-action--danger" disabled={cancelSaving}>{cancelSaving ? 'Saving…' : selected.status === 'pending_approval' ? 'Confirm rejection' : 'Confirm cancellation'}</button>
-                      </div>
-                    </form>
-                  ) : (
-                    <div className="modal-actions">
-                      <button type="button" className="quiet-button" onClick={() => setCancelOpen(true)}>{selected.status === 'pending_approval' ? 'Reject order' : 'Cancel order'}</button>
-                    </div>
-                  )}
-                </>
-              )}
-
-              <div className="data-table-wrap">
+              <div className="data-table-wrap qd-items">
                 <table>
                   <thead>
                     <tr>
-                      <th>Product</th><th>Quantity</th><th>Free qty</th><th>Unit price</th><th>Discount</th><th>Subtotal</th>
+                      <th>Product</th><th>Qty</th><th>Free qty</th><th>Unit price</th><th>Discount</th><th>Amount</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -766,7 +738,7 @@ export function OrdersPage() {
                         <td>{line.products?.product_code ? (freeQty[line.products.product_code] ?? '—') : '—'}</td>
                         <td>{currency(line.unit_price)}</td>
                         <td>{currency(line.discount_amount)}</td>
-                        <td>{currency(line.subtotal)}</td>
+                        <td><strong>{currency(line.subtotal)}</strong></td>
                       </tr>
                     ))}
                     {(!selected.sale_order_items || selected.sale_order_items.length === 0) && (
@@ -775,77 +747,113 @@ export function OrdersPage() {
                   </tbody>
                 </table>
               </div>
-              <div className="order-total">
-                Order total <strong>{currency(selected.total_amount)}</strong>
+
+              <div className="qd-totals">
+                <div><span>Order total</span><strong>{currency(selected.total_amount)}</strong></div>
+                <div><span>Collected</span><strong>{currency(alreadyPaid)}</strong></div>
+                <div className="qd-grand"><span>Balance due</span><strong>{currency(Math.max(balance, 0))}</strong></div>
               </div>
-              {activeIndustry === 'trading' && (
-                <div className="modal-actions">
-                  <GenerateDocumentButton
-                    label="Generate Trade Document"
-                    docTypes={ORDER_DOC_TYPES}
-                    buildDraft={(documentType) => buildDraftFromOrder(selected, documentType)}
-                  />
+
+              <div className="qd-panel">
+                <div className="qd-panel-head">
+                  <span>Payment &amp; dispatch</span>
+                  <span className={`qd-pill ${balance > 0.01 ? 'warn' : 'ok'}`}>{ps.label}</span>
+                </div>
+                <div className="qd-fields">
+                  <label>
+                    Payment type
+                    <select value={orderMeta.paymentType} onChange={(e) => updateOrderMeta({ paymentType: e.target.value })}>
+                      <option value="credit">Credit</option>
+                      <option value="advance">Advance</option>
+                      <option value="cod">Cash on delivery</option>
+                    </select>
+                  </label>
+                  <label>
+                    Dispatch status
+                    <select value={orderMeta.dispatchStatus} onChange={(e) => updateOrderMeta({ dispatchStatus: e.target.value })}>
+                      {Object.entries(dispatchLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              {notesText && (
+                <div className="qd-notes">
+                  <span>Notes</span>
+                  <p>{notesText}</p>
                 </div>
               )}
-              {notesText && <p>{notesText}</p>}
 
-              <div className="master-filter-bar">
-                <label>
-                  Payment type
-                  <select value={orderMeta.paymentType} onChange={(e) => updateOrderMeta({ paymentType: e.target.value })}>
-                    <option value="credit">Credit</option>
-                    <option value="advance">Advance</option>
-                    <option value="cod">Cash on delivery</option>
-                  </select>
-                </label>
-                <label>
-                  Dispatch status
-                  <select value={orderMeta.dispatchStatus} onChange={(e) => updateOrderMeta({ dispatchStatus: e.target.value })}>
-                    {Object.entries(dispatchLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                  </select>
-                </label>
-              </div>
-
-                         <div className="sales-summary">
-                <div><span>Payment status</span><strong>{ps.label}</strong></div>
-                <div><span>Collected</span><strong>{currency(alreadyPaid)}</strong></div>
-                <div><span>Balance</span><strong>{currency(Math.max(balance, 0))}</strong></div>
-              </div>  
-
+              {approveError && <p className="error-message">{approveError}</p>}
+              {cancelError && <p className="error-message">{cancelError}</p>}
               {paymentMessage && <p className="success-message">{paymentMessage}</p>}
               {paymentError && <p className="error-message">{paymentError}</p>}
 
-              {balance > 0.01 && (
-                paymentOpen ? (
-                  <form className="master-form" onSubmit={(e) => { e.preventDefault(); void submitPayment(selected); }}>
-                    <label>
-                      Amount
-                      <input type="number" min="0" step="0.01" value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} />
-                    </label>
-                    <label>
-                      Mode
-                      <select value={paymentForm.mode} onChange={(e) => setPaymentForm({ ...paymentForm, mode: e.target.value as PaymentForm['mode'] })}>
-                        {paymentModes.map((mode) => <option key={mode} value={mode}>{mode.replace('_', ' ')}</option>)}
-                      </select>
-                    </label>
-                    <label>
-                      Reference no.
-                      <input value={paymentForm.referenceNo} onChange={(e) => setPaymentForm({ ...paymentForm, referenceNo: e.target.value })} />
-                    </label>
-                    <label>
-                      Notes
-                      <input value={paymentForm.notes} onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })} />
-                    </label>
-                    <div className="modal-actions">
-                      <button type="button" className="quiet-button" onClick={() => setPaymentOpen(false)} disabled={paymentSaving}>Cancel</button>
-                      <button type="submit" className="primary-action" disabled={paymentSaving}>{paymentSaving ? 'Saving…' : 'Save payment'}</button>
-                    </div>
-                  </form>
-                ) : (
+              {canCancel && cancelOpen && (
+                <form className="master-form" onSubmit={(e) => { e.preventDefault(); void submitCancel(selected); }}>
+                  <label>
+                    Reason (optional)
+                    <input value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} placeholder={selected.status === 'pending_approval' ? 'Why is this order being rejected?' : 'Why is this order being cancelled?'} />
+                  </label>
                   <div className="modal-actions">
-                    <button type="button" className="primary-action" onClick={() => setPaymentOpen(true)}>+ Record payment</button>
+                    <button type="button" className="quiet-button" onClick={() => { setCancelOpen(false); setCancelReason(''); setCancelError(null); }} disabled={cancelSaving}>Back</button>
+                    <button type="submit" className="primary-action icon-action--danger" disabled={cancelSaving}>{cancelSaving ? 'Saving…' : selected.status === 'pending_approval' ? 'Confirm rejection' : 'Confirm cancellation'}</button>
                   </div>
-                )
+                </form>
+              )}
+
+              {balance > 0.01 && paymentOpen && (
+                <form className="master-form" onSubmit={(e) => { e.preventDefault(); void submitPayment(selected); }}>
+                  <label>
+                    Amount
+                    <input type="number" min="0" step="0.01" value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} />
+                  </label>
+                  <label>
+                    Mode
+                    <select value={paymentForm.mode} onChange={(e) => setPaymentForm({ ...paymentForm, mode: e.target.value as PaymentForm['mode'] })}>
+                      {paymentModes.map((mode) => <option key={mode} value={mode}>{mode.replace('_', ' ')}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    Reference no.
+                    <input value={paymentForm.referenceNo} onChange={(e) => setPaymentForm({ ...paymentForm, referenceNo: e.target.value })} />
+                  </label>
+                  <label>
+                    Notes
+                    <input value={paymentForm.notes} onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })} />
+                  </label>
+                  <div className="modal-actions">
+                    <button type="button" className="quiet-button" onClick={() => setPaymentOpen(false)} disabled={paymentSaving}>Cancel</button>
+                    <button type="submit" className="primary-action" disabled={paymentSaving}>{paymentSaving ? 'Saving…' : 'Save payment'}</button>
+                  </div>
+                </form>
+              )}
+
+              {showFooter && (
+                <div className="modal-actions qd-footer">
+                  {activeIndustry === 'trading' && (
+                    <div className="qd-footer-left">
+                      <GenerateDocumentButton
+                        label="Generate Trade Document"
+                        docTypes={ORDER_DOC_TYPES}
+                        buildDraft={(documentType) => buildDraftFromOrder(selected, documentType)}
+                      />
+                    </div>
+                  )}
+                  {selected.status === 'pending_approval' && (
+                    <button type="button" className="primary-action" onClick={() => void submitApprove(selected)} disabled={approveSaving}>
+                      {approveSaving ? 'Approving…' : 'Approve order'}
+                    </button>
+                  )}
+                  {showCancelButton && (
+                    <button type="button" className="quiet-button qd-danger" onClick={() => setCancelOpen(true)}>
+                      {selected.status === 'pending_approval' ? 'Reject order' : 'Cancel order'}
+                    </button>
+                  )}
+                  {showPayButton && (
+                    <button type="button" className="primary-action" onClick={() => setPaymentOpen(true)}>+ Record payment</button>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -965,7 +973,7 @@ export function OrdersPage() {
         const requirement = q.requirement_id ? requirementMap.get(q.requirement_id) : undefined;
         return (
           <div className="modal-backdrop" role="presentation" onMouseDown={closeReview}>
-            <div className="master-modal" role="dialog" aria-modal="true" aria-labelledby="review-order-modal-title" onMouseDown={(e) => e.stopPropagation()}>
+                     <div className="master-modal quotation-detail" role="dialog" aria-modal="true" aria-labelledby="review-order-modal-title" onMouseDown={(e) => e.stopPropagation()}>
               <div className="modal-heading">
                 <div>
                   <p className="eyebrow">AUTOMATIC SALES ORDER</p>
@@ -974,22 +982,30 @@ export function OrdersPage() {
                 <button type="button" className="icon-action" aria-label="Close" title="Close" onClick={closeReview}>×</button>
               </div>
 
-              <dl className="detail-dl">
-                <dt>Source</dt>
-                <dd>
-                  {requirement ? `Requirement #${requirement.title ?? requirement.id.slice(0, 8)} → ` : ''}
-                  Quotation #{q.quotation_number}
-                </dd>
-                <dt>Client</dt>
-                <dd>{q.clients?.client_name ?? '—'} {q.clients?.client_code && <span className="text-faint-inline">({q.clients.client_code})</span>}</dd>
-                <dt>Sales Representative</dt>
-                <dd>{q.sales_representatives?.user_profiles?.display_name ?? q.sales_representatives?.employee_code ?? '—'}</dd>
-              </dl>
+              <div className="qd-info">
+                <div>
+                  <span>Client</span>
+                  <strong>{q.clients?.client_name ?? '—'}</strong>
+                  <small>{q.clients?.client_code ?? ''}</small>
+                </div>
+                <div>
+                  <span>Sales representative</span>
+                  <strong>{q.sales_representatives?.user_profiles?.display_name ?? q.sales_representatives?.employee_code ?? '—'}</strong>
+                </div>
+                <div>
+                  <span>Quotation</span>
+                  <strong>{q.quotation_number}</strong>
+                </div>
+                <div>
+                  <span>Requirement</span>
+                  <strong>{requirement?.title ?? '—'}</strong>
+                </div>
+              </div>
 
-              <div className="data-table-wrap">
+              <div className="data-table-wrap qd-items">
                 <table>
                   <thead>
-                    <tr><th>Product</th><th>Quantity</th><th>Unit price</th><th>Subtotal</th></tr>
+                    <tr><th>Product</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr>
                   </thead>
                   <tbody>
                     {(q.quotation_items ?? []).map((line, index) => (
@@ -997,7 +1013,7 @@ export function OrdersPage() {
                         <td>{line.products?.product_name ?? line.products?.product_code ?? 'Product'}</td>
                         <td>{line.quantity}</td>
                         <td>{currency(line.unit_price)}</td>
-                        <td>{currency(line.subtotal)}</td>
+                        <td><strong>{currency(line.subtotal)}</strong></td>
                       </tr>
                     ))}
                     {(!q.quotation_items || q.quotation_items.length === 0) && (
@@ -1007,20 +1023,23 @@ export function OrdersPage() {
                 </table>
               </div>
 
-              <div className="sales-summary">
+              <div className="qd-totals">
                 <div><span>Subtotal</span><strong>{currency(subtotal)}</strong></div>
                 <div><span>Discount</span><strong>{currency(q.discount_amount)}</strong></div>
                 <div><span>Tax</span><strong>{currency(q.tax_amount)}</strong></div>
-              </div>
-              <div className="order-total">
-                Total <strong>{currency(q.total_amount)}</strong>
+                <div className="qd-grand"><span>Order total</span><strong>{currency(q.total_amount)}</strong></div>
               </div>
 
-              {q.notes && <p className="text-faint-inline">{q.notes}</p>}
+              {q.notes && (
+                <div className="qd-notes">
+                  <span>Notes</span>
+                  <p>{q.notes}</p>
+                </div>
+              )}
               {convertError && <p className="error-message">{convertError}</p>}
 
-              <div className="modal-actions">
-                <button type="button" className="quiet-button" onClick={closeReview} disabled={converting}>Back to Edit</button>
+              <div className="modal-actions qd-footer">
+                <button type="button" className="quiet-button" onClick={closeReview} disabled={converting}>Cancel</button>
                 <button type="button" className="primary-action" disabled={converting} onClick={() => void confirmConvert(q)}>
                   {converting ? 'Creating…' : 'Confirm & Create Order'}
                 </button>

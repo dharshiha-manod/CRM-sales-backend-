@@ -266,8 +266,13 @@ export function chainFinancials(chain: TradingChain): ChainFinancials {
   const quantity = num(order?.quantity) ?? num(deal?.quantity);
 
   // Revenue: the order is the committed figure, the deal the expected one.
-  let revenue = num(order?.total_amount);
-  let revenueSource = 'Sales Order · total amount';
+   // Revenue is ex-tax: the order's total_amount is tax-inclusive, so use qty x rate less discount first.
+  const revQty = num(order?.quantity) ?? num(deal?.customer_quantity) ?? num(deal?.quantity);
+  const revRate = num(order?.selling_rate) ?? num(deal?.selling_rate);
+  const revDiscount = num(deal?.discount_percent) ?? 0;
+  let revenue: number | null = revQty != null && revRate != null ? revQty * revRate * (1 - revDiscount / 100) : null;
+  let revenueSource = revenue != null ? 'Sales Order · qty x rate (excl. tax)' : '';
+  if (revenue == null) { revenue = num(order?.total_amount); revenueSource = 'Sales Order · total amount'; }
   if (revenue == null && order) {
     const q = num(order.quantity);
     const rate = num(order.selling_rate);

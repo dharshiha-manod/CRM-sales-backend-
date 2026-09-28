@@ -5,6 +5,16 @@ import { useIndustry } from '../industry/IndustryContext';
 import { loadNameList, brandListKey, categoryListKey, unitListKey } from './BrandsCategoriesPage';
 import './MasterDataPages.css';
 
+// Pack size hint shown in the product form, per Industry Type.
+const PACK_SIZE_PLACEHOLDERS: Record<string, string> = {
+  fmcg: 'e.g. 12x200ml',
+  trading: 'e.g. 6 m length, 10 pcs per bundle',
+  pharma: 'e.g. 10 tablets x 10 strips',
+  textile: 'e.g. 30 m roll',
+  school: 'e.g. Set of 5 books',
+  vehicle: 'e.g. Set of 4',
+};
+
 type Product = {
   id: string;
   product_code: string;
@@ -16,6 +26,11 @@ type Product = {
   status: 'active' | 'inactive';
   // Real, backend-persisted GST/tax rate for this product (products.tax_percent).
   tax_percent?: number | null;
+  hsn_code?: string | null;
+  specification?: string | null;
+  origin_country?: string | null;
+  supplier_name?: string | null;
+  currency?: string | null;
   // Resolved server-side from the product_industry_types join table (see
   // products.repository.ts) — not a real column on the products row itself.
   industry_type_id?: string | null;
@@ -34,7 +49,8 @@ type FmcgMeta = {
   batchNumber: string;
   mfgDate: string;
   expiryDate: string;
-  minStockLevel: string;
+   minStockLevel: string;
+  trackBatch: boolean;
 };
 
 const blankFmcgMeta: FmcgMeta = {
@@ -49,6 +65,7 @@ const blankFmcgMeta: FmcgMeta = {
   mfgDate: '',
   expiryDate: '',
   minStockLevel: '',
+  trackBatch: false,
 };
 function loadFmcgMeta(productId: string): FmcgMeta {
   try {
@@ -89,6 +106,13 @@ function expiryStatus(expiryDate: string): { label: string; className: string } 
   if (days < 0) return { label: 'Expired', className: 'status-cancelled' };
   if (days <= 30) return { label: `Expiring in ${days}d`, className: 'status-quoted' };
   return { label: 'OK', className: 'status-completed' };
+}
+
+// Batch/expiry tracking is decided per product. Older saved products that
+// already have batch or date values count as tracked, so nothing is lost.
+const BATCH_DEFAULT_INDUSTRIES = ['fmcg', 'pharma'];
+function tracksBatch(meta: FmcgMeta): boolean {
+  return Boolean(meta.trackBatch || meta.batchNumber || meta.mfgDate || meta.expiryDate);
 }
 
 type StockState = 'in' | 'low' | 'out';
@@ -140,6 +164,12 @@ type ProductForm = {
   // Real, backend-persisted field (products.tax_percent) — not part of
   // FmcgMeta/localStorage.
   taxPercent: string;
+  // Trading fields — real, backend-persisted columns on `products`.
+  hsnCode: string;
+  specification: string;
+  originCountry: string;
+  supplierName: string;
+  currency: string;
 } & FmcgMeta;
 
 const blankForm: ProductForm = {
@@ -152,6 +182,11 @@ const blankForm: ProductForm = {
   status: 'active',
   industryTypeId: '',
   taxPercent: '',
+  hsnCode: '',
+  specification: '',
+  originCountry: '',
+  supplierName: '',
+  currency: 'INR',
   ...blankFmcgMeta,
 };
 
@@ -163,6 +198,9 @@ type RelatedOrder = { id: string; order_number: string; status: string; total_am
 export function ProductsPage() {
   const { matchesActiveIndustry, activeIndustryTypeId } = useIndustryScope();
   const { activeIndustry } = useIndustry();
+  const isTrading = activeIndustry === 'trading';
+  const [supplierNames, setSupplierNames] = useState<string[]>([]);
+  const [currencyCodes, setCurrencyCodes] = useState<string[]>(['INR']);
   const [items, setItems] = useState<Product[]>([]);
   const [industryTypes, setIndustryTypes] = useState<{ id: string; name: string }[]>([]);
   const [allOrders, setAllOrders] = useState<RelatedOrder[]>([]);
@@ -219,8 +257,20 @@ export function ProductsPage() {
   useEffect(() => {
     api<{ data: { id: string; name: string }[] }>('/industry-types?status=active')
       .then((res) => setIndustryTypes(res.data ?? []))
-      .catch(() => { /* non-fatal: the industry picker just won't populate */ });
+         .catch(() => { /* non-fatal: the industry picker just won't populate */ });
   }, []);
+
+  // Trading only: suppliers and currencies come from the Trading modules.
+  // Non-fatal — if this fails the fields still work as free text / INR.
+  useEffect(() => {
+    if (!isTrading) return;
+    api<{ data: { supplier_name?: string }[] }>('/trading/suppliers')
+      .then((res) => setSupplierNames([...new Set((res.data ?? []).map((row) => String(row.supplier_name ?? '').trim()).filter(Boolean))].sort()))
+      .catch(() => { /* fall back to typing the supplier */ });
+    api<{ data: { currency_code?: string }[] }>('/trading/currency-rates')
+      .then((res) => setCurrencyCodes([...new Set(['INR', ...(res.data ?? []).map((row) => String(row.currency_code ?? '').trim()).filter(Boolean)])]))
+      .catch(() => { /* fall back to INR only */ });
+  }, [isTrading]);
 
   // Everything below is scoped to the active industry first (reusing the
   // shared useIndustryScope hook — no separate industry state here), then
@@ -282,6 +332,12 @@ export function ProductsPage() {
     });
     return { total: industryItems.length, active, lowStock, outOfStock, expiringSoon, totalStock };
   }, [industryItems, fmcgMetaMap]);
+
+  // Show the Batch/Expiry column, card and filter only when they're useful:
+  // always for FMCG/Pharma, otherwise only if some product tracks batches.
+  const showBatchUi = BATCH_DEFAULT_INDUSTRIES.includes(activeIndustry)
+    || industryItems.some((item) => tracksBatch(fmcgMetaMap[item.id] ?? blankFmcgMeta));
+
   function openCreate() {
     setEditing(null);
     setSavedBrands(loadNameList(brandListKey(activeIndustry)));
@@ -290,7 +346,7 @@ export function ProductsPage() {
     // Automation: default to whichever Industry Type tab is already open —
     // that's the overwhelmingly common case, and it's still editable below
     // for the rare product that belongs to a different industry.
-    setForm({ ...blankForm, category: categoryOptions[0] ?? '', industryTypeId: activeIndustryTypeId ?? '' });
+    setForm({ ...blankForm, category: categoryOptions[0] ?? '', industryTypeId: activeIndustryTypeId ?? '', trackBatch: BATCH_DEFAULT_INDUSTRIES.includes(activeIndustry) });
     setMessage('');
     setModalOpen(true);
   }
@@ -305,9 +361,15 @@ export function ProductsPage() {
       stockQuantity: product.stock_quantity == null ? '' : String(product.stock_quantity),
          status: product.status,
       industryTypeId: product.industry_type_id ?? activeIndustryTypeId ?? '',
-      ...loadFmcgMeta(product.id),
+         ...loadFmcgMeta(product.id),
+      trackBatch: tracksBatch(loadFmcgMeta(product.id)),
       unit: product.unit ?? 'pcs',
-      taxPercent: product.tax_percent == null ? '' : String(product.tax_percent),
+        taxPercent: product.tax_percent == null ? '' : String(product.tax_percent),
+      hsnCode: product.hsn_code ?? '',
+      specification: product.specification ?? '',
+      originCountry: product.origin_country ?? '',
+      supplierName: product.supplier_name ?? '',
+      currency: product.currency ?? 'INR',
     });
     setMessage('');
     setModalOpen(true);
@@ -333,10 +395,11 @@ export function ProductsPage() {
       packSize: form.packSize,
       mrp: form.mrp,
       discountPercent: form.discountPercent,
-      batchNumber: form.batchNumber,
-      mfgDate: form.mfgDate,
-      expiryDate: form.expiryDate,
+      batchNumber: form.trackBatch ? form.batchNumber : '',
+      mfgDate: form.trackBatch ? form.mfgDate : '',
+      expiryDate: form.trackBatch ? form.expiryDate : '',
       minStockLevel: form.minStockLevel,
+      trackBatch: form.trackBatch,
     };
     const body = {
       productCode: form.productCode,
@@ -348,6 +411,11 @@ export function ProductsPage() {
       status: form.status,
       unit: form.unit || null,
       taxPercent: form.taxPercent === '' ? null : Number(form.taxPercent),
+      hsnCode: form.hsnCode || null,
+      specification: form.specification || null,
+      originCountry: form.originCountry || null,
+      supplierName: form.supplierName || null,
+      currency: form.currency || null,
       industryTypeIds: [form.industryTypeId || activeIndustryTypeId || ''].filter(Boolean),
     };
     try {
@@ -438,8 +506,7 @@ export function ProductsPage() {
         <div className="kpi-card" data-tone="green"><div className="kpi-icon kpi-icon-green">✓</div><div><span>Active Products</span><strong>{kpis.active}</strong></div></div>
         <div className="kpi-card" data-tone="amber"><div className="kpi-icon kpi-icon-amber">⚠</div><div><span>Low Stock</span><strong>{kpis.lowStock}</strong></div></div>
         <div className="kpi-card" data-tone="red"><div className="kpi-icon kpi-icon-red">⬤</div><div><span>Out of Stock</span><strong>{kpis.outOfStock}</strong></div></div>
-        <div className="kpi-card" data-tone="blue"><div className="kpi-icon kpi-icon-blue">◷</div><div><span>Expiring Soon</span><strong>{kpis.expiringSoon}</strong></div></div>
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">▤</div><div><span>Total Stock</span><strong>{kpis.totalStock.toLocaleString('en-IN')}</strong></div></div>
+        {showBatchUi && <div className="kpi-card" data-tone="blue"><div className="kpi-icon kpi-icon-blue">◷</div><div><span>Expiring Soon</span><strong>{kpis.expiringSoon}</strong></div></div>}        <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">▤</div><div><span>Total Stock</span><strong>{kpis.totalStock.toLocaleString('en-IN')}</strong></div></div>
       </div>
 
       <div className="master-toolbar">
@@ -464,12 +531,14 @@ export function ProductsPage() {
             <option value="low">Low stock</option>
             <option value="out">Out of stock</option>
           </select>
-          <select value={filterExpiry} onChange={(event) => setFilterExpiry(event.target.value as typeof filterExpiry)}>
-            <option value="all">All batches</option>
-            <option value="expiring">Expiring soon</option>
-            <option value="expired">Expired</option>
-            <option value="none">No batch/expiry set</option>
-          </select>
+                {showBatchUi && (
+            <select value={filterExpiry} onChange={(event) => setFilterExpiry(event.target.value as typeof filterExpiry)}>
+              <option value="all">All batches</option>
+              <option value="expiring">Expiring soon</option>
+              <option value="expired">Expired</option>
+              <option value="none">No batch/expiry set</option>
+            </select>
+          )}
           <button type="button" className="link-button" onClick={clearFilters} disabled={activeFilterCount === 0}>Clear filters</button>
         </div>
       </div>
@@ -479,7 +548,7 @@ export function ProductsPage() {
         <div className="data-table-wrap">
           <table>
             <thead>
-              <tr><th>Product</th><th>SKU / Barcode</th><th>Brand</th><th>Category</th><th>Selling Price</th><th>Stock</th><th>Batch / Expiry</th><th>Status</th><th>Actions</th></tr>
+<tr><th>Product</th><th>SKU / Barcode</th><th>Brand</th><th>Category</th>{isTrading && <th>HSN</th>}<th>Unit Price</th><th>Selling Price</th><th>GST</th><th>Final Price</th><th>Stock</th>{showBatchUi && <th>Batch / Expiry</th>}<th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {filteredItems.map((item) => {
@@ -488,26 +557,35 @@ export function ProductsPage() {
                 const stockState = stockStatus(item.stock_quantity, meta.minStockLevel);
                 return (
                   <tr key={item.id}>
-                    <td><strong>{item.product_name}</strong></td>
+                                <td>
+                      <strong>{item.product_name}</strong>
+                      {isTrading && item.specification && <><br /><small className="text-faint-inline">{item.specification}</small></>}
+                    </td>
                     <td>
                       <span style={{ fontFamily: 'var(--font-mono)' }}>{item.product_code}</span>
                       <br /><small className="text-faint-inline">{meta.barcode || 'No barcode'}</small>
                     </td>
                     <td>{meta.brand || '—'}</td>
                     <td>{item.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</td>
-                                        <td>
-                      {formatMoney(Number(item.selling_price) + (Number(item.selling_price) * Number(item.tax_percent || 0)) / 100)}
-                      <br /><small className="text-faint-inline">Before tax {formatMoney(Number(item.selling_price))}</small>
-                    </td>
+                                          {isTrading && <td>{item.hsn_code || '—'}</td>}
+                    <td>{formatMoney(Number(meta.mrp || item.selling_price))}</td>
                     <td>
-                      {item.stock_quantity ?? '—'}
-                      {stockState === 'low' && <><br /><span className="status-badge status-quoted">Low stock</span></>}
+                      {formatMoney(Number(item.selling_price))}
+                      {Number(meta.discountPercent) > 0 && <><br /><small className="text-faint-inline">{meta.discountPercent}% off</small></>}
+                    </td>
+                    <td>{Number(item.tax_percent || 0)}%</td>
+                    <td><strong>{formatMoney(Number(item.selling_price) + (Number(item.selling_price) * Number(item.tax_percent || 0)) / 100)}</strong></td>
+                                      <td>
+                      {item.stock_quantity ?? '—'}{item.stock_quantity != null && meta.unit ? ` ${meta.unit}` : ''}
+                      {stockState === 'low'&& <><br /><span className="status-badge status-quoted">Low stock</span></>}
                       {stockState === 'out' && <><br /><span className="status-badge status-cancelled">Out of stock</span></>}
                     </td>
-                    <td>
-                      {meta.batchNumber || '—'}
-                      {expiry && <><br /><span className={`status-badge ${expiry.className}`}>{expiry.label}</span></>}
-                    </td>
+                                    {showBatchUi && (
+                      <td>
+                        {meta.batchNumber || '—'}
+                        {expiry && <><br /><span className={`status-badge ${expiry.className}`}>{expiry.label}</span></>}
+                      </td>
+                    )}
                     <td><span className={`status-badge ${item.status}`}>{item.status}</span></td>
                     <td className="master-actions">
                       <button type="button" className="icon-action row-menu-trigger" title="More actions" aria-label={`Actions for ${item.product_name}`} onClick={(event) => toggleMenu(event, item.id)}>⋯</button>
@@ -608,7 +686,25 @@ export function ProductsPage() {
                     {savedUnits.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
                   </select>
                 </label>  
-                <label>Pack size<input placeholder="e.g. 12x200ml" value={form.packSize} onChange={(event) => setForm({ ...form, packSize: event.target.value })} /></label>
+<label>Pack size<input placeholder={PACK_SIZE_PLACEHOLDERS[activeIndustry] ?? 'e.g. 10 pcs per box'} value={form.packSize} onChange={(event) => setForm({ ...form, packSize: event.target.value })} /></label>
+                {isTrading && (
+                  <>
+                    <label>HSN code<input placeholder="e.g. 7306" value={form.hsnCode} onChange={(event) => setForm({ ...form, hsnCode: event.target.value })} /></label>
+                    <label>Specification / Grade<input placeholder="e.g. 50 mm dia, 3 mm thick, IS 1239" value={form.specification} onChange={(event) => setForm({ ...form, specification: event.target.value })} /></label>
+                    <label>Origin country<input placeholder="e.g. India" value={form.originCountry} onChange={(event) => setForm({ ...form, originCountry: event.target.value })} /></label>
+                    <label>
+                      Preferred supplier
+                      <input list="supplier-options" placeholder="Pick or type a supplier" value={form.supplierName} onChange={(event) => setForm({ ...form, supplierName: event.target.value })} />
+                      <datalist id="supplier-options">{supplierNames.map((name) => <option key={name} value={name} />)}</datalist>
+                    </label>
+                    <label>
+                      Currency
+                      <select value={form.currency} onChange={(event) => setForm({ ...form, currency: event.target.value })}>
+                        {[...new Set([...currencyCodes, form.currency].filter(Boolean))].map((code) => <option key={code} value={code}>{code}</option>)}
+                      </select>
+                    </label>
+                  </>
+                )}
 <label>MRP (₹)<input min="0" type="number" step="0.01" value={form.mrp} onChange={(event) => { const mrp = event.target.value; setForm((current) => ({ ...current, mrp, sellingPrice: computeSellingPrice(mrp, current.discountPercent) || current.sellingPrice })); }} /></label>
 <label>Discount (%)<input min="0" max="100" type="number" step="0.01" value={form.discountPercent} onChange={(event) => { const discountPercent = event.target.value; setForm((current) => ({ ...current, discountPercent, sellingPrice: computeSellingPrice(current.mrp, discountPercent) || current.sellingPrice })); }} /></label>
 <label>Selling price (₹) — auto from MRP &amp; Discount<input required min="0" type="number" step="0.01" value={form.sellingPrice} readOnly disabled={Boolean(form.mrp)} onChange={(event) => setForm({ ...form, sellingPrice: event.target.value })} /></label>
@@ -617,9 +713,16 @@ export function ProductsPage() {
                 <label>Final price incl. GST (₹)<input readOnly disabled value={form.sellingPrice && form.taxPercent ? (Number(form.sellingPrice) + (Number(form.sellingPrice) * Number(form.taxPercent)) / 100).toFixed(2) : form.sellingPrice} /></label>
                 <label>Opening stock<input min="0" type="number" step="1" value={form.stockQuantity} onChange={(event) => setForm({ ...form, stockQuantity: event.target.value })} /></label>
                 <label>Minimum stock level<input min="0" type="number" step="1" value={form.minStockLevel} onChange={(event) => setForm({ ...form, minStockLevel: event.target.value })} /></label>
-                <label>Batch number<input value={form.batchNumber} onChange={(event) => setForm({ ...form, batchNumber: event.target.value })} /></label>
-                <label>Manufacturing date<input type="date" value={form.mfgDate} onChange={(event) => setForm({ ...form, mfgDate: event.target.value })} /></label>
-                <label>Expiry date<input type="date" value={form.expiryDate} onChange={(event) => setForm({ ...form, expiryDate: event.target.value })} /></label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '.6rem' }}>
+<input type="checkbox" style={{ width: 'auto', padding: 0, border: 'none', boxShadow: 'none', background: 'none' }} checked={form.trackBatch} onChange={(event) => setForm({ ...form, trackBatch: event.target.checked })} />                  This product has batch / expiry
+                </label>
+                {form.trackBatch && (
+                  <>
+                    <label>Batch number<input value={form.batchNumber} onChange={(event) => setForm({ ...form, batchNumber: event.target.value })} /></label>
+                    <label>Manufacturing date<input type="date" value={form.mfgDate} onChange={(event) => setForm({ ...form, mfgDate: event.target.value })} /></label>
+                    <label>Expiry date<input type="date" value={form.expiryDate} onChange={(event) => setForm({ ...form, expiryDate: event.target.value })} /></label>
+                  </>
+                )}
                 <label>Status<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as ProductForm['status'] })}><option value="active">Active</option><option value="inactive">Inactive</option></select></label>
               </div>
               <div className="modal-actions"><button type="button" className="quiet-button" onClick={() => closeModal()} disabled={saving}>Cancel</button><button type="submit" className="primary-action" disabled={saving}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Add product'}</button></div>
@@ -644,6 +747,15 @@ export function ProductsPage() {
                 <dt>Barcode</dt><dd>{meta.barcode || 'Not recorded'}</dd>
                 <dt>Brand</dt><dd>{meta.brand || 'Not recorded'}</dd>
                 <dt>Category</dt><dd>{viewing.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</dd>
+                            {isTrading && (
+                  <>
+                    <dt>HSN code</dt><dd>{viewing.hsn_code || 'Not recorded'}</dd>
+                    <dt>Specification</dt><dd>{viewing.specification || 'Not recorded'}</dd>
+                    <dt>Origin country</dt><dd>{viewing.origin_country || 'Not recorded'}</dd>
+                    <dt>Preferred supplier</dt><dd>{viewing.supplier_name || 'Not recorded'}</dd>
+                    <dt>Currency</dt><dd>{viewing.currency || 'INR'}</dd>
+                  </>
+                )}
                 <dt>Unit / Pack size</dt><dd>{meta.unit}{meta.packSize ? ` · ${meta.packSize}` : ''}</dd>
              <dt>Selling price</dt><dd>{formatMoney(Number(viewing.selling_price))}</dd>
                 <dt>Purchase price</dt><dd>{viewing.cost_price == null ? 'Not recorded' : formatMoney(Number(viewing.cost_price))}</dd>
@@ -656,9 +768,13 @@ export function ProductsPage() {
                   {stockState === 'low' && <span className="status-badge status-quoted" style={{ marginLeft: '.5rem' }}>Low stock</span>}
                   {stockState === 'out' && <span className="status-badge status-cancelled" style={{ marginLeft: '.5rem' }}>Out of stock</span>}
                 </dd>
-                <dt>Batch number</dt><dd>{meta.batchNumber || 'Not recorded'}</dd>
-                <dt>Manufacturing date</dt><dd>{meta.mfgDate || 'Not recorded'}</dd>
-                <dt>Expiry date</dt><dd>{meta.expiryDate || 'Not recorded'}{expiry && <span className={`status-badge ${expiry.className}`} style={{ marginLeft: '.5rem' }}>{expiry.label}</span>}</dd>
+                {tracksBatch(meta) && (
+                  <>
+                    <dt>Batch number</dt><dd>{meta.batchNumber || 'Not recorded'}</dd>
+                    <dt>Manufacturing date</dt><dd>{meta.mfgDate || 'Not recorded'}</dd>
+                    <dt>Expiry date</dt><dd>{meta.expiryDate || 'Not recorded'}{expiry && <span className={`status-badge ${expiry.className}`} style={{ marginLeft: '.5rem' }}>{expiry.label}</span>}</dd>
+                  </>
+                )}
                 <dt>Status</dt><dd><span className={`status-badge ${viewing.status}`}>{viewing.status}</span></dd>
               </dl>
               <div style={{ padding: '0 1.6rem 1.6rem' }}>

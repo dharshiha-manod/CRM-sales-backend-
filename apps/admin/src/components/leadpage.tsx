@@ -6,6 +6,7 @@ import type { IndustryKey } from '../industry/types';
 import { LeadPipelineStepper } from './LeadPipelineStepper';
 import { loadNameList, saveNameList } from './BrandsCategoriesPage';
 import './MasterDataPages.css';
+import './LeadsPage.css';
 
 const PENDING_REQUIREMENT_CLIENT_KEY = 'fs-pending-requirement-client';
 type IndustryOption = { id: string; code: string; name: string };
@@ -439,6 +440,7 @@ const [status, setStatus] = useState('');
 
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState<LeadForm>(blankForm);
+    const [nextLeadCode, setNextLeadCode] = useState('');
   const [customTypeOptions, setCustomTypeOptions] = useState<CustomTypeOptions>(() => loadCustomTypeOptions(activeIndustry));
   const [editingLeadId, setEditingLeadId] = useState<string | null>(null);
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
@@ -620,7 +622,9 @@ function openCreate() {
   }); // pre-filled, using this industry's own option set — not FMCG's
   setFormError(null);
     setDuplicateWarning(null);
-    setConfirmDespiteDuplicate(false);
+     setConfirmDespiteDuplicate(false);
+    setNextLeadCode('');
+    void api<{ data: { leadCode: string } }>('/leads/next-code').then((r) => setNextLeadCode(r.data.leadCode)).catch(() => setNextLeadCode(''));
     setModalOpen(true);
   }
 
@@ -982,15 +986,13 @@ async function suggestRep() {
     <section className="page-panel master-page lead-pipeline-page">
       <div className="page-panel-heading">
         <div>
-         <p>Manage, track and convert your sales leads.</p>
+          <p className="eyebrow">{config.label.toUpperCase()} · LEAD PIPELINE</p>
+          <h2>Lead Management</h2>
+          <p>Manage, track and convert your sales leads.</p>
         </div>
         <button className="primary-action" type="button" onClick={openCreate}>
           + Add Lead
         </button>
-      </div>
-      <div className="lead-management-banner">
-        <h2>Lead Management</h2>
-        <p>Manage all your sales leads — {kpis.total} total</p>
       </div>
 
         <div className="kpi-grid lead-kpi-grid">
@@ -1132,11 +1134,10 @@ async function suggestRep() {
               <tr>
                           <th>Lead</th>
                    {activeIndustry !== 'school' && activeIndustry !== 'trading' && <th>{fieldLabelText(shopTypeConfig, activeIndustry)}</th>}
-                <th>Industry</th>
                 <th>Representative</th>
                 <th>Contact</th>
                 <th>Email</th>
-                <th>Expected value</th>
+                <th className="lp-num">Expected value</th>
                 <th>Priority</th>
                 <th>Status</th>
                 <th>Next follow-up</th>
@@ -1153,21 +1154,19 @@ async function suggestRep() {
                       <small className="lead-code">{lead.lead_code}</small>
                     </td>
                              {activeIndustry !== 'school' && activeIndustry !== 'trading' && <td>{optionLabel(shopTypeConfig, activeIndustry, meta.shopType)}</td>}
-                    <td>{lead.industry_types?.name ?? '—'}</td>
-                    <td>{lead.sales_representatives?.user_profiles?.display_name ?? lead.sales_representatives?.employee_code ?? 'Unassigned'}</td>
+                    <td>{(() => { const repLabel = lead.sales_representatives?.user_profiles?.display_name ?? lead.sales_representatives?.employee_code; return repLabel ? <span className="lp-rep"><i>{repLabel.slice(0, 1).toUpperCase()}</i>{repLabel}</span> : <span className="lp-unassigned">Unassigned</span>; })()}</td>
                     <td>
                       {lead.contact_name && <span>{lead.contact_name}</span>}
                       {lead.phone && <small>{lead.phone}</small>}
                     </td>
-                    <td>{lead.email || <small className="lead-code">No email</small>}</td>
-                    <td>{meta.expectedOrderValue ? `₹${meta.expectedOrderValue}` : '—'}</td>
+                    <td>{lead.email ? <span className="lp-email" title={lead.email}>{lead.email}</span> : <span className="lp-muted">No email</span>}</td>
+                    <td className="lp-num">{meta.expectedOrderValue && Number.isFinite(Number(meta.expectedOrderValue)) ? new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Number(meta.expectedOrderValue)) : '—'}</td>
                     <td>
-                      <span className={`status-badge status-${lead.priority}`}>{priorityLabels[lead.priority] ?? lead.priority}</span>
+                      <span className={`status-badge status-${lead.priority} lp-pill`}>{priorityLabels[lead.priority] ?? lead.priority}</span>
                     </td>
                  <td>
                    <select
-                        className={`status-badge status-${lead.status} status-select`}
-                        style={{ display: 'inline-block', maxWidth: 'none', minWidth: '128px', whiteSpace: 'nowrap' }}
+                        className={`status-badge status-${lead.status} status-select lp-status-select`}
                         disabled={lead.status === 'converted' || rowStatusUpdating[lead.id]}
                         value={lead.status}
                         aria-label={`Change status of ${lead.company_name}`}
@@ -1187,10 +1186,10 @@ async function suggestRep() {
                         isOverdue(lead) ? (
                           <span className="text-warn followup-cell">
                             <strong>Overdue</strong>
-                            <span>{new Intl.DateTimeFormat(undefined, { dateStyle: 'short' }).format(new Date(lead.next_action_due_at))}</span>
+                            <span>{new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(lead.next_action_due_at))}</span>
                           </span>
                         ) : (
-                          <span>{new Intl.DateTimeFormat(undefined, { dateStyle: 'short' }).format(new Date(lead.next_action_due_at))}</span>
+                          <span>{new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(lead.next_action_due_at))}</span>
                         )
                       ) : (
                         '—'
@@ -1297,8 +1296,12 @@ async function suggestRep() {
               <dd>{selected.industry_types?.name ?? '—'}</dd>
               <dt>Representative</dt>
               <dd>{selected.sales_representatives?.user_profiles?.display_name ?? selected.sales_representatives?.employee_code ?? 'Unassigned'}</dd>
-              <dt>Area / Route</dt>
-              <dd>{unpackFmcgMeta(selected.notes).meta.areaRoute || '—'}</dd>
+              {activeIndustry !== 'trading' && (
+                <>
+                  <dt>Area / Route</dt>
+                  <dd>{unpackFmcgMeta(selected.notes).meta.areaRoute || '—'}</dd>
+                </>
+              )}
               {activeIndustry !== 'school' && activeIndustry !== 'trading' && (
                 <>
                   <dt>{fieldLabelText(shopTypeConfig, activeIndustry)}</dt>
@@ -1566,18 +1569,21 @@ async function suggestRep() {
                        <fieldset className="modal-fieldset">
                 <legend>Lead information</legend>
                 <div className="fieldset-grid">
-                  <label>
-                    Lead code (auto-generated if blank)
-                    <input value={form.leadCode} placeholder="Auto" onChange={(e) => setForm({ ...form, leadCode: e.target.value })} />
+                                   <label>
+                    Lead code
+                    <input readOnly style={{ background: 'var(--paper)', fontFamily: 'var(--font-mono)' }} value={editingLeadId ? form.leadCode : nextLeadCode} placeholder={editingLeadId ? '' : 'Generating…'} />
+                    {!editingLeadId && <small style={{ color: 'var(--text-faint)', fontWeight: 400 }}></small>}
                   </label>
                                       <label>
                     {companyNameLabels[activeIndustry] ?? 'Shop / Retailer name'}
                     <input required value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} onBlur={() => void checkDuplicatesNow()} />
                   </label>
-                  <label>
-                    Area / Route
-                    <input placeholder="e.g. Route 4 - MG Road belt" value={form.areaRoute} onChange={(e) => setForm({ ...form, areaRoute: e.target.value })} />
-                  </label>
+                  {activeIndustry !== 'trading' && (
+                    <label>
+                      Area / Route
+                      <input placeholder="e.g. Route 4 - MG Road belt" value={form.areaRoute} onChange={(e) => setForm({ ...form, areaRoute: e.target.value })} />
+                    </label>
+                  )}
                  {activeIndustry !== 'school' && activeIndustry !== 'trading' && (
                     <label>
                       {fieldLabelText(shopTypeConfig, activeIndustry)}
@@ -1686,10 +1692,10 @@ async function suggestRep() {
                     </select>
                   </label>
                   <label>
-                    Representative (optional — auto/assisted if left blank)
+                    Representative (optional)
                     <div style={{ display: 'flex', gap: '.5rem' }}>
                       <select style={{ flex: 1 }} value={form.representativeId} onChange={(e) => setForm({ ...form, representativeId: e.target.value })}>
-                        <option value="">Unassigned (auto-assign on save)</option>
+                        <option value="">Unassigned</option>
                         {representativeOptions.map((rep) => (
                           <option key={rep.id} value={rep.id}>
                             {rep.user_profiles?.display_name ?? rep.employee_code ?? rep.id}
@@ -1700,6 +1706,7 @@ async function suggestRep() {
                         {suggestingRep ? '…' : 'Suggest'}
                       </button>
                     </div>
+                   
                   </label>
                 </div>
               </fieldset>

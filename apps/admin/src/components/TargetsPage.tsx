@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustry } from '../industry/IndustryContext';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { TARGET_TYPE_OPTIONS, TARGET_TYPE_LABELS, CURRENCY_TYPES, COMMON_TARGET_TYPES, INDUSTRY_TARGET_TYPES } from '../lib/targetTypes';
 import { useOrgSettings } from '../settings/useOrgSettings';           // ← NEW
 import type { TargetConfig } from '../settings/types';                 // ← NEW
 import './MasterDataPages.css';
@@ -32,28 +33,6 @@ type TargetApiRow = {
 
 type RepOption = { id: string; employee_code: string; designation?: string | null; user_profiles?: { display_name?: string | null } | null };
 
-const TARGET_TYPE_OPTIONS: { value: string; label: string }[] = [
-  { value: 'sales_amount', label: 'Sales Amount' },
-  { value: 'order_value', label: 'Order Value' },
-  { value: 'order_count', label: 'Order Count' },
-  { value: 'collection_amount', label: 'Collection Amount' },
-  { value: 'visit_count', label: 'Visit Count' },
-  { value: 'new_customers', label: 'New Customers' },
-  { value: 'product_quantity', label: 'Product Quantity' },
-  { value: 'doctor_visits', label: 'Doctor Visits' },
-  { value: 'pharmacy_visits', label: 'Pharmacy Visits' },
-  { value: 'order_quantity', label: 'Order Quantity' },
-  { value: 'meter_quantity', label: 'Meter Quantity' },
-  { value: 'client_visits', label: 'Client Visits' },
-  { value: 'quantity_sold', label: 'Quantity Sold' },
-  { value: 'admission_target', label: 'Admission Target' },
-  { value: 'fee_collection', label: 'Fee Collection' },
-  { value: 'institution_visits', label: 'Institution Visits' },
-  { value: 'student_enrollment', label: 'Student Enrollment' },
-  { value: 'followups', label: 'Follow-ups' },
-];
-const CURRENCY_TYPES = new Set(['sales_amount', 'order_value', 'collection_amount', 'fee_collection']);
-const TARGET_TYPE_LABELS = Object.fromEntries(TARGET_TYPE_OPTIONS.map((option) => [option.value, option.label]));
 const TARGET_SOURCES: Record<string, string> = {
   sales_amount: 'Recorded collections', order_value: 'Confirmed sales orders', order_count: 'Confirmed sales orders',
   collection_amount: 'Recorded collections', fee_collection: 'Recorded collections',
@@ -71,13 +50,22 @@ const PERIODS: { key: 'today' | 'week' | 'month' | 'quarter' | 'year'; label: st
 ];
 
 const STATUS_LABEL: Record<string, string> = { not_started: 'Not Started', on_track: 'On Track', at_risk: 'At Risk', achieved: 'Achieved', exceeded: 'Exceeded' };
-const STATUS_CLASS: Record<string, string> = { not_started: 'status-badge', on_track: 'status-badge status-quoted', at_risk: 'status-badge inactive', achieved: 'status-badge status-completed', exceeded: 'status-badge status-completed' };
 
 const money = (v: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Math.round(v || 0));
 const plain = (v: number) => new Intl.NumberFormat('en-IN').format(Math.round(v || 0));
 function formatByType(v: number, type: string) { return CURRENCY_TYPES.has(type) ? money(v) : plain(v); }
 function targetTypeLabel(type: string) { return TARGET_TYPE_LABELS[type] ?? type.replaceAll('_', ' '); }
 function targetSource(type: string) { return TARGET_SOURCES[type] ?? 'Live CRM activity'; }
+function customPeriodLabel(start: string, end: string) {
+  const fmt = (v: string) => new Date(`${v}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  return start === end ? fmt(start) : `${fmt(start)} – ${fmt(end)}`;
+}
+const ICON_PROPS = { width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true };
+const EyeIcon = () => <svg {...ICON_PROPS}><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>;
+const EditIcon = () => <svg {...ICON_PROPS}><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4 12.5-12.5z" /></svg>;
+const TrashIcon = () => <svg {...ICON_PROPS}><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /></svg>;
+function initials(name: string) { return name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join('') || '?'; }
+function barTone(status: string) { return status === 'exceeded' || status === 'achieved' ? 'good' : status === 'at_risk' ? 'bad' : status === 'on_track' ? 'warn' : 'idle'; }
 function repName(t: TargetApiRow) { return t.sales_representatives?.user_profiles?.display_name ?? t.sales_representatives?.employee_code ?? 'Unassigned'; }
 function achievementPct(t: TargetApiRow) { return t.target_value > 0 ? Math.round((t.achieved_value / t.target_value) * 100) : 0; }
 // ↓ CHANGED: thresholds now come from Settings → Target Configuration
@@ -95,7 +83,7 @@ function computeStatus(t: TargetApiRow, config: TargetConfig): 'not_started' | '
 }
 function periodRange(period: 'today' | 'week' | 'month' | 'quarter' | 'year'): { start: string; end: string; label: string } {
   const now = new Date();
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   if (period === 'today') return { start: iso(now), end: iso(now), label: 'Today' };
   if (period === 'week') { const d = new Date(now); const day = d.getDay() || 7; d.setDate(d.getDate() - day + 1); const start = new Date(d); const end = new Date(d); end.setDate(end.getDate() + 6); return { start: iso(start), end: iso(end), label: 'This Week' }; }
   if (period === 'quarter') { const q = Math.floor(now.getMonth() / 3); const start = new Date(now.getFullYear(), q * 3, 1); const end = new Date(now.getFullYear(), q * 3 + 3, 0); return { start: iso(start), end: iso(end), label: 'This Quarter' }; }
@@ -109,6 +97,11 @@ export function TargetsPage() {
   const { config: industryConfig } = useIndustry();
   const { activeIndustryTypeId } = useIndustryScope();
   const industryLabel = industryConfig.label.toUpperCase();
+  const activeIndustryKey = industryConfig.key;
+  const targetTypeOptions = useMemo(() => {
+    const allowed = new Set(INDUSTRY_TARGET_TYPES[activeIndustryKey] ?? COMMON_TARGET_TYPES);
+    return TARGET_TYPE_OPTIONS.filter((o) => allowed.has(o.value));
+  }, [activeIndustryKey]);
   const { settings: orgSettings, loading: settingsLoading } = useOrgSettings(); // ← NEW
 
   // Settings → Target Configuration → Default period
@@ -125,6 +118,12 @@ export function TargetsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState('');
+  const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
+  function toggleMenu(event: React.MouseEvent<HTMLButtonElement>, targetId: string) {
+    if (menuFor?.id === targetId) { setMenuFor(null); return; }
+    const rect = event.currentTarget.getBoundingClientRect();
+    setMenuFor({ id: targetId, top: rect.bottom + 4, left: Math.max(8, rect.right - 170) });
+  }
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
 
@@ -137,6 +136,12 @@ export function TargetsPage() {
   const [formMessage, setFormMessage] = useState('');
 
   const range = useMemo(() => periodRange(period), [period]);
+
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => setMessage(''), 4000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
 
   async function load() {
     if (!activeIndustryTypeId) return;
@@ -183,13 +188,17 @@ const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings
     e.preventDefault();
     if (!activeIndustryTypeId) return;
     const form = new FormData(e.currentTarget);
+    const periodStart = String(form.get('periodStart') || range.start);
+    const periodEnd = String(form.get('periodEnd') || range.end);
+    if (periodEnd < periodStart) { setFormMessage('End date cannot be before the start date.'); return; }
+    const isPreset = periodStart === range.start && periodEnd === range.end;
     const body = {
       representativeId: String(form.get('representativeId') || ''),
       industryTypeId: activeIndustryTypeId,
       targetType: String(form.get('targetType') || ''),
-      periodStart: range.start,
-      periodEnd: range.end,
-      periodLabel: range.label,
+      periodStart,
+      periodEnd,
+      periodLabel: isPreset ? range.label : customPeriodLabel(periodStart, periodEnd),
       targetValue: Number(form.get('targetValue') || 0),
       priority: String(form.get('priority') || 'normal'),
       remarks: String(form.get('remarks') || '') || null,
@@ -221,7 +230,7 @@ const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings
   }
 
   return (
-    <section className="page-panel master-page">
+    <section className="page-panel master-page targets-page">
       <div className="page-panel-heading">
         <div>
           <p className="eyebrow">{industryLabel} · TARGETS</p>
@@ -252,11 +261,11 @@ const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings
       </div>
 
       {error && <p className="error-message">{error}</p>}
-      {message && <p className="success-message">{message}</p>}
+      {message && <p className="success-message tg-toast" role="status"><span>✓ {message}</span><button type="button" aria-label="Dismiss" onClick={() => setMessage('')}>×</button></p>}
 
       <div className="data-table-wrap">
-        <table>
-          <thead><tr><th>Sales Rep</th><th>Metric</th><th>Period</th><th>Target</th><th>Achieved</th><th>Remaining</th><th>Achievement %</th><th>Status</th><th>Actions</th></tr></thead>
+        <table className="tg-table">
+          <thead><tr><th>Sales Rep</th><th>Metric</th><th>Period</th><th className="tg-num">Target</th><th className="tg-num">Achieved</th><th className="tg-num">Remaining</th><th>Achievement</th><th>Status</th><th className="tg-actions-head">Actions</th></tr></thead>
           <tbody>
             {loading ? (
               [0, 1, 2].map((i) => <tr key={i} className="skeleton-row"><td colSpan={9}><span className="skeleton-block" style={{ width: '100%' }} /></td></tr>)
@@ -266,18 +275,18 @@ const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings
               const pct = achievementPct(t); const status = computeStatus(t, orgSettings.target);
               return (  
                 <tr key={t.id}>
-                  <td>{repName(t)}</td>
-                  <td><strong>{targetTypeLabel(t.target_type)}</strong><small>{targetSource(t.target_type)}</small></td>
-                  <td>{t.period_label}</td>
-                  <td>{formatByType(t.target_value, t.target_type)}</td>
-                  <td>{formatByType(t.achieved_value, t.target_type)}</td>
-                  <td>{formatByType(Math.max(0, t.target_value - t.achieved_value), t.target_type)}</td>
-                  <td>{pct}%</td>
-                  <td><span className={STATUS_CLASS[status]}>{STATUS_LABEL[status]}</span></td>
-                  <td className="master-actions">
-                    <button type="button" className="icon-action" title="View" onClick={() => setViewing(t)}>◉</button>
-                    <button type="button" className="icon-action" title="Edit" onClick={() => openEdit(t)}>✎</button>
-                    <button type="button" className="icon-action icon-action--danger" title="Delete" onClick={() => setDeleting(t)}>🗑</button>
+                  <td><div className="tg-rep"><span className="tg-avatar">{initials(repName(t))}</span><strong>{repName(t)}</strong></div></td>
+                  <td><div className="tg-metric"><strong>{targetTypeLabel(t.target_type)}</strong><small>{targetSource(t.target_type)}</small></div></td>
+                  <td><span className="tg-period">{t.period_label}</span></td>
+                  <td className="tg-num">{formatByType(t.target_value, t.target_type)}</td>
+                  <td className="tg-num">{formatByType(t.achieved_value, t.target_type)}</td>
+                  <td className="tg-num">{formatByType(Math.max(0, t.target_value - t.achieved_value), t.target_type)}</td>
+                  <td><div className="tg-achv"><div className="tg-bar"><span className={`tg-bar-fill tg-bar-fill--${barTone(status)}`} style={{ width: `${Math.min(100, pct)}%` }} /></div><b>{pct}%</b></div></td>
+                  <td><span className={`tg-status tg-status--${status}`}><i />{STATUS_LABEL[status]}</span></td>
+                  <td>
+                    <div className="tg-actions">
+                      <button type="button" className="icon-action row-menu-trigger" title="More actions" aria-label={`Actions for ${repName(t)}`} onClick={(event) => toggleMenu(event, t.id)}>⋯</button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -290,6 +299,25 @@ const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings
         <>
           <h3>Alerts &amp; Attention Required</h3>
 {alerts.map((t) => <p key={t.id} className="error-message">{repName(t)} is below {orgSettings.target.atRiskBelowPercent}% achievement ({achievementPct(t)}%).</p>)}        </>
+      )}
+
+      {menuFor && (
+        <>
+          <div className="row-menu-backdrop" onMouseDown={() => setMenuFor(null)} />
+          <div className="row-menu row-menu--icons" style={{ top: menuFor.top, left: menuFor.left }}>
+            {(() => {
+              const item = filtered.find((row) => row.id === menuFor.id);
+              if (!item) return null;
+              return (
+                <>
+                  <button type="button" onClick={() => { setMenuFor(null); setViewing(item); }}><EyeIcon /><span>View</span></button>
+                  <button type="button" onClick={() => { setMenuFor(null); openEdit(item); }}><EditIcon /><span>Edit</span></button>
+                  <button type="button" className="row-menu-danger" onClick={() => { setMenuFor(null); setDeleting(item); }}><TrashIcon /><span>Delete</span></button>
+                </>
+              );
+            })()}
+          </div>
+        </>
       )}
 
       {modal && (
@@ -310,7 +338,10 @@ const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings
                 <label>Target Type *
                   <select name="targetType" required defaultValue={editing?.target_type ?? ''}>
                     <option value="">Select…</option>
-                    {TARGET_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    {(editing && !targetTypeOptions.some((o) => o.value === editing.target_type)
+                      ? [...targetTypeOptions, { value: editing.target_type, label: targetTypeLabel(editing.target_type) }]
+                      : targetTypeOptions
+                    ).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </label>
                 <label>Target Value *
@@ -321,11 +352,17 @@ const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings
                     <option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option>
                   </select>
                 </label>
+                <label>Period Start *
+                  <input type="date" name="periodStart" required defaultValue={editing?.period_start?.slice(0, 10) ?? range.start} />
+                </label>
+                <label>Period End *
+                  <input type="date" name="periodEnd" required defaultValue={editing?.period_end?.slice(0, 10) ?? range.end} />
+                </label>
+                <p style={{ fontSize: 13, opacity: 0.7 }}>Defaults to the selected filter ({range.label}). Change the dates for a custom period.</p>
                 <label>Remarks
                   <textarea name="remarks" rows={3} defaultValue={editing?.remarks ?? ''} />
                 </label>
               </div>
-              <p style={{ fontSize: 13, opacity: 0.7 }}>Period: {range.label} ({range.start} to {range.end})</p>
               {formMessage && <p role="alert" className="error">{formMessage}</p>}
               <div className="modal-actions">
                 <button type="button" className="quiet-button" onClick={() => setModal(false)} disabled={saving}>Cancel</button>

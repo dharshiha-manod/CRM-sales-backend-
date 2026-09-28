@@ -3,7 +3,7 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { createRequirement } from './requirements.repository.js';
 import { createFromRequirement } from './quotations.repository.js';
 import { listProducts } from './products.repository.js';
-import { getFollowUpConfig } from '../lib/settings.js';
+import { getFollowUpConfig, getSalesConfig } from '../lib/settings.js';
 
 const fail = (error: unknown): never => {
   throw error;
@@ -472,6 +472,34 @@ export async function assignLeadRepresentative(organizationId: string, id: strin
   return getLead(organizationId, id);
 }
 
+/**
+ * Keeps a converted lead's client in step with the lead's representative.
+ * Moves the client from the previous rep to the new one: only the previous
+ * lead-owner's assignment is switched off, so any extra reps a manager added
+ * by hand are left alone. Passing newRepId = null just removes the old one.
+ */
+export async function syncClientAssignmentWithLeadRep(organizationId: string, clientId: string, newRepId: string | null, previousRepId: string | null) {
+  if (previousRepId && previousRepId !== newRepId) {
+    const { error } = await supabaseAdmin
+      .from('sales_representative_client_assignments')
+      .update({ status: 'inactive' })
+      .eq('organization_id', organizationId)
+      .eq('sales_representative_id', previousRepId)
+      .eq('client_id', clientId)
+      .eq('status', 'active');
+    if (error) fail(error);
+  }
+  if (newRepId) {
+    const { error } = await supabaseAdmin
+      .from('sales_representative_client_assignments')
+      .upsert(
+        { organization_id: organizationId, sales_representative_id: newRepId, client_id: clientId, status: 'active' },
+        { onConflict: 'organization_id,sales_representative_id,client_id' },
+      );
+    if (error) fail(error);
+  }
+}
+
 export async function setLeadNextAction(organizationId: string, id: string, actorId: string, nextAction: string | null, nextActionDueAt: string | null) {
   const { data, error } = await supabaseAdmin
     .from('leads')
@@ -569,7 +597,11 @@ export async function convertLeadToClient(
     if ((clientError as { code?: string }).code === '23505') throw new AppError(409, 'CLIENT_CODE_TAKEN', 'A client with this code already exists.');
     fail(clientError);
   }
-  if (lead.representative_id) {
+  // Settings -> Sales -> "Auto-assign customers to reps": when ON (default),
+  // the new client is handed to the lead's representative automatically.
+  // When OFF, the manager assigns it later from Sales Representatives.
+  const salesConfig = await getSalesConfig(organizationId);
+  if (lead.representative_id && salesConfig.autoAssignCustomers) {
     const { error: assignError } = await supabaseAdmin
       .from('sales_representative_client_assignments')
       .upsert(
@@ -644,4 +676,22 @@ function leadNotesText(notes?: string | null): string | null {
   if (notes == null) return null;
   const markerIndex = notes.indexOf(LEAD_META_MARKER);
   return markerIndex === -1 ? notes : notes.slice(0, markerIndex).trimEnd();
+}
+/**
+ * Preview only: the number the next new lead is expected to get (LD-YYMM-#####).
+ * The database trigger still assigns the real code when the lead is saved.
+ */
+export async function previewNextLeadCode(organizationId: string) {
+  const now = new Date();
+  const prefix = `LD-${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, '0')}-`;
+  const { data, error } = await supabaseAdmin
+    .from('leads')
+    .select('lead_code')
+    .eq('organization_id', organizationId)
+    .like('lead_code', `${prefix}%`)
+    .order('lead_code', { ascending: false })
+    .limit(1);
+  if (error) fail(error);
+  const last = Number(String(data?.[0]?.lead_code ?? '').slice(prefix.length));
+  return `${prefix}${String((Number.isFinite(last) ? last : 0) + 1).padStart(5, '0')}`;
 }

@@ -21,6 +21,7 @@ type ApiProduct = {
   category?: string | null;
   brand?: string | null;
   selling_price: number;
+  cost_price?: number | null;
   stock_quantity?: number | null;
   status: 'active' | 'inactive';
   industry_type_id?: string | null;
@@ -53,6 +54,7 @@ interface InventoryItem {
   maxStock: number;
   location: string;
   unitValue: number;
+  costValue: number;
   barcode: string;
   assignedRep?: string;
   expiryWarnDays?: number;
@@ -164,7 +166,8 @@ function buildInventoryFromProducts(products: ApiProduct[], rules: { minStock: n
       minStock: meta.minStockLevel ? Number(meta.minStockLevel) : rules.minStock,
       maxStock: 0,
       location: '—',
-      unitValue: p.selling_price ?? 0,
+       unitValue: p.selling_price ?? 0,
+      costValue: p.cost_price ?? 0,
        barcode: meta.barcode || '',
       expiryWarnDays: rules.expiryWarnDays,
     };
@@ -422,9 +425,11 @@ export function InventoryPage() {
     const totalStock = industryItems.reduce((s, i) => s + i.totalStock, 0);
     const lowStock = industryItems.filter((i) => computeStatus(i) === 'low_stock').length;
     const expiringSoon = industryItems.filter((i) => computeStatus(i) === 'expiring_soon').length;
-    const stockValue = industryItems.reduce((s, i) => s + i.totalStock * i.unitValue, 0);
+    const salesValue = industryItems.reduce((s, i) => s + i.totalStock * i.unitValue, 0);
+    const costValue = industryItems.reduce((s, i) => s + i.totalStock * i.costValue, 0);
+    const missingCost = industryItems.filter((i) => i.totalStock > 0 && i.costValue <= 0).length;
     const outOfStock = industryItems.filter((i) => computeStatus(i) === 'out_of_stock').length;
-    return { totalProducts, totalStock, lowStock, expiringSoon, stockValue, outOfStock };
+    return { totalProducts, totalStock, lowStock, expiringSoon, salesValue, costValue, missingCost, outOfStock };
   }, [industryItems]);
 
   const repInventory = useMemo(() => seedRepInventory(industryItems), [industryItems]);
@@ -577,8 +582,7 @@ export function InventoryPage() {
         <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">▤</div><div><span>Total Stock</span><strong>{kpis.totalStock.toLocaleString('en-IN')}</strong></div></div>
         <div className="kpi-card" data-tone="amber"><div className="kpi-icon kpi-icon-amber">⚠</div><div><span>Low Stock</span><strong>{kpis.lowStock}</strong>  </div></div>
         <div className="kpi-card" data-tone="amber"><div className="kpi-icon kpi-icon-amber">◷</div><div><span>Expiring Soon</span><strong>{kpis.expiringSoon}</strong> </div></div>
-        <div className="kpi-card" data-tone="blue"><div className="kpi-icon kpi-icon-blue">₹</div><div><span>Stock Value</span><strong>₹{kpis.stockValue.toLocaleString('en-IN')}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon kpi-icon-red">⬤</div><div><span>Out of Stock</span><strong>{kpis.outOfStock}</strong></div></div>
+<div className="kpi-card" data-tone="blue"><div className="kpi-icon kpi-icon-blue">₹</div><div><span>Stock Value (at cost)</span><strong>{kpis.costValue > 0 ? `₹${kpis.costValue.toLocaleString('en-IN')}` : '—'}</strong><small style={{ display: 'block', marginTop: 2, fontSize: 12, opacity: 0.7 }}>Sales value ₹{kpis.salesValue.toLocaleString('en-IN')}{kpis.missingCost > 0 ? ` · ${kpis.missingCost} without purchase price` : ''}</small></div></div>        <div className="kpi-card" data-tone="red"><div className="kpi-icon kpi-icon-red">⬤</div><div><span>Out of Stock</span><strong>{kpis.outOfStock}</strong></div></div>
       </div>
 
       {/* FILTERS */}

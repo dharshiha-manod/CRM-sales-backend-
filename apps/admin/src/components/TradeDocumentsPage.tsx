@@ -177,7 +177,8 @@ const config: TradingModuleConfig = {
     { key: 'document_type', label: 'Document type', type: 'select', options: DOC_TYPES, listColumn: true },
     {
       key: 'deal_number',
-      label: 'Deal',
+          label: 'Deal',
+      listColumn: true,
       type: 'lookup',
       lookupResource: '/trading/deals',
       lookupLabelKey: 'deal_name',
@@ -199,9 +200,9 @@ const config: TradingModuleConfig = {
       },
       group: 'Linked records',
     },
-    { key: 'shipment_number', label: 'Shipment', type: 'lookup', lookupResource: '/trading/shipments', lookupLabelKey: 'shipment_number', autoFillMap: { customer_name: 'customer_name', supplier_name: 'supplier_name', product_name: 'product_name', quantity: 'quantity', unit: 'unit', expected_delivery_date: 'expected_delivery_date', shipping_mode: 'shipping_mode', transporter: 'transporter', tracking_number: 'tracking_number' }, group: 'Linked records' },
+    { key: 'shipment_number', label: 'Shipment', type: 'lookup', lookupResource: '/trading/shipments', lookupLabelKey: 'shipment_number', listColumn: true, autoFillMap: { customer_name: 'customer_name', supplier_name: 'supplier_name',product_name: 'product_name', quantity: 'quantity', unit: 'unit', expected_delivery_date: 'expected_delivery_date', shipping_mode: 'shipping_mode', transporter: 'transporter', tracking_number: 'tracking_number' }, group: 'Linked records' },
 // NEW
-{ key: 'customer_name', label: 'Customer', type: 'lookup', lookupResource: '/clients', lookupValueKey: 'client_name', lookupLabelKey: 'client_code', group: 'Linked records', onLookupChange: fillFromCustomer },
+{ key: 'customer_name', label: 'Customer', type: 'lookup', lookupResource: '/clients', lookupValueKey: 'client_name', lookupLabelKey: 'client_code', listColumn: true, group: 'Linked records', onLookupChange: fillFromCustomer },
     { key: 'supplier_name', label: 'Supplier', type: 'lookup', lookupResource: '/trading/suppliers', lookupLabelKey: 'supplier_name', group: 'Linked records' },
     { key: 'product_name', label: 'Product', type: 'text', group: 'Linked records' },
     { key: 'reference_number', label: 'Reference number', type: 'text', group: 'Linked records' },

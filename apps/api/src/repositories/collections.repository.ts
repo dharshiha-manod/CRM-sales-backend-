@@ -20,8 +20,9 @@ async function assertPaymentAllowed(organizationId: string, mode: string, refere
   if (config.paymentMethods[label] === false) {
     throw new AppError(422, 'PAYMENT_METHOD_DISABLED', `${label} is not an enabled payment method. An Admin can enable it in Settings → Collection Configuration.`);
   }
-  if (config.receiptRequired && !referenceNo?.trim()) {
-    throw new AppError(422, 'RECEIPT_NUMBER_REQUIRED', 'A reference/receipt number is required for this collection. This can be turned off in Settings → Collection Configuration.');
+   const MODES_WITH_REFERENCE = ['upi', 'bank_transfer', 'cheque'];
+  if (config.receiptRequired && MODES_WITH_REFERENCE.includes(mode) && !referenceNo?.trim()) {
+    throw new AppError(422, 'RECEIPT_NUMBER_REQUIRED', `A reference number is required for ${label} payments. This can be turned off in Settings → Collection Configuration.`);
   }
 }
 

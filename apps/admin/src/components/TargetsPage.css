@@ -121,3 +121,43 @@
 .row-actions-dropdown button { display: block; width: 100%; text-align: left; padding: .5rem .6rem; border: none; background: none; border-radius: 6px; font-size: .85rem; cursor: pointer; }
 .row-actions-dropdown button:hover { background: #f1f1ef; }
 .row-actions-dropdown button.danger { color: #b91c1c; }
+/* ── Professional targets table (scoped to .targets-page) ───── */
+.targets-page .tg-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.targets-page .tg-table thead th { position: sticky; top: 0; background: var(--paper, #f6f5f1); font-size: .7rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted, #6b6b66); padding: .8rem 1rem; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line, #e5e5e2); }
+.targets-page .tg-table tbody td { padding: .85rem 1rem; vertical-align: middle; border-bottom: 1px solid var(--line, #eeede8); font-size: .88rem; }
+.targets-page .tg-table tbody tr:last-child td { border-bottom: none; }
+.targets-page .tg-table tbody tr:hover { background: rgba(0, 0, 0, .018); }
+.targets-page .tg-num { text-align: right !important; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.targets-page .tg-actions-head { text-align: right !important; }
+
+.tg-rep { display: flex; align-items: center; gap: .65rem; }
+.tg-avatar { flex: none; width: 2rem; height: 2rem; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--ink, #14171f); color: #f5f3ec; font-size: .72rem; font-weight: 700; letter-spacing: .02em; }
+.tg-rep strong { font-weight: 600; }
+
+.tg-metric { display: flex; flex-direction: column; gap: .15rem; }
+.tg-metric strong { font-weight: 600; }
+.tg-metric small { color: var(--text-faint, #8b8b85); font-size: .74rem; }
+
+.tg-period { display: inline-block; padding: .22rem .6rem; border-radius: 999px; background: var(--paper, #f1f1ef); color: var(--text-muted, #555); font-size: .78rem; font-weight: 600; white-space: nowrap; }
+
+.tg-achv { display: flex; align-items: center; gap: .6rem; min-width: 150px; }
+.tg-achv b { font-size: .8rem; font-variant-numeric: tabular-nums; min-width: 2.6rem; text-align: right; }
+.tg-bar { flex: 1; height: 7px; border-radius: 999px; background: var(--paper, #ecebe6); overflow: hidden; }
+.tg-bar-fill { display: block; height: 100%; border-radius: 999px; transition: width .3s ease; }
+.tg-bar-fill--good { background: var(--green, #2f6b4f); }
+.tg-bar-fill--warn { background: var(--amber, #d98e04); }
+.tg-bar-fill--bad { background: var(--red, #b91c1c); }
+.tg-bar-fill--idle { background: #c9c8c1; }
+
+.tg-status { display: inline-flex; align-items: center; gap: .4rem; padding: .25rem .65rem; border-radius: 999px; font-size: .76rem; font-weight: 600; white-space: nowrap; }
+.tg-status i { width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }
+.tg-status--not_started { background: #efeee9; color: #6b6b66; }
+.tg-status--on_track { background: var(--amber-soft, #fdf1d8); color: var(--amber-strong, #9a6300); }
+.tg-status--at_risk { background: var(--red-soft, #fbe4e4); color: var(--red, #b91c1c); }
+.tg-status--achieved, .tg-status--exceeded { background: var(--green-soft, #e0f0e7); color: var(--green, #2f6b4f); }
+
+.tg-actions { display: flex; justify-content: flex-end; gap: .35rem; }
+
+.tg-toast { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.tg-toast button { background: none; border: none; font-size: 1.2rem; line-height: 1; cursor: pointer; color: inherit; opacity: .6; }
+.tg-toast button:hover { opacity: 1; }

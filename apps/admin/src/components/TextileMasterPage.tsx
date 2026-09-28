@@ -508,7 +508,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
   }, [formFields]);
   const ungrouped = groups.get(undefined) ?? [];
   const groupNames = [...groups.keys()].filter((k): k is string => Boolean(k));
-  const listColumns = fields.filter((f) => f.listColumn && !(inlineStatus && f.key === 'status'));
+const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' && (inlineStatus || !hideStatusColumn)));
 
   return (
     <section className="page-panel master-page">
@@ -640,24 +640,53 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
                <div className="modal-heading">
               <div>
                 <p className="eyebrow">{industryLabel} · {eyebrowModule}</p>
-                <h3>{String(viewing[nameField] ?? viewing[codeField] ?? 'Record')}</h3>
+                <h3>{String(viewing[nameField] ?? viewing[codeField] ?? 'Record')}{viewing.status ? <span className={statusBadgeClass(viewing.status)}>{String(viewing.status)}</span> : null}</h3>
               </div>
               <button className="icon-action" type="button" aria-label="Close" onClick={() => setViewing(null)}>×</button>
             </div>
-        <dl className="detail-dl">
-              {fields.map((f) => (
-                <div key={f.key} style={{ display: 'contents' }}>
-                  <dt>{f.label}</dt>
-                  <dd>{f.format ? f.format(viewing[f.key], viewing) : f.type === 'date' ? dateLabel(viewing[f.key]) : (viewing[f.key] != null && viewing[f.key] !== '' ? String(viewing[f.key]) : '—')}</dd>
-                </div>
-              ))}
-              <dt>Status</dt>
-              <dd><span className={statusBadgeClass(viewing.status)}>{String(viewing.status ?? '—')}</span></dd>
-              <dt>Added on</dt>
-              <dd>{dateLabel(viewing.created_at)}</dd>
-            </dl>
-            {config.detailExtra?.(viewing)}
-            <div className="modal-actions">
+            <div className="dd-body">
+              {(() => {
+                const isEmpty = (v: unknown) => v == null || v === '';
+                const shown = (f: FieldDef) => f.format || f.required || f.listColumn || !isEmpty(viewing[f.key]);
+                const valueOf = (f: FieldDef) => {
+                  if (f.format) { try { return f.format(viewing[f.key], viewing); } catch { return '—'; } }
+                  if (f.type === 'date') return dateLabel(viewing[f.key]);
+                  return isEmpty(viewing[f.key]) ? '—' : String(viewing[f.key]);
+                };
+                const renderItems = (list: FieldDef[]) => list.filter(shown).map((f) => {
+                  const v = valueOf(f);
+                  return (
+                    <div className="dd-item" key={f.key}>
+                      <dt>{f.label}</dt>
+                      <dd className={v === '—' ? 'dd-muted' : undefined}>{v}</dd>
+                    </div>
+                  );
+                });
+                return (
+                  <>
+                    <section className="dd-card">
+                      <h4 className="dd-card-title">Overview</h4>
+                      <dl className="dd-grid">
+                        {renderItems(ungrouped)}
+                        <div className="dd-item"><dt>Added on</dt><dd>{dateLabel(viewing.created_at)}</dd></div>
+                      </dl>
+                    </section>
+                    {groupNames.map((g) => {
+                      const items = renderItems(groups.get(g)!);
+                      if (items.length === 0) return null;
+                      return (
+                        <section className="dd-card" key={g}>
+                          <h4 className="dd-card-title">{g}</h4>
+                          <dl className="dd-grid">{items}</dl>
+                        </section>
+                      );
+                    })}
+                  </>
+                );
+              })()}
+              {config.detailExtra?.(viewing)}
+            </div>
+            <div className="modal-actions dd-footer">
               <button type="button" className="quiet-button" onClick={() => { const r = viewing; setViewing(null); openEdit(r); }}>Edit</button>
               {config.detailActions?.(viewing)}
               <button type="button" className="primary-action" onClick={() => setViewing(null)}>Done</button>
@@ -1016,6 +1045,85 @@ function SearchableLookup({
   );
 }
 
+// Professional multi-select checklist (search, count, clear, tidy rows).
+// Value is stored as a comma-separated string, same as before.
+function MultiLookupField({ options, value, onChange, valueKey, labelKey }: {
+  options: TextileRecord[];
+  value: string;
+  onChange: (next: string) => void;
+  valueKey: string;
+  labelKey?: string;
+}) {
+  const [search, setSearch] = useState('');
+  const selected = new Set(value.split(',').map((s) => s.trim()).filter(Boolean));
+
+  // One row per stored value (some sources hold several rows with the same value).
+  const seen = new Set<string>();
+  const rows: { id: string; value: string; sub: string }[] = [];
+  for (const o of options) {
+    const rowValue = String(o[valueKey] ?? o.id);
+    if (seen.has(rowValue)) continue;
+    seen.add(rowValue);
+    rows.push({ id: String(o.id), value: rowValue, sub: labelKey ? String(o[labelKey] ?? '') : '' });
+  }
+
+  const term = search.trim().toLowerCase();
+  const visible = term ? rows.filter((r) => r.value.toLowerCase().includes(term) || r.sub.toLowerCase().includes(term)) : rows;
+
+  const toggle = (v: string) => {
+    const next = new Set(selected);
+    if (next.has(v)) next.delete(v); else next.add(v);
+    onChange(Array.from(next).join(', '));
+  };
+
+  return (
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
+        {rows.length > 5 && (
+          <input
+            type="search"
+            value={search}
+            placeholder="Search…"
+            onChange={(event) => setSearch(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault(); }}
+            style={{ flex: 1, minWidth: 0, padding: '6px 10px', fontSize: 13 }}
+          />
+        )}
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: '#64748b', whiteSpace: 'nowrap' }}>
+          {selected.size} selected
+        </span>
+        {selected.size > 0 && (
+          <button type="button" onClick={() => onChange('')} style={{ border: 'none', background: 'none', color: '#2563eb', fontSize: 12, cursor: 'pointer', padding: 0 }}>
+            Clear
+          </button>
+        )}
+      </div>
+      <div style={{ maxHeight: 220, overflowY: 'auto', padding: 6 }}>
+        {rows.length === 0 && <div style={{ padding: '14px 10px', fontSize: 13, color: '#94a3b8', textAlign: 'center' }}>No options available yet.</div>}
+        {rows.length > 0 && visible.length === 0 && <div style={{ padding: '14px 10px', fontSize: 13, color: '#94a3b8', textAlign: 'center' }}>No matches.</div>}
+        {visible.map((row) => {
+          const isOn = selected.has(row.value);
+          return (
+            <label
+              key={row.id}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, cursor: 'pointer', background: isOn ? '#eef2ff' : 'transparent' }}
+            >
+              <input
+                type="checkbox"
+                checked={isOn}
+                onChange={() => toggle(row.value)}
+                style={{ width: 16, height: 16, flex: '0 0 16px', margin: 0, padding: 0, border: 'none', boxShadow: 'none', background: 'none', accentColor: '#1e293b' }}
+              />
+              <span style={{ fontSize: 14, fontWeight: isOn ? 600 : 500, color: '#0f172a' }}>{row.value}</span>
+              {row.sub && <span style={{ marginLeft: 'auto', fontSize: 12, color: '#64748b', fontFamily: 'var(--font-mono, monospace)' }}>{row.sub}</span>}
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function renderInput(
   f: FieldDef,
   form: Record<string, string>,
@@ -1042,7 +1150,18 @@ function renderInput(
     f.onValueChangeAsync?.(v, form, setForm);
   };
   if (f.readOnly) {
-    return <input type="text" value={value} readOnly disabled />;
+    // Computed fields (gross/net amount, margin...) are never stored, so their
+    // form value is empty. When the field defines a `format`, show the live
+    // computed value from the other fields in the form instead.
+    let shown = value;
+    if (f.format) {
+      try {
+        shown = f.format(value, form as unknown as TextileRecord);
+      } catch {
+        shown = value;
+      }
+    }
+    return <input type="text" value={shown} readOnly disabled />;
   }
   if (f.type === 'combo') {
     // Dropdown of comboOptions defaults, merged with whatever values
@@ -1070,27 +1189,14 @@ function renderInput(
     );
   }
   if (f.type === 'multi-lookup') {
-    const options = lookupData[f.key] ?? [];
-    const selected = new Set(value.split(',').map((s) => s.trim()).filter(Boolean));
-    const toggle = (v: string) => {
-      const next = new Set(selected);
-      if (next.has(v)) next.delete(v); else next.add(v);
-      onChange(Array.from(next).join(', '));
-    };
     return (
-      <div style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid #ddd', borderRadius: 6, padding: 8 }}>
-        {options.length === 0 && <div style={{ opacity: 0.6, fontSize: 13 }}>No options available.</div>}
-        {options.map((o) => {
-          const optionValue = String(o[f.lookupValueKey ?? f.key] ?? o.id);
-          const optionLabel = f.lookupLabelKey ? `${optionValue} — ${String(o[f.lookupLabelKey] ?? '')}` : optionValue;
-          return (
-            <label key={String(o.id)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
-              <input type="checkbox" checked={selected.has(optionValue)} onChange={() => toggle(optionValue)} />
-              {optionLabel}
-            </label>
-          );
-        })}
-      </div>
+      <MultiLookupField
+        options={lookupData[f.key] ?? []}
+        value={value}
+        onChange={onChange}
+        valueKey={f.lookupValueKey ?? f.key}
+        labelKey={f.lookupLabelKey}
+      />
     );
   }
   if (f.type === 'lookup') {

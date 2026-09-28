@@ -9,3 +9,7 @@ userManagementRouter.get('/users', users.list);
 userManagementRouter.get('/users/roles', users.roles);
 userManagementRouter.post('/users', users.create);
 userManagementRouter.put('/users/membership', users.saveMembership);
+userManagementRouter.put('/users/:id', users.update);
+userManagementRouter.patch('/users/:id/status', users.setStatus);
+userManagementRouter.post('/users/:id/reset-password', users.resetPassword);
+userManagementRouter.delete('/users/:id', users.remove);

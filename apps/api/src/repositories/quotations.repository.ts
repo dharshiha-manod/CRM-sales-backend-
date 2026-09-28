@@ -12,7 +12,7 @@ const fail = (error: unknown): never => { throw error; };
 type ItemInput = { productId: string; quantity: number; discountPercent: number };
 type CreateInput = { items: ItemInput[]; validUntil?: string | null; notes?: string | null };
 type PublicDecision = { decision: 'accepted' | 'rejected'; reason?: string };
-const FULL = '*, clients(id, client_code, client_name, email, industry_type_id), organizations(name), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, category, cost_price, selling_price))';
+const FULL = '*, clients(id, client_code, client_name, email, industry_type_id), organizations(name), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, category, unit, cost_price, selling_price))';
 const PUBLIC = 'id, organization_id, quotation_number, status, valid_until, total_amount, tax_amount, created_at, clients(client_name, industry_type_id), organizations(name), quotation_items(quantity, unit_price, discount_amount, subtotal, tax_percent, tax_amount, products(product_code, product_name))';
 
 function scopeCheck(scope: IndustryScope | undefined, client: unknown) {
@@ -141,18 +141,9 @@ export async function recordPublicDecision(token: string, input: PublicDecision)
   if (error) fail(error);
   if (!data) throw new AppError(409, 'QUOTATION_ALREADY_DECIDED', 'This quotation has already been decided.');
 
-  // ↓ NEW: small quotations skip the manual manager-approval step entirely
-  if (input.decision === 'accepted') {
-    const salesConfig = await getSalesConfig(quotation.organization_id);
-    if (Number(data.total_amount) < salesConfig.approvalRequiredAboveValue) {
-      const { error: approveError } = await supabaseAdmin.from('quotations').update({ status: 'accepted', approved_at: new Date().toISOString(), approved_by: null }).eq('id', data.id).eq('organization_id', quotation.organization_id).eq('status', 'client_accepted');
-      if (approveError) fail(approveError);
-      await finalizeApprovedQuotation(quotation.organization_id, data.id);
-      const { data: refreshed, error: refreshError } = await supabaseAdmin.from('quotations').select(PUBLIC).eq('id', data.id).maybeSingle();
-      if (refreshError) fail(refreshError);
-      return refreshed ?? data;
-    }
-  }
+  // A client acceptance always stops at "client_accepted" and waits for a
+  // manager/admin to approve it. Only approveQuotation() moves it on to
+  // "accepted" and creates the deal / sales order.
   return data;
 }
 
@@ -168,9 +159,26 @@ async function createDealFromApprovedQuotation(quotation: Awaited<ReturnType<typ
   if (existing) return existing;
 
   const item = (quotation.quotation_items as Array<Record<string, unknown>> | null)?.[0];
-  const product = item?.products as { product_name?: string | null; category?: string | null; cost_price?: number | null } | null | undefined;
-  const client = quotation.clients as { id?: string; client_name?: string | null; industry_type_id?: string | null } | null;
-  const dealNumber = `DEAL-${quotation.quotation_number.replace(/^QT-/, '')}`;
+  const product = item?.products as { product_name?: string | null; category?: string | null; unit?: string | null; cost_price?: number | null } | null | undefined;  const client = quotation.clients as { id?: string; client_name?: string | null; industry_type_id?: string | null } | null;
+    const dealNumber = `DEAL-${quotation.quotation_number.replace(/^QT-/, '')}`;
+
+  // Pull the customer's saved details so the deal is pre-filled the same way
+  // the form's customer dropdown fills them when a deal is created by hand.
+  const { data: clientRow } = await supabaseAdmin
+    .from('clients')
+    .select('*')
+    .eq('id', quotation.client_id)
+    .eq('organization_id', quotation.organization_id)
+    .maybeSingle();
+  const { data: contactRows } = await supabaseAdmin
+    .from('client_contacts')
+    .select('name, phone, is_primary')
+    .eq('client_id', quotation.client_id)
+    .eq('organization_id', quotation.organization_id)
+    .order('is_primary', { ascending: false })
+    .limit(1);
+  const primaryContact = contactRows?.[0];
+
   const payload = {
     organization_id: quotation.organization_id,
     industry_type_id: client?.industry_type_id ?? null,
@@ -180,15 +188,23 @@ async function createDealFromApprovedQuotation(quotation: Awaited<ReturnType<typ
     deal_name: `Deal — ${quotation.quotation_number}`,
     customer_id: quotation.client_id,
     customer_name: client?.client_name ?? 'Customer',
+    customer_address: (clientRow as any)?.address ?? null,
+    customer_city: (clientRow as any)?.city ?? null,
+    customer_gstin: (clientRow as any)?.gstin ?? null,
+    customer_contact_person: primaryContact?.name ?? null,
+    customer_phone: primaryContact?.phone ?? (clientRow as any)?.phone ?? null,
     product_name: product?.product_name ?? null,
     product_category: product?.category ?? null,
     quantity: item?.quantity ?? null,
+    unit: product?.unit ?? null,
     purchase_rate: product?.cost_price ?? null,
     // Use the quotation's tax-inclusive total_amount (not the item's
     // pre-tax subtotal) so the deal's selling_rate × quantity matches
     // what the Trading Sales Order and Collections modules show —
     // ensureTradingSalesOrder() below already uses quotation.total_amount.
-    selling_rate: item?.quantity ? Number(quotation.total_amount) / Number(item.quantity) : item?.unit_price ?? null,
+    selling_rate: item?.unit_price ?? null,
+    discount_percent: item?.discount_percent ?? 0,
+    tax_percent: item?.tax_percent ?? 0,
     sales_rep: (quotation.sales_representatives as { user_profiles?: { display_name?: string | null } | null } | null)?.user_profiles?.display_name ?? null,
     currency: 'INR',
     deal_date: new Date().toISOString().slice(0, 10),
@@ -292,6 +308,7 @@ async function ensureTradingShipment(quotation: Awaited<ReturnType<typeof getQuo
       shipment_date: new Date().toISOString().slice(0, 10),
       expected_delivery_date: order.expected_delivery_date ?? null,
       status: 'Planned',
+      direction: 'outbound',
       notes: `Automatically created from sales order ${order.order_number}.`,
     }).select().single();
     if (error) {
@@ -315,7 +332,14 @@ async function runTradingChain(quotation: Awaited<ReturnType<typeof getQuotation
   try {
     if (!(await isTradingIndustry(quotation.clients?.industry_type_id))) return null;
     const deal = await createDealFromApprovedQuotation(quotation);
-    const order = await ensureTradingSalesOrder(quotation, deal);
+      let order = await ensureTradingSalesOrder(quotation, deal);
+    if (!order && deal.order_number) {
+      const { data: existingOrder } = await supabaseAdmin
+        .from('trading_sales_orders').select('*')
+        .eq('organization_id', quotation.organization_id)
+        .eq('order_number', deal.order_number).maybeSingle();
+      order = existingOrder;
+    }
     if (order) await ensureTradingShipment(quotation, order, deal);
     return deal;
   } catch (error) {

@@ -422,8 +422,7 @@ const stageOf = (clientId: string): string => {
                     <dt>Phone</dt><dd>{viewing.client_contacts?.find((c) => c.is_primary)?.phone || viewing.client_contacts?.[0]?.phone || '—'}</dd>
                     <dt>Added on</dt><dd>{viewing.created_at ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(viewing.created_at)) : '—'}</dd>
                     <dt>Next follow-up</dt><dd>{nextFollowUpOf(viewing.id) ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(nextFollowUpOf(viewing.id)!)) : 'None scheduled'}</dd>
-                    <dt>Assigned representatives</dt><dd>{viewing.sales_representative_client_assignments?.map((assignment) => assignment.sales_representatives?.user_profiles?.display_name ?? assignment.sales_representatives?.employee_code).join(', ') || 'None'}</dd>
-                    <dt>Total sales</dt><dd>{money(totalSales)}</dd>
+<dt>Assigned representatives</dt><dd>{viewing.sales_representative_client_assignments?.filter((assignment) => assignment.status === 'active').map((assignment) => assignment.sales_representatives?.user_profiles?.display_name ?? assignment.sales_representatives?.employee_code).join(', ') || 'None'}</dd>                    <dt>Total sales</dt><dd>{money(totalSales)}</dd>
                     <dt>Outstanding amount</dt><dd>{money(outstanding)}</dd>
                     <dt>Payment status</dt><dd><span className={`status-badge status-${paymentStatus.toLowerCase().replace(/\s+/g, '_')}`}>{paymentStatus}</span></dd>
                     <dt>Last order</dt><dd>{lastOrder ? `${lastOrder.order_number} — ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(lastOrder.created_at))}` : 'No orders yet'}</dd>

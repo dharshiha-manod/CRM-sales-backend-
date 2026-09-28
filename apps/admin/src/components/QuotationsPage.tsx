@@ -509,33 +509,50 @@ export function QuotationsPage() {
         </div>
       )}
       {selected && (
-        <div className="modal-backdrop" onMouseDown={() => setSelected(null)}>
-          <div className="master-modal order-detail" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="modal-backdrop" onMouseDown={() => setSelected(null)}>
+          <div className="master-modal order-detail quotation-detail" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-heading">
               <div>
                 <p className="eyebrow">QUOTATION DETAILS</p>
-                <h3>{selected.quotation_number}</h3>
+                <h3>
+                  {selected.quotation_number}{' '}
+                  <span className={`status-badge status-${selected.status}`}>{selected.status.replace('_', ' ')}</span>
+                </h3>
               </div>
               <button type="button" className="icon-action" aria-label="Close" onClick={() => setSelected(null)}>
                 ×
               </button>
             </div>
             <QuotationPipelineStepper status={selected.status} withDeal={activeIndustry === 'trading'} />
-            <p>
-              <strong>{selected.clients?.client_name ?? 'Client'}</strong> · {dateLabel(selected.created_at)}
-              {selected.valid_until ? ` · Valid until ${selected.valid_until}` : ''}
-            </p>
-            <p className="text-faint-inline">Representative: {selected.sales_representatives?.user_profiles?.display_name ?? selected.sales_representatives?.employee_code ?? '—'}</p>
-            <div className="data-table-wrap">
-                          <table>
+            <div className="qd-info">
+              <div>
+                <span>Client</span>
+                <strong>{selected.clients?.client_name ?? 'Client'}</strong>
+                <small>{selected.clients?.client_code ?? ''}</small>
+              </div>
+              <div>
+                <span>Date</span>
+                <strong>{dateLabel(selected.created_at)}</strong>
+              </div>
+              <div>
+                <span>Valid until</span>
+                <strong>{selected.valid_until ?? '—'}</strong>
+              </div>
+              <div>
+                <span>Representative</span>
+                <strong>{selected.sales_representatives?.user_profiles?.display_name ?? selected.sales_representatives?.employee_code ?? '—'}</strong>
+              </div>
+            </div>
+            <div className="data-table-wrap qd-items">
+              <table>
                 <thead>
                   <tr>
                     <th>Product</th>
-                    <th>Quantity</th>
+                                    <th>Qty</th>
                     <th>Unit price</th>
                     <th>Discount</th>
                     <th>Tax</th>
-                    <th>Subtotal</th>       
+                    <th>Amount</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -545,45 +562,76 @@ export function QuotationsPage() {
                       <td>{line.quantity}</td>
                       <td>{currency(line.unit_price)}</td>
                       <td>
-                        {currency(line.discount_amount)} ({line.discount_percent}%)
+                        {currency(line.discount_amount)}
+                        <small>{line.discount_percent}%</small>
                       </td>
                       <td>
-                        {currency(line.tax_amount ?? 0)} ({line.tax_percent ?? 0}%)
+                        {currency(line.tax_amount ?? 0)}
+                        <small>{line.tax_percent ?? 0}%</small>
                       </td>
-                      <td>{currency(line.subtotal)}</td>
+                      <td>
+                        <strong>{currency(line.subtotal)}</strong>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <div className="sales-summary">
-              <div><span>Subtotal (after discount)</span><strong>{currency((selected.quotation_items ?? []).reduce((sum, line) => sum + Number(line.subtotal || 0), 0))}</strong></div>
-              <div><span>Tax</span><strong>{currency(selected.tax_amount)}</strong></div>
+                <div className="qd-totals">
+              <div>
+                <span>Subtotal (after discount)</span>
+                <strong>{currency((selected.quotation_items ?? []).reduce((sum, line) => sum + Number(line.subtotal || 0), 0))}</strong>
+              </div>
+              <div>
+                <span>Tax</span>
+                <strong>{currency(selected.tax_amount)}</strong>
+              </div>
+              <div className="qd-grand">
+                <span>Quotation total</span>
+                <strong>{currency(selected.total_amount)}</strong>
+              </div>
             </div>
-                       <div className="order-total">
-              Quotation total <strong>{currency(selected.total_amount)}</strong>
-            </div>
-            {selected.notes && <p>{selected.notes}</p>}
+            {selected.notes && (
+              <div className="qd-notes">
+                <span>Notes</span>
+                <p>{selected.notes}</p>
+              </div>
+            )}
             {selected.decision_source && <p className="text-faint-inline">Decision: {selected.decision_source === 'client_portal' ? 'via client portal' : 'by rep'}</p>}
             {selected.rejection_reason && <p className="error-message">Rejection reason: {selected.rejection_reason}</p>}
-            {activeIndustry === 'trading' && (
-              <div className="modal-actions">
-                <GenerateDocumentButton
-                  label="Generate Trade Document"
-                  docTypes={QUOTATION_DOC_TYPES}
-                  buildDraft={(documentType) => buildDraftFromQuotation(selected, documentType)}
-                />
+                 {(activeIndustry === 'trading' || ['draft', 'sent'].includes(selected.status) || (selected.status === 'client_accepted' && canApprove)) && (
+              <div className="modal-actions qd-footer">
+                {activeIndustry === 'trading' && (
+                  <div className="qd-footer-left">
+                    <GenerateDocumentButton
+                      label="Generate Trade Document"
+                      docTypes={QUOTATION_DOC_TYPES}
+                      buildDraft={(documentType) => buildDraftFromQuotation(selected, documentType)}
+                    />
+                  </div>
+                )}
+                {['draft', 'sent'].includes(selected.status) && (
+                  <>
+                    <button type="button" className="quiet-button qd-danger" disabled={statusUpdatingId === selected.id} onClick={() => void markStatus(selected, 'rejected')}>
+                      Mark Rejected
+                    </button>
+                    <button type="button" className="primary-action" disabled={statusUpdatingId === selected.id} onClick={() => void shareQuotation(selected)}>
+                      Send to client
+                    </button>
+                  </>
+                )}
+                {selected.status === 'client_accepted' && canApprove && (
+                  <>
+                    <button type="button" className="quiet-button qd-danger" onClick={() => { setDenyTarget(selected); setDenyReason(''); }}>
+                      Deny
+                    </button>
+                    <button type="button" className="primary-action" onClick={() => void approveQuotation(selected)}>
+                      Approve &amp; Convert to Order
+                    </button>
+                  </>
+                )}
               </div>
             )}
-         {['draft', 'sent'].includes(selected.status) && (
-              <div className="modal-actions">
-                <button type="button" className="quiet-button" disabled={statusUpdatingId === selected.id} onClick={() => void shareQuotation(selected)}>Send to client</button>
-                <button type="button" className="quiet-button" disabled={statusUpdatingId === selected.id} onClick={() => void markStatus(selected, 'rejected')}>
-                  Mark Rejected
-                </button>
-              </div>
-            )}
-            {selected.status === 'client_accepted' && canApprove && <div className="modal-actions"><button type="button" className="primary-action" onClick={() => void approveQuotation(selected)}>Approve & Convert to Order</button><button type="button" className="quiet-button" onClick={() => { setDenyTarget(selected); setDenyReason(''); }}>Deny</button></div>}
           </div>
         </div>
       )}

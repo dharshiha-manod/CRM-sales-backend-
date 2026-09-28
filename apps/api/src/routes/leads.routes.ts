@@ -11,6 +11,7 @@ export const leadsRouter = Router();
 // Lead CRUD + pipeline. Reps and managers share these routes; visibility is
 // scoped server-side in leadService based on role and industry assignment.
 leadsRouter.post('/leads', authenticate, managerOrRep, leads.create);
+leadsRouter.get('/leads/next-code', authenticate, managerOrRep, leads.nextCode);
 leadsRouter.get('/leads/duplicates', authenticate, managerOrRep, leads.checkDuplicates);
 leadsRouter.get('/leads/follow-ups', authenticate, managerOrRep, leads.followUps);
 leadsRouter.get('/leads/suggest-representative', authenticate, managerOrRep, leads.suggestRepresentative);

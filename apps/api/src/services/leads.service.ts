@@ -61,7 +61,19 @@ function computeLeadScore(input: { phone?: string | null; email?: string | null;
   if (input.representativeId) score += 10;
   return Math.max(0, Math.min(100, score));
 }
-
+/**
+ * If the lead has already been converted to a client and its representative
+ * changes (assigned late, reassigned, or removed), move the client's rep
+ * assignment too. Respects Settings -> Sales -> "Auto-assign customers".
+ */
+async function syncConvertedClientOwner(organizationId: string, lead: { converted_client_id?: string | null; representative_id?: string | null }, newRepresentativeId: string | null) {
+  if (!lead.converted_client_id) return;
+  const previous = lead.representative_id ?? null;
+  if (previous === newRepresentativeId) return;
+  const salesConfig = await getSalesConfig(organizationId);
+  if (!salesConfig.autoAssignCustomers) return;
+  await repository.syncClientAssignmentWithLeadRep(organizationId, lead.converted_client_id, newRepresentativeId, previous);
+}
 async function create(organizationId: string, createdBy: string, input: Parameters<typeof repository.createLead>[2], scope: IndustryScope, representativeId?: string) {
   const salesConfig = await getSalesConfig(organizationId); // ← NEW
 
@@ -91,7 +103,11 @@ async function update(organizationId: string, id: string, input: Parameters<type
   const merged = scoreRelevant
     ? { ...input, score: computeLeadScore({ phone: input.phone ?? current.phone, email: input.email ?? current.email, contactName: input.contactName ?? current.contact_name, source: input.source ?? current.source, representativeId: input.representativeId !== undefined ? input.representativeId : current.representative_id }) }
     : input;
-  return repository.updateLead(organizationId, id, merged);
+  const updated = await repository.updateLead(organizationId, id, merged);
+  if (input.representativeId !== undefined) {
+    await syncConvertedClientOwner(organizationId, current, input.representativeId ?? null);
+  }
+  return updated;
 }
 
 async function deleteLead(organizationId: string, id: string, scope: IndustryScope) {
@@ -123,7 +139,9 @@ async function assign(organizationId: string, id: string, actorId: string, newRe
   const lead = await repository.getLead(organizationId, id);
   assertRecordInScope(scope, lead.industry_type_id, leadNotFound());
   await assertRepresentativeCanAccessIndustry(organizationId, newRepresentativeId, lead.industry_type_id);
-  return repository.assignLeadRepresentative(organizationId, id, actorId, newRepresentativeId);
+  const assigned = await repository.assignLeadRepresentative(organizationId, id, actorId, newRepresentativeId);
+  await syncConvertedClientOwner(organizationId, lead, newRepresentativeId);
+  return assigned;
 }
 
 async function addNote(organizationId: string, id: string, actorId: string, note: string, scope: IndustryScope, representativeId?: string) {
@@ -149,8 +167,8 @@ function assertAssignmentInScope(scope: IndustryScope, industryTypeId: string) {
   if (isGlobalRole(scope.role)) return;
   resolveIndustryTypeId(scope, industryTypeId);
 }
-
 export const leadService = {
+  previewNextCode: repository.previewNextLeadCode,
   listForRepresentative,
   listForManager,
   get: getScoped,

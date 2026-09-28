@@ -48,6 +48,10 @@ export async function checkIn(organizationId: string, representativeId: string, 
   await assertGpsAccuracy(organizationId, location.accuracyMeters);
   let distance: number | null = null; let withinGeofence: boolean | null = null;
   if (input.clientId) {
+    // A rep may only check in at a client that is actively assigned to them.
+    const { data: assignment, error: assignmentError } = await supabaseAdmin.from('sales_representative_client_assignments').select('id').eq('organization_id', organizationId).eq('sales_representative_id', representativeId).eq('client_id', input.clientId as string).eq('status', 'active').maybeSingle();
+    if (assignmentError) fail(assignmentError);
+    if (!assignment) throw new AppError(403, 'CLIENT_NOT_ASSIGNED', 'This client is not assigned to you. Ask your manager to assign it first.');
     const { data: client, error: clientError } = await supabaseAdmin.from('clients').select('latitude, longitude, gps_radius_meters').eq('id', input.clientId as string).eq('organization_id', organizationId).maybeSingle();
     if (clientError) fail(clientError);
     if (!client) throw new AppError(404, 'CLIENT_NOT_FOUND', 'The selected client was not found.');

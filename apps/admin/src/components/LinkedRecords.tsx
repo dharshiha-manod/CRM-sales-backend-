@@ -70,50 +70,58 @@ export function LinkedRecords({ links, heading }: { links: LinkSpec[]; heading?:
 
   if (active.length === 0) return null;
 
+  const rowsOf = (l: LinkSpec) => (results?.[l.title] ?? []);
+  const linked = results ? active.filter((l) => rowsOf(l).length > 0) : [];
+  const notLinked = results ? active.filter((l) => rowsOf(l).length === 0) : [];
+
   return (
-    <div style={{ margin: '1rem 0', padding: '0.9rem 1rem', border: '1px solid var(--line)', borderRadius: 10 }}>
-      <p style={{ margin: '0 0 0.6rem', fontWeight: 700, fontSize: '.8rem', letterSpacing: '.02em' }}>
-        {heading ?? 'Linked records'}
-      </p>
+    <section className="lr-card">
+      <div className="lr-head">
+        <h4>{heading ?? 'Linked records'}</h4>
+        {results !== null && <span className="lr-count">{linked.length} of {active.length} linked</span>}
+      </div>
       {results === null ? (
-        <p style={{ margin: 0, fontSize: '.85rem', opacity: 0.7 }}>Checking linked records…</p>
+        <p className="lr-loading">Checking linked records…</p>
       ) : (
-        <div style={{ display: 'grid', gap: '0.9rem' }}>
-          {active.map((l) => {
-            const rows = results[l.title] ?? [];
+        <>
+          {linked.map((l) => {
+            const rows = rowsOf(l);
             return (
-              <div key={l.title}>
-                <p style={{ margin: '0 0 0.4rem', fontSize: '.75rem', fontWeight: 600, opacity: 0.75 }}>
-                  {l.title} ({rows.length})
-                </p>
-                {rows.length === 0 ? (
-                  <p style={{ margin: 0, fontSize: '.85rem', opacity: 0.65 }}>
-                    {l.emptyLabel ?? `No ${l.title.toLowerCase()} linked to this record yet.`}
-                  </p>
-                ) : (
-                  <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: '0.35rem' }}>
-                    {rows.map((r) => {
-                      const code = String(r[l.codeField] ?? r.id);
-                      const focus: RecordFocus = { resource: l.resource, field: l.codeField, value: code };
-                      return (
-                        <li key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.6rem' }}>
-                          <span>
-                            {code}
-                            {l.subField && r[l.subField] ? <span style={{ opacity: 0.75 }}> — {String(r[l.subField])}</span> : null}
-                          </span>
-                          <button type="button" className="quiet-button" onClick={() => openRecord(l.hash, focus)}>
-                            Open →
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
+              <div className="lr-group" key={l.title}>
+                <p className="lr-group-title">{l.title}<span>{rows.length}</span></p>
+                <ul className="lr-list">
+                  {rows.map((r) => {
+                    const code = String(r[l.codeField] ?? r.id);
+                    const sub = l.subField && r[l.subField] ? String(r[l.subField]) : '';
+                    const focus: RecordFocus = { resource: l.resource, field: l.codeField, value: code };
+                    return (
+                      <li className="lr-row" key={r.id}>
+                        <div className="lr-row-main">
+                          <strong>{code}</strong>
+                          {sub && <span className="lr-pill">{sub}</span>}
+                        </div>
+                        <button type="button" className="quiet-button lr-open" onClick={() => openRecord(l.hash, focus)}>
+                          Open →
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
               </div>
             );
           })}
-        </div>
+          {notLinked.length > 0 && (
+            <div className="lr-group lr-group-empty">
+              <p className="lr-group-title">{linked.length === 0 ? 'Nothing linked yet' : 'Not created yet'}</p>
+              <div className="lr-chips">
+                {notLinked.map((l) => (
+                  <span className="lr-chip" key={l.title} title={l.emptyLabel ?? `No ${l.title.toLowerCase()} linked to this record yet.`}>{l.title}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
-    </div>
+    </section>
   );
 }
