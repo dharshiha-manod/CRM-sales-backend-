@@ -33,7 +33,7 @@ const config: TradingModuleConfig = {
       group: 'Commercial',
       comboOptions: ['Raw Materials', 'Steel & Metal', 'Packaging', 'Logistics', 'Chemicals', 'Electronics', 'Textiles', 'Other'],
     },
-    { key: 'products_supplied', label: 'Products supplied', type: 'multi-lookup', lookupResource: '/products?status=active', lookupValueKey: 'product_name', lookupLabelKey: 'product_code', group: 'Commercial' },
+    { key: 'products_supplied', label: 'Products supplied', type: 'multi-lookup', lookupResource: '/products?status=active', industryScoped: true, lookupValueKey: 'product_name', lookupLabelKey: 'product_code', group: 'Commercial' },
     { key: 'payment_terms', label: 'Payment terms', type: 'text', group: 'Commercial' },
     { key: 'credit_limit', label: 'Credit limit', type: 'number', group: 'Commercial' },
     { key: 'bank_details', label: 'Bank details', type: 'textarea', group: 'Commercial' },

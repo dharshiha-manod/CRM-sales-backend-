@@ -31,7 +31,7 @@ export const TRADING_RESOURCES: TradingResource[] = [
     table: 'trading_deals',
     codeField: 'deal_number',
     requiredFields: ['deal_number', 'deal_name', 'customer_name'],
-    columns: ['deal_number', 'deal_name', 'customer_name', 'customer_id', 'customer_address', 'customer_city', 'customer_gstin', 'customer_contact_person', 'customer_phone', 'supplier_name', 'supplier_id', 'supplier_address', 'supplier_phone', 'supplier_contact_person', 'supplier_tax_number', 'product_name', 'product_category', 'quantity', 'customer_quantity', 'unit', 'currency', 'purchase_rate', 'selling_rate', 'discount_percent', 'tax_percent', 'deal_date', 'expected_delivery_date', 'sales_rep', 'payment_terms', 'delivery_terms', 'priority', 'industry_type_id', 'notes', 'order_number'],
+    columns: ['deal_number', 'deal_name', 'customer_name', 'customer_id', 'customer_address', 'customer_city', 'customer_gstin', 'customer_contact_person', 'customer_phone', 'supplier_name', 'supplier_id', 'supplier_address', 'supplier_phone', 'supplier_contact_person', 'supplier_tax_number', 'product_name', 'product_category', 'quantity', 'customer_quantity', 'unit', 'currency', 'purchase_rate', 'purchase_discount_percent', 'selling_rate', 'discount_percent', 'tax_percent', 'deal_date', 'expected_delivery_date', 'sales_rep', 'payment_terms', 'delivery_terms', 'priority', 'industry_type_id', 'notes', 'order_number'],
   },
   {
     path: 'shipments',

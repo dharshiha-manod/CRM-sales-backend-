@@ -1170,3 +1170,73 @@
 .lr-group-empty .lr-group-title { margin-bottom: .55rem; }
 .lr-chips { display: flex; flex-wrap: wrap; gap: .4rem; }
 .lr-chip { padding: .25rem .7rem; border: 1px dashed var(--line); border-radius: 999px; background: var(--surface); color: var(--text-faint); font-size: .76rem; font-weight: 500; cursor: default; }
+
+/* Opt-in (config.fitToScreen): table fits the screen width — headers wrap and
+   padding is tighter, so all columns up to Actions show without side-scrolling.
+   Still scrolls sideways as a safety net on very narrow screens. */
+.data-table-wrap.data-table-fit table { width: 100%; }
+.data-table-wrap.data-table-fit table th { white-space: normal; line-height: 1.25; padding: .6rem .55rem; font-size: .68rem; vertical-align: bottom; }
+.data-table-wrap.data-table-fit table td { padding: .6rem .55rem; font-size: .82rem; }
+.data-table-wrap.data-table-fit table td:not(.master-actions) { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.data-table-wrap.data-table-fit td.master-actions .quiet-button { padding: .3rem .6rem; font-size: .76rem; }
+
+/* Professional row alignment for fit-to-screen tables (Purchase Enquiry etc.).
+   The Actions <td> used to be display:flex, which stops it behaving as a table cell:
+   its height no longer matched the row and the row divider lines broke/shifted.
+   Keep the cell a real table cell and lay the buttons out in an inner flex box. */
+.data-table-wrap.data-table-fit td.master-actions { display: table-cell; vertical-align: middle; }
+.data-table-wrap.data-table-fit td.master-actions > .master-actions-inner { display: flex; align-items: center; justify-content: flex-start; gap: .5rem; white-space: nowrap; }
+.data-table-wrap.data-table-fit table th,
+.data-table-wrap.data-table-fit table td { text-align: left; vertical-align: middle; }
+.data-table-wrap.data-table-fit table th { vertical-align: middle; }
+/* keep dates such as 2026-09-29 on one line (a generic rule lets column 2 wrap) */
+.data-table-wrap.data-table-fit table td:not(.master-actions) { white-space: nowrap; }
+.data-table-wrap.data-table-fit table tbody tr:hover { background: var(--paper); }
+
+/* Wide Add/Edit panel (opt-in via config.wideForm): multi-column so a short form needs no scrolling. */
+.master-modal.master-modal--wide { width: min(1180px, 100vw); }
+.master-modal--wide .master-modal-form { padding-top: .9rem; padding-bottom: .5rem; }
+.master-modal--wide .master-modal-form .field-grid,
+.master-modal--wide .modal-fieldset .fieldset-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .8rem 1rem; }
+.master-modal--wide .modal-fieldset { margin-top: .8rem; padding-top: .3rem; padding-bottom: .9rem; }
+.master-modal--wide .master-modal-form label:has(textarea) { grid-column: 1 / -1; }
+.master-modal--wide .master-modal-form textarea { min-height: 56px; }
+@media (max-width: 1100px) {
+  .master-modal--wide .master-modal-form .field-grid,
+  .master-modal--wide .modal-fieldset .fieldset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .master-modal--wide .master-modal-form .field-grid,
+  .master-modal--wide .modal-fieldset .fieldset-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Price list / rate management: the whole table (Actions included) fits the screen ──
+   Scoped by .price-list-page (wrapper in TradingPriceRateListPage.tsx) — no other module is affected.
+   Builds on the opt-in fit-to-screen rules above. Columns by position:
+   1 Product · 2 Code · 3 Rate type · 4 Applies to · 5 Purchase rate · 6 Selling rate · 7 Tax
+   · 8 Discount · 9 Effective period · 10 Validity · 11 Actions */
+.price-list-page { display: contents; }
+.price-list-page .data-table-wrap.data-table-fit table { table-layout: auto; width: 100%; }
+.price-list-page .data-table-wrap.data-table-fit table th { padding-left: .4rem; padding-right: .4rem; }
+.price-list-page .data-table-wrap.data-table-fit table td { padding: .75rem .4rem; }
+.price-list-page .data-table-wrap.data-table-fit table th:first-child,
+.price-list-page .data-table-wrap.data-table-fit table td:first-child { padding-left: 1.1rem; }
+.price-list-page .data-table-wrap.data-table-fit table th:last-child,
+.price-list-page .data-table-wrap.data-table-fit table td:last-child { padding-right: 1rem; }
+/* text columns wrap onto a second line instead of pushing the table wider */
+.price-list-page .data-table-wrap.data-table-fit table td:nth-child(1):not(.master-actions),
+.price-list-page .data-table-wrap.data-table-fit table td:nth-child(3):not(.master-actions),
+.price-list-page .data-table-wrap.data-table-fit table td:nth-child(4):not(.master-actions) {
+  white-space: normal; max-width: none; overflow: visible; text-overflow: clip; overflow-wrap: break-word; line-height: 1.35;
+}
+.price-list-page .data-table-wrap.data-table-fit table td:nth-child(1):not(.master-actions) { font-weight: 600; color: var(--text); }
+.price-list-page .data-table-wrap.data-table-fit table td:nth-child(2):not(.master-actions) { font-family: var(--font-mono, monospace); font-size: .78rem; color: var(--text-muted); }
+/* money and percentages: right-aligned so the digits line up */
+.price-list-page .data-table-wrap.data-table-fit table th:nth-child(n+5):nth-child(-n+8),
+.price-list-page .data-table-wrap.data-table-fit table td:nth-child(n+5):nth-child(-n+8) { text-align: right; font-variant-numeric: tabular-nums; }
+/* effective period: "from" on the first line, "→ to" on the second */
+.price-list-page .data-table-wrap.data-table-fit table td:nth-child(9):not(.master-actions) { white-space: pre-line; line-height: 1.35; }
+.price-list-page .data-table-wrap.data-table-fit table td:nth-child(10):not(.master-actions) { font-weight: 600; }
+/* Actions hugs its content */
+.price-list-page .data-table-wrap.data-table-fit table th:last-child,
+.price-list-page .data-table-wrap.data-table-fit table td.master-actions { width: 1%; }

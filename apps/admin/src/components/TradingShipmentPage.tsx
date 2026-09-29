@@ -6,17 +6,16 @@ import { buildDraftFromShipment } from '../lib/tradeDocumentHandoff';
 import { LinkedRecords } from './LinkedRecords';
 import { TRADING_HASH } from '../lib/recordFocus';
 
-const SHIPPING_MODES = ['Road', 'Air', 'Sea', 'Rail', 'Courier'];
 const STATUSES = ['Planned', 'Ready to Ship', 'Dispatched', 'In Transit', 'At Destination', 'Delivered', 'Delayed', 'Cancelled'];
 const SHIPMENT_DOC_TYPES = ['Packing List', 'Commercial Invoice', 'Delivery Note', 'Bill of Lading', 'Airway Bill', 'Certificate of Origin', 'Insurance Certificate', 'Inspection Certificate', 'Shipping Instructions', 'Transport Document', 'Other'];
 
-const AUTO_MANAGED_STATUSES = new Set(['', 'Planned', 'Ready to Ship', 'Dispatched', 'In Transit', 'At Destination', 'Delayed']);
+// Moving a shipment is a Logistics decision: the plan must be complete first. So typing a date here no longer
+// flips the status to "In Transit" by itself. It only marks a shipment that is already moving as Delayed.
+const MOVING_STATUSES = new Set(['Dispatched', 'In Transit', 'At Destination']);
 
 function deriveShipmentStatus(form: Record<string, string>): Record<string, string> | void {
-  if (!AUTO_MANAGED_STATUSES.has(form.status ?? '')) return;
-  if (!form.shipment_date) return;
+  if (!MOVING_STATUSES.has(form.status ?? '')) return;
   if (form.expected_delivery_date && new Date() > new Date(form.expected_delivery_date)) return { status: 'Delayed' };
-  return { status: 'In Transit' };
 }
 
 function deriveActualDeliveryDate(form: Record<string, string>): Record<string, string> | void {
@@ -49,15 +48,15 @@ const config: TradingModuleConfig = {
     { key: 'shipment_date', label: 'Shipment date', type: 'date', group: 'Schedule', onValueChange: (_v, f) => deriveShipmentStatus(f) },
     { key: 'expected_delivery_date', label: 'Expected delivery date', type: 'date', listColumn: true, group: 'Schedule', onValueChange: (_v, f) => deriveShipmentStatus(f) },
       { key: 'actual_delivery_date', label: 'Actual delivery date', type: 'date', listColumn: true, group: 'Schedule' },
-    { key: 'origin', label: 'Origin', type: 'text', group: 'Route' },
-    { key: 'destination', label: 'Destination', type: 'text', group: 'Route' },
-    { key: 'transporter', label: 'Transporter / logistics provider', type: 'text', group: 'Route' },
-    { key: 'tracking_number', label: 'Tracking number', type: 'text', group: 'Route' },
-    { key: 'vehicle_container_number', label: 'Vehicle / container number', type: 'text', group: 'Route' },
-    { key: 'shipping_mode', label: 'Shipping mode', type: 'select', options: SHIPPING_MODES, listColumn: true, group: 'Route' },
-    { key: 'freight_cost', label: 'Freight cost', type: 'number', group: 'Route' },
- { key: 'status', label: 'Shipment status', type: 'select', options: STATUSES, listColumn: true, group: 'Route', onValueChange: (_v, f) => deriveActualDeliveryDate(f) },
-    { key: 'notes', label: 'Notes', type: 'textarea', group: 'Route' },
+    { key: 'origin', label: 'Origin', type: 'text', readOnly: true, group: 'Route (from Logistics)', helpText: 'Filled from the Logistics plan. Edit it on the Logistics page.' },
+    { key: 'destination', label: 'Destination', type: 'text', readOnly: true, group: 'Route (from Logistics)' },
+    { key: 'transporter', label: 'Transporter / logistics provider', type: 'text', readOnly: true, group: 'Route (from Logistics)' },
+    { key: 'tracking_number', label: 'Tracking number', type: 'text', readOnly: true, group: 'Route (from Logistics)' },
+    { key: 'vehicle_container_number', label: 'Vehicle / container number', type: 'text', readOnly: true, group: 'Route (from Logistics)' },
+    { key: 'shipping_mode', label: 'Shipping mode', type: 'text', readOnly: true, listColumn: true, group: 'Route (from Logistics)' },
+    { key: 'freight_cost', label: 'Freight cost', type: 'number', readOnly: true, group: 'Route (from Logistics)' },
+ { key: 'status', label: 'Shipment status', type: 'select', options: STATUSES, listColumn: true, group: 'Status', onValueChange: (_v, f) => deriveActualDeliveryDate(f), helpText: 'Dispatch is blocked until the Logistics plan has a carrier, origin, destination and pickup or departure date.' },
+    { key: 'notes', label: 'Notes', type: 'textarea', group: 'Status' },
   ],
   kpis: [
     { icon: '🚚', iconClass: 'kpi-icon-ink', label: 'Total shipments', value: (r) => String(r.length) },

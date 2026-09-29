@@ -11,7 +11,7 @@ type FollowUpRecord = { id: string; due_at: string; status: 'pending' | 'in_prog
 type OrderRecord = { id: string; order_number: string; total_amount: number; created_at: string; clients?: { client_code?: string } | null; sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null };
 type CollectionRecord = { amount: number; clients?: { client_code?: string } | null; sale_orders?: { order_number?: string } | null };
 type Call = { id: string; direction: string; phone_number: string; status: string; started_at?: string | null; clients?: { client_code?: string; client_name?: string | null } | null };
-type TradingDeal = { id: string; deal_number: string; deal_name?: string; status: string; quantity?: number | string | null; purchase_rate?: number | string | null; selling_rate?: number | string | null; industry_type_id?: string | null };
+type TradingDeal = { id: string; deal_number: string; deal_name?: string; status: string; quantity?: number | string | null; purchase_rate?: number | string | null; purchase_discount_percent?: number | string | null; selling_rate?: number | string | null; industry_type_id?: string | null };
 type DashboardFollowUp = { id: string; dueAt: string; title: string; clientName?: string };
 type Extra = { leads: Lead[]; clients: ClientRecord[]; followUps: FollowUpRecord[]; orders: OrderRecord[]; collections: CollectionRecord[]; calls: Call[]; tradingDeals: TradingDeal[] };
 const empty: Data = { totalClients: 0, totalRepresentatives: 0, activeRepresentatives: 0, visitsToday: 0, completedVisitsToday: 0, activeVisits: 0, ordersToday: 0, salesToday: 0, collectionsToday: 0, recentVisits: [] };
@@ -99,7 +99,7 @@ export function DashboardPage() {
   const tradingStats = useMemo(() => {
     const openStatuses = ['Completed', 'Cancelled', 'Lost'];
     const sellingValue = (d: TradingDeal) => (Number(d.selling_rate) || 0) * (Number(d.quantity) || 0);
-    const purchaseValue = (d: TradingDeal) => (Number(d.purchase_rate) || 0) * (Number(d.quantity) || 0);
+    const purchaseValue = (d: TradingDeal) => (Number(d.purchase_rate) || 0) * (Number(d.quantity) || 0) * (1 - (Number(d.purchase_discount_percent) || 0) / 100);
     const open = tradingDealsInScope.filter((d) => !openStatuses.includes(d.status));
     const dealValue = tradingDealsInScope.reduce((sum, d) => sum + sellingValue(d), 0);
     const expectedMargin = tradingDealsInScope.reduce((sum, d) => sum + (sellingValue(d) - purchaseValue(d)), 0);

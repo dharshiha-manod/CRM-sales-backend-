@@ -21,8 +21,9 @@ const config: TradingModuleConfig = {
   emptyIcon: '⚙',
   codeField: 'rule_code',
   nameField: 'rule_name',
-  statusOptions: STATUSES,
-  searchableKeys: ['rule_code', 'rule_name', 'sales_rep', 'customer_name', 'product_name', 'product_category'],
+    statusOptions: STATUSES,
+  hideStatusColumn: true,
+  searchableKeys: ['rule_code', 'rule_name','sales_rep', 'customer_name', 'product_name', 'product_category'],
   fields: [
     { key: 'rule_code', label: 'Rule code', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'CMR' },
     { key: 'rule_name', label: 'Rule name', type: 'text', required: true, listColumn: true, placeholder: 'e.g. Standard export commission' },

@@ -7,6 +7,7 @@ import { logger } from '../lib/logger.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { sendQuotationEmail } from '../services/quotation-email.service.js';
 import { getQuotationEmailTemplate } from './quotation-email-templates.repository.js';
+import { ensureLogisticsPlan } from '../lib/logistics-plan.js';
 
 const fail = (error: unknown): never => { throw error; };
 type ItemInput = { productId: string; quantity: number; discountPercent: number };
@@ -19,24 +20,77 @@ function scopeCheck(scope: IndustryScope | undefined, client: unknown) {
   if (scope) assertRecordInScope(scope, (client as { industry_type_id?: string | null } | null)?.industry_type_id, new AppError(404, 'QUOTATION_NOT_FOUND', 'Quotation not found in this organization.'));
 }
 
+// Trading price list -> quotation. The customer sees the quotation price first, so the price list
+// has to be applied here too (not only when a Deal is typed by hand). For each product this picks:
+//   1. a rate for THIS customer, else 2. a general rate (best minimum-quantity tier), else 3. nothing
+// (the caller then keeps the normal Products-table price). Only rows that are in force today, belong
+// to this customer's industry, and have a selling rate are considered. Any failure returns an empty
+// map, so a price-list problem can never block creating a quotation.
+type ListedRate = { rate: number; discount: number | null; tax: number | null };
+async function priceListRates(
+  organizationId: string,
+  client: { client_name?: string | null; industry_type_id?: string | null } | null,
+  lines: Array<{ productName: string; quantity: number }>,
+): Promise<Map<string, ListedRate>> {
+  const result = new Map<string, ListedRate>();
+  try {
+    const names = [...new Set(lines.map((l) => l.productName).filter(Boolean))];
+    if (!names.length) return result;
+    const { data, error } = await supabaseAdmin.from('trading_price_lists')
+      .select('product_name, customer_name, supplier_name, rate_type, currency, selling_rate, min_quantity, tax, discount, effective_from, effective_to, industry_type_id')
+      .eq('organization_id', organizationId).in('product_name', names);
+    if (error || !data) return result;
+    // Price-list dates have no time part, so compare against today's date in India, not the UTC date.
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const rows = (data as Array<Record<string, any>>).filter((r) =>
+      r.selling_rate != null
+      // Selling side only, and only rupee rates: a USD/EUR rate must not be used as a rupee quotation price.
+      && !['Purchase Rate', 'Supplier-specific Rate'].includes(String(r.rate_type ?? ''))
+      && (!r.currency || String(r.currency).toUpperCase() === 'INR')
+      && (!r.effective_from || String(r.effective_from).slice(0, 10) <= today)
+      && (!r.effective_to || String(r.effective_to).slice(0, 10) >= today)
+      && (!r.industry_type_id || !client?.industry_type_id || r.industry_type_id === client.industry_type_id));
+    for (const line of lines) {
+      const forProduct = rows.filter((r) => r.product_name === line.productName);
+      const fits = (r: Record<string, any>) => Number(r.min_quantity ?? 0) <= line.quantity;
+      const rank = (r: Record<string, any>) => { const i = ['Selling Rate', 'Wholesale Rate', 'Retail Rate'].indexOf(String(r.rate_type ?? '')); return i === -1 ? 3 : i; };
+      const best = (list: Array<Record<string, any>>) => list.filter(fits).sort((a, b) => Number(b.min_quantity ?? 0) - Number(a.min_quantity ?? 0) || rank(a) - rank(b))[0];
+      const own = client?.client_name ? best(forProduct.filter((r) => r.customer_name && r.customer_name === client.client_name)) : undefined;
+      const general = best(forProduct.filter((r) => !r.customer_name && !r.supplier_name));
+      const match = own ?? general;
+      if (match) result.set(line.productName, { rate: Number(match.selling_rate), discount: match.discount != null ? Number(match.discount) : null, tax: match.tax != null ? Number(match.tax) : null });
+    }
+  } catch (err) {
+    logger.error({ err }, 'Price list lookup for quotation failed - using product prices');
+  }
+  return result;
+}
+
 export async function createFromRequirement(organizationId: string, representativeId: string, requirementId: string, input: CreateInput) {
   const { data: requirement, error: requirementError } = await supabaseAdmin.from('requirements').select('id, client_id, status').eq('id', requirementId).eq('organization_id', organizationId).eq('representative_id', representativeId).maybeSingle();
   if (requirementError) fail(requirementError);
   if (!requirement) throw new AppError(404, 'REQUIREMENT_NOT_FOUND', 'Requirement not found in this organization.');
   if (requirement.status !== 'open') throw new AppError(422, 'REQUIREMENT_NOT_OPEN', 'A quotation can only be built from an open requirement.');
   const ids = input.items.map((item) => item.productId);
-  const { data: products, error: productsError } = await supabaseAdmin.from('products').select('id, selling_price, tax_percent').eq('organization_id', organizationId).eq('status', 'active').in('id', ids);
+  const { data: products, error: productsError } = await supabaseAdmin.from('products').select('id, product_name, selling_price, tax_percent').eq('organization_id', organizationId).eq('status', 'active').in('id', ids);
   if (productsError) fail(productsError);
   if ((products ?? []).length !== ids.length) throw new AppError(422, 'INVALID_QUOTATION_PRODUCT', 'One or more selected products are unavailable.');
   const byId = new Map((products ?? []).map((product) => [product.id, product]));
+  // Price list first (customer-specific, then general), Products-table price as the fallback.
+  const { data: quoteClient } = await supabaseAdmin.from('clients').select('client_name, industry_type_id').eq('id', requirement.client_id).eq('organization_id', organizationId).maybeSingle();
+  const listed = await priceListRates(organizationId, quoteClient, input.items.map((item) => ({ productName: String(byId.get(item.productId)?.product_name ?? ''), quantity: item.quantity })));
   const lines = input.items.map((item) => {
     const product = byId.get(item.productId)!;
-    const gross = Number(product.selling_price) * item.quantity;
-    const discount_amount = Math.round(gross * item.discountPercent) / 100;
+    const fromList = listed.get(String(product.product_name ?? ''));
+    const unitPrice = fromList ? fromList.rate : Number(product.selling_price);
+    // A discount typed on the quotation line wins; otherwise the price list's own discount applies.
+    const discountPercent = item.discountPercent || fromList?.discount || 0;
+    const gross = unitPrice * item.quantity;
+    const discount_amount = Math.round(gross * discountPercent) / 100;
     const subtotal = gross - discount_amount;
-    const tax_percent = Number(product.tax_percent ?? 0);
+    const tax_percent = fromList?.tax != null ? fromList.tax : Number(product.tax_percent ?? 0);
     const tax_amount = Math.round(subtotal * tax_percent) / 100;
-    return { product_id: product.id, quantity: item.quantity, unit_price: Number(product.selling_price), discount_percent: item.discountPercent, discount_amount, subtotal, tax_percent, tax_amount };
+    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_percent: discountPercent, discount_amount, subtotal, tax_percent, tax_amount };
   });
   const quotationNumber = `QT-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const subtotalSum = lines.reduce((sum, line) => sum + line.subtotal, 0);
@@ -323,6 +377,7 @@ async function ensureTradingShipment(quotation: Awaited<ReturnType<typeof getQuo
       shipment = data;
     }
   }
+  await ensureLogisticsPlan(quotation.organization_id, shipment as Record<string, unknown>);
   // Link back so the Sales Order page shows its shipment and its own
   // "Confirmed -> create shipment" trigger sees shipment_number and skips.
   const { error: linkError } = await supabaseAdmin.from('trading_sales_orders').update({ shipment_number: shipment!.shipment_number }).eq('id', order.id).eq('organization_id', quotation.organization_id);

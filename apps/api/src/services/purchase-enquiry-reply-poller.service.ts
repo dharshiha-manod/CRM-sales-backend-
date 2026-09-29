@@ -28,6 +28,7 @@ import { simpleParser } from 'mailparser';
 import { env } from '../config/env.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { logger } from '../lib/logger.js';
+import { promoteEnquiriesToComparison } from './purchase-enquiry-comparison.service.js';
 
 // Matches "ENQ-2026-0001" wherever it appears in a subject or body —
 // this is the same autoGenerate prefix TradingPurchaseEnquiryPage.tsx
@@ -36,6 +37,12 @@ import { logger } from '../lib/logger.js';
 // plain reply ("Re: Purchase Enquiry ENQ-2026-0001 from ...") always
 // carries it straight through.
 const ENQUIRY_NUMBER_PATTERN = /ENQ-\d{4}-\d{4,}/i;
+
+// How far back each poll looks for replies. Replies are matched whether or not
+// they were already opened in Gmail (a person reading the inbox marks mail as
+// \Seen, which used to make the poller skip it forever). Duplicates are
+// prevented by the Message-ID stored in the enquiry's Notes instead.
+const LOOKBACK_DAYS = 7;
 
 function extractEnquiryNumber(subject: string | undefined, text: string | undefined): string | null {
   const fromSubject = subject?.match(ENQUIRY_NUMBER_PATTERN)?.[0];
@@ -63,20 +70,34 @@ async function processMessage(uid: number, client: ImapFlow, org: string | null)
   const enquiryNumber = extractEnquiryNumber(subject, bodyText);
   if (!enquiryNumber) return; // not a reply to a Purchase Enquiry — leave it alone
 
+  // Ignore mail sent FROM this mailbox (e.g. our own outgoing enquiry) — only
+  // supplier replies should be filed.
+  const senderAddress = parsed.from?.value?.[0]?.address?.toLowerCase();
+  const ownAddresses = [env.SUPPLIER_REPLY_IMAP_USER, env.SMTP_USER, env.MAIL_FROM].filter(Boolean).map((a) => String(a).toLowerCase());
+  if (senderAddress && ownAddresses.some((own) => own === senderAddress || own.includes(`<${senderAddress}>`))) return;
+  const messageRef = parsed.messageId ?? `${senderAddress ?? 'unknown'}|${parsed.date?.toISOString() ?? ''}`;
+
   // No organization_id filter here: this mailbox is configured once per
   // deployment (one SUPPLIER_REPLY_IMAP_USER), so in practice it only
   // ever sees replies for whichever organization(s) share that inbox. If
   // you run one mailbox across multiple organizations in the same
   // database, narrow this with .eq('organization_id', org) once you have
   // a reliable way to know which org a given mailbox belongs to.
-  const query = supabaseAdmin.from('trading_purchase_enquiries').select('id, status, notes, supplier_name').eq('enquiry_number', enquiryNumber).limit(1);
+  const query = supabaseAdmin.from('trading_purchase_enquiries').select('*').eq('enquiry_number', enquiryNumber).limit(1);
   const { data: enquiry, error } = org ? await query.eq('organization_id', org).maybeSingle() : await query.maybeSingle();
   if (error) { logger.error({ err: error, enquiryNumber }, 'Failed to look up enquiry for supplier reply'); return; }
   if (!enquiry) { logger.warn({ enquiryNumber }, 'Supplier reply referenced an enquiry number that was not found'); return; }
 
+  // Already filed on an earlier poll (same Message-ID is stored in the Notes).
+  if (enquiry.notes && String(enquiry.notes).includes(messageRef)) return;
+  // A reply older than this enquiry belongs to an earlier enquiry that reused
+  // the same number (e.g. a deleted test record), not to this one.
+  const createdAt = enquiry.created_at ? new Date(String(enquiry.created_at)) : null;
+  if (createdAt && parsed.date && parsed.date < createdAt) return;
+
   const from = parsed.from?.text ?? 'unknown sender';
   const when = (parsed.date ?? new Date()).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
-  const entry = `--- Supplier reply received ${when} from ${from} ---\n${bodyText || '(no readable text body — see the original email)'}`;
+  const entry = `--- Supplier reply received ${when} from ${from} (ref ${messageRef}) ---\n${bodyText || '(no readable text body — see the original email)'}`;
   const nextNotes = [entry, enquiry.notes].filter(Boolean).join('\n\n');
 
   const patch: Record<string, unknown> = { notes: nextNotes };
@@ -85,6 +106,8 @@ async function processMessage(uid: number, client: ImapFlow, org: string | null)
   const { error: updateError } = await supabaseAdmin.from('trading_purchase_enquiries').update(patch).eq('id', enquiry.id);
   if (updateError) { logger.error({ err: updateError, enquiryNumber }, 'Failed to save supplier reply onto enquiry'); return; }
   logger.info({ enquiryNumber, statusChanged: patch.status === 'Supplier Responded' }, 'Supplier reply filed onto Purchase Enquiry');
+  // Two or more suppliers replied for this product -> ready to compare.
+  if (patch.status === 'Supplier Responded') await promoteEnquiriesToComparison(String(enquiry.organization_id), enquiry as Record<string, unknown>);
 }
 
 async function pollOnce(): Promise<void> {
@@ -106,11 +129,13 @@ async function pollOnce(): Promise<void> {
     await client.connect();
     const lock = await client.getMailboxLock('INBOX');
     try {
-      // \Seen is the marker of record for "already processed" — fetching a
-      // message below flips it to seen automatically, which is what makes
-      // the next poll's search naturally skip it. Simple, and it survives
-      // an API restart with no extra table to keep in sync.
-      const uids = await client.search({ seen: false }, { uid: true });
+      // Not based on \Seen any more: opening a reply in Gmail marks it seen,
+      // and the poller would then never file it. Instead every poll looks at
+      // recent mail mentioning an enquiry number, and processMessage skips
+      // ones already filed (Message-ID kept in the enquiry's Notes).
+      const since = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+      const uids = await client.search({ since, subject: 'ENQ-' }, { uid: true });
+      logger.info({ candidates: (uids || []).length }, 'Supplier-reply poll: checking emails that mention an enquiry number');
       for (const uid of uids || []) {
         try {
           await processMessage(uid, client, null);

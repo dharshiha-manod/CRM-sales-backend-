@@ -42,9 +42,21 @@ function num(value: unknown): number | undefined {
  *  agreed with the customer. Same deal, two sides of the same transaction. */
 export function buildDraftFromDeal(deal: Record<string, unknown>, documentType: string): Record<string, string> {
   const isPurchaseSide = documentType === 'Purchase Order';
-  const quantity = num(deal.quantity);
+  // Customer-side documents use what the customer actually takes (falls back to the full quantity).
+  const quantity = isPurchaseSide ? num(deal.quantity) : (num(deal.customer_quantity) ?? num(deal.quantity));
   const unitPrice = num(isPurchaseSide ? deal.purchase_rate : deal.selling_rate);
-  const totalValue = quantity != null && unitPrice != null ? quantity * unitPrice : undefined;
+  // A Purchase Order carries the supplier's discount; customer-side documents carry the customer's.
+  const discountPercent = isPurchaseSide ? (num(deal.purchase_discount_percent) ?? 0) : (num(deal.discount_percent) ?? 0);
+  const taxPercent = isPurchaseSide ? 0 : (num(deal.tax_percent) ?? 0);
+  // Same order as the Sales Order: discount off the gross, then tax on the discounted amount.
+  // A record that already carries a saved total (a Sales Order) keeps that exact total.
+  const savedTotal = isPurchaseSide ? undefined : num(deal.total_amount);
+  let totalValue: number | undefined;
+  if (savedTotal != null && savedTotal > 0) totalValue = savedTotal;
+  else if (quantity != null && unitPrice != null) {
+    const afterDiscount = quantity * unitPrice * (1 - discountPercent / 100);
+    totalValue = Math.round(afterDiscount * (1 + taxPercent / 100) * 100) / 100;
+  }
   const values: Record<string, string> = {
     document_type: documentType,
     deal_number: String(deal.deal_number ?? ''),
@@ -67,6 +79,9 @@ export function buildDraftFromDeal(deal: Record<string, unknown>, documentType: 
   if (quantity != null) values.quantity = String(quantity);
   if (unitPrice != null) values.unit_price = String(unitPrice);
   if (totalValue != null) values.total_value = String(totalValue);
+  if (discountPercent || taxPercent) {
+    values.tax_details = [discountPercent ? `Discount ${discountPercent}%` : '', taxPercent ? `Tax ${taxPercent}%` : ''].filter(Boolean).join(' · ');
+  }
   return values;
 }
 

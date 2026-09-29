@@ -73,7 +73,11 @@ function handleAfterSave(saved: Record<string, unknown>, reload: () => Promise<v
   }
 }
 
+// Prefer the total the server saved (rate x quantity, then discount, then tax). Only fall back to
+// plain rate x quantity for older orders that never stored a total.
 function orderValue(r: Record<string, unknown>) {
+  const saved = Number(r.total_amount);
+  if (Number.isFinite(saved) && saved > 0) return saved;
   return (Number(r.selling_rate) || 0) * (Number(r.quantity) || 0);
 }
 

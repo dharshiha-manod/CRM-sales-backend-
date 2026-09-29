@@ -17,7 +17,7 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
   trading: [
     { id: 'deal', label: 'Deal Management', icon: '◆' },
     { id: 'supplier-vendor', label: 'Supplier / Vendor Management', icon: '◎' },
-    { id: 'purchase-enquiry', label: 'Purchase Enquiry', icon: '❓' },
+    { id: 'purchase-enquiry', label: 'Purchase Enquiry', icon: '✉' },
     { id: 'price-rate-list', label: 'Price List / Rate Management', icon: '₹' },
    { id: 'shipment', label: 'Shipment Management', icon: '🚚' },
     { id: 'sales-order', label: 'Sales Order Management', icon: '🧾' },

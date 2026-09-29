@@ -21,11 +21,18 @@ export interface CurrencyRate extends Record<string, unknown> {
 }
 
 /** Same "is this rate in force" rule the Currency Management page shows as its Status column. */
+/** A date as YYYY-MM-DD in the viewer's own time zone (rate dates have no time part). */
+export function ymd(on: Date = new Date()): string {
+  return `${on.getFullYear()}-${String(on.getMonth() + 1).padStart(2, '0')}-${String(on.getDate()).padStart(2, '0')}`;
+}
+
 export function isRateActive(r: CurrencyRate, on: Date = new Date()): boolean {
-  const from = r.effective_date ? new Date(r.effective_date) : null;
-  const to = r.expiry_date ? new Date(r.expiry_date) : null;
-  if (to && to < on) return false;
-  if (from && from > on) return false;
+  const today = ymd(on);
+  const from = r.effective_date ? String(r.effective_date).slice(0, 10) : null;
+  const to = r.expiry_date ? String(r.expiry_date).slice(0, 10) : null;
+  // Plain date compare: a rate stays valid through the whole "Effective to" day.
+  if (to && to < today) return false;
+  if (from && from > today) return false;
   return true;
 }
 

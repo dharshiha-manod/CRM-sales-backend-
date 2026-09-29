@@ -11,19 +11,21 @@
 // record, not an edit to the old one. Transactions store the rate they
 // were struck at, so changing a rate here never re-prices closed business.
 import { useEffect, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { TradingMasterPage, TradingModuleConfig, TradingRecord } from './TradingMasterPage';
 import { api } from '../lib/api';
-import { getBaseCurrency } from '../lib/currencyLookup';
+import { findRate, getBaseCurrency, loadCurrencyRates, ymd } from '../lib/currencyLookup';
+import type { CurrencyRate } from '../lib/currencyLookup';
 
 const BASE_FLAGS = ['Yes', 'No'];
 const STATUSES = ['Active', 'Upcoming', 'Expired'];
 
 function rateStatus(r: Record<string, unknown>): string {
-  const now = new Date();
-  const from = r.effective_date ? new Date(r.effective_date as string) : null;
-  const to = r.expiry_date ? new Date(r.expiry_date as string) : null;
-  if (to && to < now) return 'Expired';
-  if (from && from > now) return 'Upcoming';
+  const today = ymd();
+  const from = r.effective_date ? String(r.effective_date).slice(0, 10) : null;
+  const to = r.expiry_date ? String(r.expiry_date).slice(0, 10) : null;
+  if (to && to < today) return 'Expired';
+  if (from && from > today) return 'Upcoming';
   return 'Active';
 }
 
@@ -73,6 +75,61 @@ function RateHistory({ record }: { record: TradingRecord }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/** Type an amount, pick two currencies, see the converted value and the rate used. Same findRate() the rest of the CRM uses. */
+function CurrencyConverter() {
+  const [rows, setRows] = useState<CurrencyRate[]>([]);
+  const [amount, setAmount] = useState('80000');
+  const [from, setFrom] = useState('USD');
+  const [to, setTo] = useState('');
+  const [asOf, setAsOf] = useState(ymd());
+
+  useEffect(() => {
+    let cancelled = false;
+    loadCurrencyRates(true).then((data) => { if (!cancelled) setRows(data); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  const codes = [...new Set(rows.flatMap((r) => [r.currency_code, r.base_currency, r.target_currency]).filter(Boolean).map(String))].sort();
+  const base = getBaseCurrency(rows);
+  const source = codes.includes(from) ? from : (codes[0] ?? '');
+  const target = to || base;
+  const on = new Date(`${asOf || ymd()}T12:00:00`);
+  const rate = source && target ? findRate(rows, source, target, on) : null;
+  const value = Number(amount);
+  const converted = rate != null && amount !== '' && Number.isFinite(value) ? value * rate : null;
+  const fmt = (n: number, code: string) => {
+    try { return new Intl.NumberFormat('en-IN', { style: 'currency', currency: code, maximumFractionDigits: 2 }).format(n); }
+    catch { return `${code} ${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`; }
+  };
+  const box: CSSProperties = { padding: '0.5rem 0.6rem', border: '1px solid var(--line)', borderRadius: 8, font: 'inherit', background: 'transparent', minWidth: 0 };
+  const label: CSSProperties = { display: 'grid', gap: 4, fontSize: '.72rem', fontWeight: 700, letterSpacing: '.03em', textTransform: 'uppercase', opacity: 0.75 };
+
+  return (
+    <div style={{ margin: '0 0 1rem', padding: '1rem 1.2rem', border: '1px solid var(--line)', borderRadius: 14 }}>
+      <p style={{ margin: '0 0 0.7rem', fontWeight: 700 }}>Currency converter</p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem', alignItems: 'end' }}>
+        <label style={label}>Amount<input style={box} type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
+        <label style={label}>From
+          <select style={box} value={source} onChange={(e) => setFrom(e.target.value)}>{codes.map((c) => <option key={c} value={c}>{c}</option>)}</select>
+        </label>
+        <label style={label}>To
+          <select style={box} value={target} onChange={(e) => setTo(e.target.value)}>{codes.map((c) => <option key={c} value={c}>{c}</option>)}</select>
+        </label>
+        <label style={label}>Rate as of<input style={box} type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} /></label>
+      </div>
+      <p style={{ margin: '0.8rem 0 0', fontSize: '1rem' }}>
+        {converted != null && rate != null ? (
+          <>
+            {fmt(value, source)} × <strong>{Number(rate.toFixed(6))}</strong> = <strong>{fmt(converted, target)}</strong>
+          </>
+        ) : (
+          <span style={{ opacity: 0.7 }}>{rows.length ? `No exchange rate found for ${source} → ${target} on this date. Add one below.` : 'Loading rates…'}</span>
+        )}
+      </p>
     </div>
   );
 }
@@ -140,5 +197,10 @@ const config: TradingModuleConfig = {
 };
 
 export function CurrencyManagementPage() {
-  return <TradingMasterPage config={config} />;
+  return (
+    <>
+      <CurrencyConverter />
+      <TradingMasterPage config={config} />
+    </>
+  );
 }

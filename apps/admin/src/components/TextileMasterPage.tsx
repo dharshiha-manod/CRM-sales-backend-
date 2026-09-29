@@ -32,6 +32,8 @@ export interface FieldDef {
   comboOptions?: string[];
   required?: boolean;
   placeholder?: string;
+  /** small grey hint shown under the field in the Add/Edit form (not in the list or detail view) */
+  helpText?: string;
   /** groups fields under a <fieldset> legend; omit for the ungrouped top section */
   group?: string;
   /** show this field as a column in the list table */
@@ -58,6 +60,12 @@ export interface FieldDef {
   regenerateOn?: string[];
   /** for type: 'lookup' — API resource to fetch options from, e.g. '/textile/designs' */
   lookupResource?: string;
+  /**
+   * for type: 'lookup' — opt-in. Sends the active Industry Type with the lookup request so only that
+   * industry's records are offered (already automatic for '/clients'). Use for '/products' lookups,
+   * which otherwise return every industry's products to an admin login.
+   */
+  industryScoped?: boolean;
     /** for type: 'lookup' — which field on the looked-up record to show as the label */
   lookupLabelKey?: string;
   /**
@@ -154,6 +162,8 @@ export interface TextileModuleConfig {
   searchableKeys: string[];
   kpis: KpiDef[];
 statusFilterable?: boolean;
+  /** Optional, off by default. Wider Add/Edit panel with a multi-column grid so a short form fits on one screen. */
+  wideForm?: boolean;
   // Optional: hide the generic Status column entirely. Off by default for
   // every existing module. Use when a page has no manual `status` field
   // and shows its own computed status column instead (e.g. Price List's
@@ -174,8 +184,40 @@ statusFilterable?: boolean;
    * View works, Edit is disabled. Give each an id starting with 'demo-'.
    */
   sampleRecords?: TextileRecord[];
+  /**
+   * Optional, off by default. When set, the ⋮ menu gets a "Duplicate" item that opens the
+   * Add form with the values returned here pre-filled. Auto-generated fields (e.g. the
+   * enquiry number) are always re-generated fresh, never copied.
+   */
+  duplicateFrom?: (record: TextileRecord) => Record<string, string>;
+  /**
+   * Optional. Lets ONE save create several records: return one override object per
+   * record to create (e.g. [{ supplier_name: 'A' }, { supplier_name: 'B' }]). The
+   * auto-generated number is regenerated for each. `isEditing` is true when editing an
+   * existing record — return a single item then. Throw an Error(message) to block the
+   * save and show that message in the form.
+   */
+  submitVariants?: (form: Record<string, string>, isEditing: boolean) => Array<Record<string, string>>;
   /** extra buttons rendered in the list table's Actions cell, alongside View/Edit/Delete */
   rowActions?: (record: TextileRecord) => ReactNode;
+  /**
+   * Optional, off by default. Extra content shown directly in the Actions cell,
+   * always visible next to the ⋮ menu (instead of hidden inside it).
+   */
+  inlineActions?: (record: TextileRecord) => ReactNode;
+  /**
+   * Optional, off by default. When true the list table shrinks to fit the screen
+   * (headers wrap, tighter padding) so every column up to Actions is visible
+   * without scrolling sideways.
+   */
+  fitToScreen?: boolean;
+  /**
+   * Optional, off by default. When true the View dialog decides which conditional fields
+   * (those with `visibleIf`) to show from the opened record's own values. Without it the
+   * dialog evaluates `visibleIf` against the Add/Edit form's leftover state, so fields that
+   * depend on another field (e.g. Price List's rate type) can go missing.
+   */
+  detailVisibilityFromRecord?: boolean;
   /** extra buttons rendered in the View modal's action row, alongside Edit/Done */
   detailActions?: (record: TextileRecord) => ReactNode;
   /** extra content rendered inside the View modal, after the field list and before the action row */
@@ -279,7 +321,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
         // main record load() below already does — otherwise every industry's
         // lookup dropdown shows every other industry's clients too.
         const base = f.lookupResource!;
-        const needsIndustryScope = base.startsWith('/clients');
+        const needsIndustryScope = base.startsWith('/clients') || Boolean(f.industryScoped);
         const separator = base.includes('?') ? '&' : '?';
         const query = needsIndustryScope && activeIndustryTypeId ? `${separator}industryTypeId=${activeIndustryTypeId}` : '';
         const res = await api<{ data: TextileRecord[] }>(`${base}${query}`);
@@ -388,7 +430,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     });
   }, [displayRecords, search, statusFilter, searchableKeys]);
 
-  function openCreate() {
+  function openCreate(prefill?: Record<string, string>) {
     setEditing(null);
     const blank = blankFormFrom(fields);
     const year = new Date().getFullYear();
@@ -397,6 +439,13 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     blank.__seq = sequenceLabel;
     for (const f of fields) {
       if (f.autoGenerate) blank[f.key] = resolveAutoGenerate(f, blank, sequenceLabel);
+    }
+    if (prefill) {
+      for (const f of fields) {
+        if (f.autoGenerate) continue; // numbers are always fresh
+        const v = prefill[f.key];
+        if (v != null && v !== '') blank[f.key] = v;
+      }
     }
     setForm(blank);
     setDynamicOptions({});
@@ -422,36 +471,78 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     setFormMessage('');
     setFormNotice('');
     try {
-      const payload: Record<string, unknown> = {};
-      for (const f of fields) {
-        const raw = form[f.key];
-        if (raw === '' || raw == null) { payload[f.key] = null; continue; }
-        payload[f.key] = f.type === 'number' ? Number(raw) : raw;
+      // Optional: a module can turn ONE save into several records (e.g. one Purchase
+      // Enquiry per ticked supplier). Each variant overrides some form values; the
+      // auto-generated number is re-generated for every extra record. Without the
+      // hook this is a single record, exactly as before.
+      let variants: Array<Record<string, string>> = [{}];
+      if (config.submitVariants) {
+        variants = config.submitVariants(form, Boolean(editing));
+        if (!variants.length) variants = [{}];
       }
-      // Records are always created under the currently active industry —
-      // never a user-editable field, so a locked user can't tag a record
-      // into another industry even by tampering with the form payload.
-      if (!editing && activeIndustryTypeId) payload.industry_type_id = activeIndustryTypeId;
-      let res: { data: TextileRecord } | undefined;
-      for (let attempt = 0; ; attempt += 1) {
-        try {
-          res = await api<{ data: TextileRecord }>(editing ? `${resource}/${editing.id}` : resource, { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
-          break;
-        } catch (caught) {
-          const code = (caught as { code?: string } | null)?.code;
-          const canRetry = !editing && code === 'DUPLICATE_RECORD' && fields.some((f) => f.autoGenerate) && attempt < 3;
-          if (!canRetry) throw caught;
-          const year = new Date().getFullYear();
-          const seq = String(records.length + 2 + attempt).padStart(4, '0');
-          const sequenceLabel = `${year}-${seq}`;
-          const regenerated: Record<string, string> = {};
+      const created: TextileRecord[] = [];
+      const failures: string[] = [];
+      let lastRes: { data: TextileRecord } | undefined;
+      // Same running counter openCreate() used: records.length + 1 is the form's own number.
+      let seqCursor = records.length + 1;
+      for (let vi = 0; vi < variants.length; vi += 1) {
+        const values: Record<string, string> = { ...form, ...variants[vi] };
+        const generate = () => {
+          const sequenceLabel = `${new Date().getFullYear()}-${String(seqCursor).padStart(4, '0')}`;
           for (const f of fields) {
-            if (f.autoGenerate) regenerated[f.key] = resolveAutoGenerate(f, form, sequenceLabel);
+            if (f.autoGenerate) values[f.key] = resolveAutoGenerate(f, values, sequenceLabel);
           }
-          Object.assign(payload, regenerated);
-          setForm((prev) => ({ ...prev, ...regenerated }));
+        };
+        if (vi > 0) { seqCursor += 1; generate(); }
+        const payload: Record<string, unknown> = {};
+        for (const f of fields) {
+          const raw = values[f.key];
+          if (raw === '' || raw == null) { payload[f.key] = null; continue; }
+          payload[f.key] = f.type === 'number' ? Number(raw) : raw;
+        }
+        // Records are always created under the currently active industry —
+        // never a user-editable field, so a locked user can't tag a record
+        // into another industry even by tampering with the form payload.
+        if (!editing && activeIndustryTypeId) payload.industry_type_id = activeIndustryTypeId;
+        try {
+          let res: { data: TextileRecord } | undefined;
+          for (let attempt = 0; ; attempt += 1) {
+            try {
+              res = await api<{ data: TextileRecord }>(editing ? `${resource}/${editing.id}` : resource, { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
+              break;
+            } catch (caught) {
+              const code = (caught as { code?: string } | null)?.code;
+              const canRetry = !editing && code === 'DUPLICATE_RECORD' && fields.some((f) => f.autoGenerate) && attempt < 3;
+              if (!canRetry) throw caught;
+              seqCursor += 1;
+              generate();
+              for (const f of fields) {
+                if (f.autoGenerate) payload[f.key] = values[f.key];
+              }
+              if (variants.length === 1) setForm((prev) => ({ ...prev, ...Object.fromEntries(fields.filter((f) => f.autoGenerate).map((f) => [f.key, values[f.key]])) }));
+            }
+          }
+          lastRes = res;
+          created.push(res!.data);
+        } catch (caught) {
+          // A single save keeps the old behaviour: show the error in the form.
+          if (variants.length === 1) throw caught;
+          const who = variants[vi].supplier_name || `#${vi + 1}`;
+          failures.push(`${who}: ${caught instanceof Error ? caught.message : 'failed'}`);
         }
       }
+      if (variants.length > 1) {
+        setModal(false);
+        setMessage(
+          failures.length
+            ? `Created ${created.length} of ${variants.length} records. Not created — ${failures.join('; ')}`
+            : `${created.length} ${title.toLowerCase()} records added successfully.`,
+        );
+        await load();
+        for (const rec of created) afterSave?.(rec, load);
+        return;
+      }
+      const res = lastRes;
       setModal(false);
       setMessage(editing ? `${title} record updated successfully.` : `${title} record added successfully.`);
       await load();
@@ -547,7 +638,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
             </select>
           )}
         </div>
-        <button className="primary-action" type="button" onClick={openCreate}>
+        <button className="primary-action" type="button" onClick={() => openCreate()}>
           + Add {title.toLowerCase().replace(/ management$/i, '')}
         </button>
       </div>
@@ -556,7 +647,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
       {usingDemoData && <p className="demo-data-banner">Showing sample data for preview — this is a UI-only demo, nothing here is saved.</p>}
       {message && <p className={message.includes('successfully') ? 'success-message' : 'error-message'}>{message}</p>}
   {loading ? (
-        <div className="data-table-wrap">
+        <div className={`data-table-wrap${config.fitToScreen ? ' data-table-fit' : ''}`}>
           <table>
             <thead><tr>{listColumns.map((c) => <th key={c.key}>{c.label}</th>)}{!hideStatusColumn && <th>Status</th>}<th>Actions</th></tr></thead>
             <tbody>
@@ -571,7 +662,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
           </table>
         </div>
       ) : (
-        <div className="data-table-wrap">
+        <div className={`data-table-wrap${config.fitToScreen ? ' data-table-fit' : ''}`}>
           <table>
             <thead><tr>{listColumns.map((c) => <th key={c.key}>{c.label}</th>)}{!hideStatusColumn && <th>Status</th>}<th>Actions</th></tr></thead>
             <tbody>
@@ -600,15 +691,19 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
                     </td>
                   )}
                                  <td className="master-actions">
+                   <div className="master-actions-inner">
+                    {config.inlineActions?.(r)}
                     <RowActionsMenu
                       label={String(r[nameField] ?? r[codeField] ?? '')}
                       onView={() => setViewing(r)}
                       onEdit={() => openEdit(r)}
+                      onDuplicate={config.duplicateFrom ? () => openCreate(config.duplicateFrom!(r)) : undefined}
                       onDelete={() => { setDeleteError(''); setDeleting(r); }}
                       deleteDisabled={usingDemoData}
                       deleteTitle={usingDemoData ? 'Sample row — add a real record to enable delete' : 'Delete'}
                       extra={config.rowActions?.(r)}
                     />
+                   </div>
                   </td>
                 </tr>
               ))}
@@ -623,7 +718,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
                           : 'No records match your search or filters.'}
                       </p>
                       {records.length === 0 && (
-                        <button type="button" className="primary-action" onClick={openCreate}>+ Add {title.toLowerCase().replace(/ management$/i, '')}</button>
+                        <button type="button" className="primary-action" onClick={() => openCreate()}>+ Add {title.toLowerCase().replace(/ management$/i, '')}</button>
                       )}
                     </div>
                   </td>
@@ -662,17 +757,35 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
                     </div>
                   );
                 });
+                // Default: same groups as the Add/Edit form. Opt-in (config.detailVisibilityFromRecord):
+                // evaluate `visibleIf` against THIS record instead.
+                let viewUngrouped = ungrouped;
+                let viewGroups = groups;
+                let viewGroupNames = groupNames;
+                if (config.detailVisibilityFromRecord) {
+                  const asForm: Record<string, string> = {};
+                  for (const f of fields) asForm[f.key] = viewing[f.key] != null ? String(viewing[f.key]) : '';
+                  const byGroup = new Map<string | undefined, FieldDef[]>();
+                  for (const f of fields) {
+                    if (f.visibleIf && !f.visibleIf(asForm)) continue;
+                    if (!byGroup.has(f.group)) byGroup.set(f.group, []);
+                    byGroup.get(f.group)!.push(f);
+                  }
+                  viewGroups = byGroup;
+                  viewUngrouped = byGroup.get(undefined) ?? [];
+                  viewGroupNames = [...byGroup.keys()].filter((k): k is string => Boolean(k));
+                }
                 return (
                   <>
                     <section className="dd-card">
                       <h4 className="dd-card-title">Overview</h4>
                       <dl className="dd-grid">
-                        {renderItems(ungrouped)}
+                        {renderItems(viewUngrouped)}
                         <div className="dd-item"><dt>Added on</dt><dd>{dateLabel(viewing.created_at)}</dd></div>
                       </dl>
                     </section>
-                    {groupNames.map((g) => {
-                      const items = renderItems(groups.get(g)!);
+                    {viewGroupNames.map((g) => {
+                      const items = renderItems(viewGroups.get(g)!);
                       if (items.length === 0) return null;
                       return (
                         <section className="dd-card" key={g}>
@@ -697,7 +810,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
 
       {modal && (
         <div className="modal-backdrop" onMouseDown={() => !saving && setModal(false)}>
-          <div className="master-modal" role="dialog" aria-modal="true" aria-labelledby="textile-modal-title" onMouseDown={(e) => e.stopPropagation()}>
+          <div className={`master-modal${config.wideForm ? ' master-modal--wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby="textile-modal-title" onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-heading">
               <div>
            <p className="eyebrow">{industryLabel} · {eyebrowModule}</p>
@@ -713,6 +826,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
                     {f.label}{f.required ? ' *' : ''}
 
                     {renderInput(f, form, setForm, lookupData, fields, dynamicOptions, (key, options) => setDynamicOptions((prev) => ({ ...prev, [key]: options })), records)}
+                    {f.helpText && <small style={{ display: 'block', marginTop: 4, fontSize: 12, fontWeight: 400, color: '#64748b' }}>{f.helpText}</small>}
                   </label>
                 ))}
               </div>
@@ -724,6 +838,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
                       <label key={f.key}>
                         {f.label}{f.required ? ' *' : ''}
                         {renderInput(f, form, setForm, lookupData, fields, dynamicOptions, (key, options) => setDynamicOptions((prev) => ({ ...prev, [key]: options })), records)}
+                        {f.helpText && <small style={{ display: 'block', marginTop: 4, fontSize: 12, fontWeight: 400, color: '#64748b' }}>{f.helpText}</small>}
                       </label>
                     ))}
                   </div>
@@ -784,6 +899,7 @@ function RowActionsMenu({
   label,
   onView,
   onEdit,
+  onDuplicate,
   onDelete,
   deleteDisabled,
   deleteTitle,
@@ -792,6 +908,7 @@ function RowActionsMenu({
   label: string;
   onView: () => void;
   onEdit: () => void;
+  onDuplicate?: () => void;
   onDelete?: () => void;
   deleteDisabled?: boolean;
   deleteTitle?: string;
@@ -883,6 +1000,7 @@ function RowActionsMenu({
         >
           <button type="button" style={itemStyle} onClick={() => { setOpen(false); onView(); }}>◉ View</button>
           <button type="button" style={itemStyle} onClick={() => { setOpen(false); onEdit(); }}>✎ Edit</button>
+          {onDuplicate && <button type="button" style={itemStyle} onClick={() => { setOpen(false); onDuplicate(); }}>⧉ Duplicate</button>}
             {extra && <div className="row-actions-menu-extra">{extra}</div>}
           {onDelete && (
             <button
@@ -1055,25 +1173,31 @@ function MultiLookupField({ options, value, onChange, valueKey, labelKey }: {
   labelKey?: string;
 }) {
   const [search, setSearch] = useState('');
-  const selected = new Set(value.split(',').map((s) => s.trim()).filter(Boolean));
+  // Names are compared trimmed and case-insensitively, so a stray space or different
+  // capital letter in a stored name can never make the tick, the "N selected" count and
+  // the saved value disagree with each other.
+  const norm = (text: string) => text.trim().toLowerCase();
+  const selectedKeys = new Set(value.split(',').map(norm).filter(Boolean));
 
   // One row per stored value (some sources hold several rows with the same value).
   const seen = new Set<string>();
   const rows: { id: string; value: string; sub: string }[] = [];
   for (const o of options) {
-    const rowValue = String(o[valueKey] ?? o.id);
-    if (seen.has(rowValue)) continue;
-    seen.add(rowValue);
+    const rowValue = String(o[valueKey] ?? o.id).trim();
+    if (!rowValue || seen.has(norm(rowValue))) continue;
+    seen.add(norm(rowValue));
     rows.push({ id: String(o.id), value: rowValue, sub: labelKey ? String(o[labelKey] ?? '') : '' });
   }
+  const tickedCount = rows.filter((r) => selectedKeys.has(norm(r.value))).length;
 
   const term = search.trim().toLowerCase();
   const visible = term ? rows.filter((r) => r.value.toLowerCase().includes(term) || r.sub.toLowerCase().includes(term)) : rows;
 
   const toggle = (v: string) => {
-    const next = new Set(selected);
-    if (next.has(v)) next.delete(v); else next.add(v);
-    onChange(Array.from(next).join(', '));
+    const nextKeys = new Set(selectedKeys);
+    if (nextKeys.has(norm(v))) nextKeys.delete(norm(v)); else nextKeys.add(norm(v));
+    // Rebuilt from the visible list so the saved value only ever contains names that are ticked.
+    onChange(rows.filter((r) => nextKeys.has(norm(r.value))).map((r) => r.value).join(', '));
   };
 
   return (
@@ -1090,9 +1214,9 @@ function MultiLookupField({ options, value, onChange, valueKey, labelKey }: {
           />
         )}
         <span style={{ marginLeft: 'auto', fontSize: 12, color: '#64748b', whiteSpace: 'nowrap' }}>
-          {selected.size} selected
+          {tickedCount} selected
         </span>
-        {selected.size > 0 && (
+        {tickedCount > 0 && (
           <button type="button" onClick={() => onChange('')} style={{ border: 'none', background: 'none', color: '#2563eb', fontSize: 12, cursor: 'pointer', padding: 0 }}>
             Clear
           </button>
@@ -1102,21 +1226,30 @@ function MultiLookupField({ options, value, onChange, valueKey, labelKey }: {
         {rows.length === 0 && <div style={{ padding: '14px 10px', fontSize: 13, color: '#94a3b8', textAlign: 'center' }}>No options available yet.</div>}
         {rows.length > 0 && visible.length === 0 && <div style={{ padding: '14px 10px', fontSize: 13, color: '#94a3b8', textAlign: 'center' }}>No matches.</div>}
         {visible.map((row) => {
-          const isOn = selected.has(row.value);
+          const isOn = selectedKeys.has(norm(row.value));
+          // A div (not a <label>) because this list sits inside the form field's own <label>;
+          // nested labels can fire a second click on the first checkbox. preventDefault stops that.
           return (
-            <label
+            <div
               key={row.id}
+              role="checkbox"
+              aria-checked={isOn}
+              tabIndex={0}
+              onClick={(event) => { event.preventDefault(); toggle(row.value); }}
+              onKeyDown={(event) => { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); toggle(row.value); } }}
               style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, cursor: 'pointer', background: isOn ? '#eef2ff' : 'transparent' }}
             >
               <input
                 type="checkbox"
                 checked={isOn}
-                onChange={() => toggle(row.value)}
-                style={{ width: 16, height: 16, flex: '0 0 16px', margin: 0, padding: 0, border: 'none', boxShadow: 'none', background: 'none', accentColor: '#1e293b' }}
+                readOnly
+                tabIndex={-1}
+                aria-hidden="true"
+                style={{ pointerEvents: 'none', width: 16, height: 16, flex: '0 0 16px', margin: 0, padding: 0, border: 'none', boxShadow: 'none', background: 'none', accentColor: '#1e293b' }}
               />
               <span style={{ fontSize: 14, fontWeight: isOn ? 600 : 500, color: '#0f172a' }}>{row.value}</span>
               {row.sub && <span style={{ marginLeft: 'auto', fontSize: 12, color: '#64748b', fontFamily: 'var(--font-mono, monospace)' }}>{row.sub}</span>}
-            </label>
+            </div>
           );
         })}
       </div>

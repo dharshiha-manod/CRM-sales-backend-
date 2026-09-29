@@ -7,14 +7,30 @@
 import { api } from './api';
 
 /** Same "is this rate in force today" rule as the Price List page itself. */
+/** Today as YYYY-MM-DD in the viewer's own time zone (price-list dates have no time part). */
+export function localToday(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 export function isRateActive(r: Record<string, unknown>): boolean {
-  const now = new Date();
-  const from = r.effective_from ? new Date(r.effective_from as string) : null;
-  const to = r.effective_to ? new Date(r.effective_to as string) : null;
-  if (to && to < now) return false;
-  if (from && from > now) return false;
+  const today = localToday();
+  const from = r.effective_from ? String(r.effective_from).slice(0, 10) : null;
+  const to = r.effective_to ? String(r.effective_to).slice(0, 10) : null;
+  // Plain date-string compare: the rate stays valid through the whole last day, in any time zone.
+  if (to && to < today) return false;
+  if (from && from > today) return false;
   return true;
 }
+
+// Same split the API enforces when a row is saved (validatePriceList): these two rate types carry a
+// purchase rate, every other type carries a selling rate. Older rows saved before that rule can still
+// hold a leftover value in the other column (e.g. a customer-specific row with a purchase rate), so the
+// lookups below decide by rate type instead of trusting whichever column happens to be filled.
+const PURCHASE_SIDE_TYPES = ['Purchase Rate', 'Supplier-specific Rate'];
+const isPurchaseSideRow = (r: Record<string, unknown>) => PURCHASE_SIDE_TYPES.includes(String(r.rate_type ?? ''));
+// Same minimum quantity -> plain Selling/Purchase rate beats Wholesale, which beats Retail.
+const RATE_TYPE_PRIORITY = ['Selling Rate', 'Purchase Rate', 'Wholesale Rate', 'Retail Rate'];
 
 /**
  * Among "general" rate rows for a product (no customer/supplier tied to
@@ -32,11 +48,17 @@ function pickTieredRate(
   quantity: number,
 ): Record<string, unknown> | undefined {
   if (!rows.length) return undefined;
-  if (!quantity) return rows.find((r) => r.min_quantity == null) ?? rows[0];
-  const qualifying = rows
-    .filter((r) => Number(r.min_quantity ?? 0) <= quantity)
-    .sort((a, b) => Number(b.min_quantity ?? 0) - Number(a.min_quantity ?? 0));
-  return qualifying[0] ?? rows.find((r) => r.min_quantity == null) ?? rows[0];
+  const typeRank = (r: Record<string, unknown>) => {
+    const i = RATE_TYPE_PRIORITY.indexOf(String(r.rate_type ?? ''));
+    return i === -1 ? RATE_TYPE_PRIORITY.length : i;
+  };
+  const byTierThenType = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+    Number(b.min_quantity ?? 0) - Number(a.min_quantity ?? 0) || typeRank(a) - typeRank(b);
+  // A blank minimum quantity and 0 both mean "no minimum" (the base tier).
+  const baseTier = () => rows.filter((r) => Number(r.min_quantity ?? 0) === 0).sort(byTierThenType)[0];
+  if (!quantity) return baseTier();
+  const qualifying = rows.filter((r) => Number(r.min_quantity ?? 0) <= quantity).sort(byTierThenType);
+  return qualifying[0] ?? baseTier();
 }
 
 /**
@@ -56,7 +78,7 @@ function pickTieredRate(
 export async function applyPriceListRates(
   productName: string,
   setForm: (updater: (prev: Record<string, string>) => Record<string, string>) => void,
-  target: { selling?: string; purchase?: string; currency?: string; discount?: string; tax?: string },
+  target: { selling?: string; purchase?: string; currency?: string; discount?: string; tax?: string; purchaseDiscount?: string },
 ) {
   if (!productName) return;
   try {
@@ -69,26 +91,37 @@ export async function applyPriceListRates(
       // side is always the quantity bought from the supplier.
       const sellingQty = Number(prev.customer_quantity || prev.quantity || 0);
       const purchaseQty = Number(prev.quantity || 0);
-      const generalSelling = rows.filter((r) => !r.customer_name && r.selling_rate != null);
-      const generalPurchase = rows.filter((r) => !r.supplier_name && r.purchase_rate != null);
-      const sellingMatch =
-        rows.find((r) => r.customer_name && r.customer_name === prev.customer_name && r.selling_rate != null) ??
-        pickTieredRate(generalSelling, sellingQty);
-      const purchaseMatch =
-        rows.find((r) => r.supplier_name && r.supplier_name === prev.supplier_name && r.purchase_rate != null) ??
-        pickTieredRate(generalPurchase, purchaseQty);
-      if (!sellingMatch && !purchaseMatch) return prev;
+      const sellingRows = rows.filter((r) => !isPurchaseSideRow(r) && r.selling_rate != null);
+      const purchaseRows = rows.filter((r) => isPurchaseSideRow(r) && r.purchase_rate != null);
+      const generalSelling = sellingRows.filter((r) => !r.customer_name);
+      const generalPurchase = purchaseRows.filter((r) => !r.supplier_name);
+      // A rate for THIS customer / supplier wins, and it honours its own minimum quantity too.
+      const customerSelling = sellingRows.filter((r) => r.customer_name && r.customer_name === prev.customer_name);
+      // Purchase Enquiry can hold several suppliers as "A,B". Only a single chosen supplier has "its own" rate.
+      const chosenSuppliers = String(prev.supplier_name ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+      const chosenSupplier = chosenSuppliers.length === 1 ? chosenSuppliers[0] : '';
+      const supplierPurchase = purchaseRows.filter((r) => r.supplier_name && chosenSupplier && String(r.supplier_name).trim() === chosenSupplier);
+      const sellingMatch = pickTieredRate(customerSelling, sellingQty) ?? pickTieredRate(generalSelling, sellingQty);
+      const purchaseMatch = pickTieredRate(supplierPurchase, purchaseQty) ?? pickTieredRate(generalPurchase, purchaseQty);
+           if (!sellingMatch && !purchaseMatch) {
+        // Rows exist for this product but none fits this quantity (e.g. a bulk-only offer on a small order).
+        // Clear the discount that was filled for a different quantity. Rates and tax stay as they are.
+        if (!target.discount) return prev;
+        return { ...prev, [target.discount]: '' };
+      }
       const next = { ...prev };
       if (target.selling && sellingMatch?.selling_rate != null) next[target.selling] = String(sellingMatch.selling_rate);
       if (target.purchase && purchaseMatch?.purchase_rate != null) next[target.purchase] = String(purchaseMatch.purchase_rate);
-      const currency = sellingMatch?.currency ?? purchaseMatch?.currency;
+      // The supplier's own discount (from the Purchase / Supplier-specific row) is kept apart from the customer discount above.
+      if (target.purchaseDiscount && purchaseMatch) next[target.purchaseDiscount] = purchaseMatch.discount != null ? String(purchaseMatch.discount) : '';
+      // Selling-side pages (Deal) take currency, discount and tax from the selling row.
+      // Purchase-only pages (Purchase Enquiry) take them from the purchase row only.
+      const offerRow = target.selling ? (sellingMatch ?? purchaseMatch) : purchaseMatch;
+      const currency = offerRow?.currency;
       if (target.currency && currency) next[target.currency] = String(currency);
-      // Discount/tax are the "offer" attached to whichever Price List row
-      // priced this deal — this is the fix for the gap where the rate
-      // auto-filled but its discount/tax were silently dropped.
-      const discount = sellingMatch?.discount ?? purchaseMatch?.discount;
-      if (target.discount && discount != null) next[target.discount] = String(discount);
-      const tax = sellingMatch?.tax ?? purchaseMatch?.tax;
+      const discount = offerRow?.discount;
+      if (target.discount) next[target.discount] = discount != null ? String(discount) : '';
+      const tax = offerRow?.tax;
       if (target.tax && tax != null) next[target.tax] = String(tax);
       return next;
     });

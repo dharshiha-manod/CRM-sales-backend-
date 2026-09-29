@@ -291,12 +291,14 @@ export function chainFinancials(chain: TradingChain): ChainFinancials {
   if (deal) {
     const q = num(deal.quantity);
     const rate = num(deal.purchase_rate);
-    if (q != null && rate != null) { purchaseCost = q * rate; purchaseSource = 'Deal · qty x purchase rate'; }
+    const supplierDiscount = num(deal.purchase_discount_percent) ?? 0;
+    if (q != null && rate != null) { purchaseCost = q * rate * (1 - supplierDiscount / 100); purchaseSource = supplierDiscount ? `Deal · qty x purchase rate less ${supplierDiscount}% supplier discount` : 'Deal · qty x purchase rate'; }
   }
   if (purchaseCost == null && enquiry) {
     const q = num(enquiry.quantity);
     const rate = num(enquiry.requested_rate);
-    if (q != null && rate != null) { purchaseCost = q * rate; purchaseSource = 'Purchase Enquiry · requested rate'; }
+    const enquiryDiscount = num(enquiry.discount_percent) ?? 0;
+    if (q != null && rate != null) { purchaseCost = q * rate * (1 - enquiryDiscount / 100); purchaseSource = enquiryDiscount ? `Purchase Enquiry · requested rate less ${enquiryDiscount}% supplier discount` : 'Purchase Enquiry · requested rate'; }
   }
 
   // Freight: Logistics owns movement cost. Shipment's own freight_cost is
