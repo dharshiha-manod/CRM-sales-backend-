@@ -319,10 +319,19 @@ const config: TradingModuleConfig = {
   nameField: 'deal_name',
   statusOptions: STATUSES,
   inlineStatus: true,
+  fitToScreen: true,
   searchableKeys: ['deal_number', 'deal_name', 'customer_name', 'supplier_name', 'product_name', 'sales_rep'],
   fields: [
-    { key: 'deal_number', label: 'Deal number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'DEAL' },
-    { key: 'deal_name', label: 'Deal name', type: 'text', required: true, listColumn: true },
+    {
+      key: 'deal_number', label: 'Deal number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'DEAL',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.deal_number ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{String(r.deal_name ?? '')}</span>
+        </span>
+      ),
+    },
+    { key: 'deal_name', label: 'Deal name', type: 'text', required: true },
     {
       key: 'customer_name',
       label: 'Customer',
@@ -333,6 +342,12 @@ const config: TradingModuleConfig = {
       lookupLabelKey: 'client_code',
       lookupSecondaryLabelKey: 'client_name', // dropdown shows "CLI-2609-00047 — Customer name"
       listColumn: true,
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.customer_name ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.supplier_name ? `Supplier: ${String(r.supplier_name)}` : ''}</span>
+        </span>
+      ),
       // Client-level fields the moment a customer is picked — instant,
       // no network wait (this is the existing autoFillMap feature, just
       // switched on for Deals). Requirement/quotation-level fields (product,
@@ -373,7 +388,6 @@ const config: TradingModuleConfig = {
       type: 'lookup',
       lookupResource: '/trading/suppliers',
       lookupLabelKey: 'supplier_name',
-      listColumn: true,
       // trading_suppliers stores these as flat columns (unlike clients,
       // there's no nested contacts table), so a plain autoFillMap covers
       // everything — no onLookupChange needed here.
@@ -463,7 +477,6 @@ const config: TradingModuleConfig = {
       label: 'Gross margin',
       type: 'text',
       readOnly: true,
-      listColumn: true,
       format: (_v, r) => amountText(r, sellingValue(r) - soldCostValue(r)),
       group: 'Rates & margin',
     },
@@ -473,6 +486,17 @@ const config: TradingModuleConfig = {
       type: 'text',
       readOnly: true,
       listColumn: true,
+      render: (_v, r) => {
+        const sv = sellingValue(r);
+        if (!sv) return '—';
+        const pct = ((sv - soldCostValue(r)) / sv) * 100;
+        return (
+          <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+            <strong style={{ fontWeight: 600, color: pct < 0 ? '#991b1b' : '#166534' }}>{pct.toFixed(2)}%</strong>
+            <span style={{ color: '#64748b', fontSize: '.74rem' }}>{amountText(r, sv - soldCostValue(r))}</span>
+          </span>
+        );
+      },
       format: (_v, r) => {
         const sv = sellingValue(r);
         if (!sv) return '—';

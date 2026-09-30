@@ -8,6 +8,7 @@
 import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { LinkedRecords } from './LinkedRecords';
 import { TRADING_HASH } from '../lib/recordFocus';
+import { documentsForShipment } from '../lib/documentsForShipment';
 import { applyCurrencyConversion } from '../lib/currencyLookup';
 
 const TRANSACTION_TYPES = ['Import', 'Export'];
@@ -56,13 +57,20 @@ const config: TradingModuleConfig = {
   codeField: 'customs_reference',
   nameField: 'product_name',
   statusOptions: CLEARANCE_STATUSES,
+  fitToScreen: true,
   searchableKeys: ['customs_reference', 'shipment_number', 'transaction_number', 'customer_name', 'supplier_name', 'product_name', 'hs_code', 'customs_broker'],
   fields: [
-    { key: 'customs_reference', label: 'Customs reference number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'CUS' },
+    { key: 'customs_reference',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.customs_reference ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.transaction_number ? `Txn: ${String(r.transaction_number)}` : ''}</span>
+        </span>
+      ), label: 'Customs reference', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'CUS' },
 
     // Primary source. One selection brings the whole declaration across.
     {
-      key: 'transaction_number', label: 'Trade transaction', type: 'lookup', required: true, listColumn: true,
+      key: 'transaction_number', label: 'Trade transaction', type: 'lookup', required: true,
       lookupResource: '/trading/import-export', lookupLabelKey: 'product_name',
       autoFillMap: {
         transaction_type: 'transaction_type',
@@ -88,8 +96,14 @@ const config: TradingModuleConfig = {
     // Available when customs is being raised directly off a shipment that
     // has no import/export record yet.
     {
-      key: 'shipment_number', label: 'Shipment', type: 'lookup', listColumn: true,
-      lookupResource: '/trading/shipments', lookupLabelKey: 'product_name',
+      key: 'shipment_number',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.shipment_number ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{String(r.transaction_type ?? '')}</span>
+        </span>
+      ), label: 'Shipment / type', type: 'lookup', listColumn: true,
+      lookupResource: '/trading/shipments', lookupLabelKey: 'product_name', lookupSecondaryLabelKey: 'shipment_number',
       autoFillMap: {
         customer_name: 'customer_name',
         supplier_name: 'supplier_name',
@@ -100,14 +114,20 @@ const config: TradingModuleConfig = {
       },
       group: 'Transaction',
     },
-    { key: 'transaction_type', label: 'Import / export', type: 'select', options: TRANSACTION_TYPES, listColumn: true, group: 'Transaction' },
+    { key: 'transaction_type', label: 'Import / export', type: 'select', options: TRANSACTION_TYPES, group: 'Transaction' },
     { key: 'customer_name', label: 'Customer', type: 'text', readOnly: true, group: 'Transaction' },
     { key: 'supplier_name', label: 'Supplier', type: 'text', readOnly: true, group: 'Transaction' },
-    { key: 'product_name', label: 'Product', type: 'text', readOnly: true, listColumn: true, group: 'Transaction' },
+    { key: 'product_name',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.product_name ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.hs_code ? `HS: ${String(r.hs_code)}` : 'HS: —'}</span>
+        </span>
+      ), label: 'Product / HS code', type: 'text', readOnly: true, listColumn: true, group: 'Transaction' },
     { key: 'quantity', label: 'Quantity', type: 'number', readOnly: true, group: 'Transaction' },
     // Customs-specific and genuinely entered here — the tariff
     // classification is a customs decision, not a shipment attribute.
-    { key: 'hs_code', label: 'HS code', type: 'text', listColumn: true, group: 'Transaction' },
+    { key: 'hs_code', label: 'HS code', type: 'text', group: 'Transaction' },
     { key: 'country_of_origin', label: 'Country of origin', type: 'text', group: 'Ports' },
     { key: 'destination_country', label: 'Destination country', type: 'text', group: 'Ports' },
     { key: 'port_of_loading', label: 'Port of loading', type: 'text', group: 'Ports' },
@@ -121,7 +141,11 @@ const config: TradingModuleConfig = {
     },
     { key: 'exchange_rate', label: 'Exchange rate at declaration', type: 'number', readOnly: true, group: 'Duty & cost' },
     { key: 'base_currency', label: 'Company currency', type: 'text', readOnly: true, group: 'Duty & cost' },
-    { key: 'base_value', label: 'Declared value (company currency)', type: 'number', readOnly: true, listColumn: true, group: 'Duty & cost' },
+    { key: 'base_value',
+      render: (_v, r) => (r.base_value != null && r.base_value !== ''
+        ? `${r.base_currency ? `${String(r.base_currency)} ` : ''}${Number(r.base_value).toLocaleString()}`
+        : '—'),
+      label: 'Declared value (company currency)', type: 'number', readOnly: true, listColumn: true, group: 'Duty & cost' },
     { key: 'customs_broker', label: 'Customs broker', type: 'text', group: 'Duty & cost' },
     { key: 'customs_duty', label: 'Customs duty', type: 'number', group: 'Duty & cost' },
     { key: 'other_charges', label: 'Other charges', type: 'number', group: 'Duty & cost' },
@@ -134,7 +158,8 @@ const config: TradingModuleConfig = {
     // Documents already raised in Trade Documents — referenced, not copied.
     {
       key: 'required_documents', label: 'Customs documents', type: 'multi-lookup',
-      lookupResource: '/trading/documents', lookupValueKey: 'document_number', lookupLabelKey: 'document_type',
+      lookupResource: '/trading/documents', lookupValueKey: 'document_number', lookupLabelKey: 'document_type', lookupSecondaryLabelKey: 'shipment_number',
+      lookupFilter: documentsForShipment,
       group: 'Clearance',
     },
     { key: 'declaration_date', label: 'Declaration date', type: 'date', group: 'Clearance', onValueChange: (_v, f) => deriveClearance(f), onValueChangeAsync: convertDeclared },
@@ -189,4 +214,4 @@ const config: TradingModuleConfig = {
 
 export function CustomsClearancePage() {
   return <TradingMasterPage config={config} />;
-}
+} 

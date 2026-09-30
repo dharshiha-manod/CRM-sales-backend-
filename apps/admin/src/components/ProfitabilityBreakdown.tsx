@@ -58,8 +58,16 @@ export function ProfitabilityBreakdown({ record }: { record: Record<string, unkn
     commission: num(record.commission),
   };
 
-  const lines = live?.lines ?? Object.keys(stored).map((key) => ({ key, label: key, amount: stored[key], source: '' }));
-  const notRecorded = lines.filter((l) => stored[l.key] == null && l.amount == null);
+  const lines = live?.lines ?? Object.keys(stored).map((key) => ({ key, label: key, amount: stored[key], source: '', na: undefined as string | undefined }));
+  const notRecorded = lines.filter((l) => stored[l.key] == null && l.amount == null && !l.na);
+
+  // Net profit is worked out from the STORED figures (insurance included) - exactly what the table shows - so the
+  // panel can never disagree with the row it belongs to. The live chain is only used to warn that things have moved.
+  const storedRevenue = num(record.revenue);
+  const storedCosts = Object.values(stored).filter((n): n is number => n != null);
+  const storedNet = storedRevenue != null && storedCosts.length ? storedRevenue - storedCosts.reduce((a, b) => a + b, 0) : null;
+  const liveNet = live && live.revenue != null && live.totalCost != null ? live.revenue - live.totalCost - (stored.insurance ?? 0) : null;
+  const moved = storedNet != null && liveNet != null && Math.abs(storedNet - liveNet) > 0.01;
 
   return (
     <div style={boxStyle}>
@@ -87,10 +95,11 @@ export function ProfitabilityBreakdown({ record }: { record: Record<string, unkn
                 <span>
                   {l.label}
                   {l.source && <span style={{ opacity: 0.55, fontSize: '.75rem' }}> · {l.source}</span>}
+                  {!l.source && storedValue == null && l.amount == null && l.na && <span style={{ opacity: 0.55, fontSize: '.75rem' }}> · {l.na}</span>}
                   {!l.source && storedValue != null && <span style={{ opacity: 0.55, fontSize: '.75rem' }}> · entered here</span>}
                 </span>
-                <span style={{ color: storedValue == null && l.amount == null ? 'var(--red)' : undefined }}>
-                  {money(storedValue ?? l.amount, currency)}
+                <span style={{ color: storedValue == null && l.amount == null ? (l.na ? 'var(--text-faint, #64748b)' : 'var(--red)') : undefined }}>
+                  {storedValue == null && l.amount == null && l.na ? 'Not applicable' : money(storedValue ?? l.amount, currency)}
                   {drifted && (
                     <span style={{ opacity: 0.7, fontSize: '.75rem' }}> (now {money(l.amount, currency)})</span>
                   )}
@@ -101,8 +110,14 @@ export function ProfitabilityBreakdown({ record }: { record: Record<string, unkn
 
           <div style={{ ...rowStyle, fontWeight: 700, borderTop: '1px solid var(--line)', marginTop: '.4rem', paddingTop: '.35rem' }}>
             <span>Net profit</span>
-            <span>{money(num(record.net_profit) ?? live?.netProfit ?? null, currency)}</span>
+            <span>{money(storedNet, currency)}</span>
           </div>
+
+          {moved && (
+            <p style={{ margin: '.6rem 0 0', fontSize: '.78rem', color: 'var(--amber, #92400e)' }}>
+              The linked records have changed since this analysis (net profit would now be {money(liveNet, currency)}). Press Recalculate to refresh it.
+            </p>
+          )}
 
           {notRecorded.length > 0 && (
             <p style={{ margin: '.7rem 0 0', fontSize: '.78rem', color: 'var(--red)' }}>

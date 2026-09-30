@@ -1,2 +1,2 @@
 import * as repository from '../repositories/follow-ups.repository.js';
-export const followUpService = { createFromVisit: repository.createFromVisit, createManual: repository.createManual, list: repository.listFollowUps, update: repository.updateFollowUp };
+export const followUpService = { createFromVisit: repository.createFromVisit, createManual: repository.createManual, createForOrder: repository.createForOrder, list: repository.listFollowUps, update: repository.updateFollowUp };

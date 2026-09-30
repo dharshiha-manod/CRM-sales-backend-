@@ -170,15 +170,30 @@ const config: TradingModuleConfig = {
   codeField: 'document_id',
   nameField: 'document_number',
   statusOptions: STATUSES,
+  fitToScreen: true,
   searchableKeys: ['document_id', 'document_number', 'deal_number', 'shipment_number', 'customer_name', 'supplier_name'],
   fields: [
-    { key: 'document_id', label: 'Document ID', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: autoDocId, regenerateOn: ['document_type'] },
-    { key: 'document_number', label: 'Document number', type: 'text', required: true, listColumn: true, autoGenerate: autoDocId, regenerateOn: ['document_type'] },
-    { key: 'document_type', label: 'Document type', type: 'select', options: DOC_TYPES, listColumn: true },
+    { key: 'document_id', label: 'Document ID', type: 'text', required: true, readOnly: true, autoGenerate: autoDocId, regenerateOn: ['document_type'] },
+    {
+      key: 'document_number', label: 'Document', type: 'text', required: true, listColumn: true, autoGenerate: autoDocId, regenerateOn: ['document_type'],
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.document_number ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{String(r.document_type ?? '')}</span>
+        </span>
+      ),
+    },
+    { key: 'document_type', label: 'Document type', type: 'select', options: DOC_TYPES },
     {
       key: 'deal_number',
-          label: 'Deal',
+          label: 'Deal / shipment',
       listColumn: true,
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <span>{String(r.deal_number ?? '—')}</span>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.shipment_number ? String(r.shipment_number) : 'No shipment'}</span>
+        </span>
+      ),
       type: 'lookup',
       lookupResource: '/trading/deals',
       lookupLabelKey: 'deal_name',
@@ -200,7 +215,7 @@ const config: TradingModuleConfig = {
       },
       group: 'Linked records',
     },
-    { key: 'shipment_number', label: 'Shipment', type: 'lookup', lookupResource: '/trading/shipments', lookupLabelKey: 'shipment_number', listColumn: true, autoFillMap: { customer_name: 'customer_name', supplier_name: 'supplier_name',product_name: 'product_name', quantity: 'quantity', unit: 'unit', expected_delivery_date: 'expected_delivery_date', shipping_mode: 'shipping_mode', transporter: 'transporter', tracking_number: 'tracking_number' }, group: 'Linked records' },
+    { key: 'shipment_number', label: 'Shipment', type: 'lookup', lookupResource: '/trading/shipments', lookupLabelKey: 'shipment_number', autoFillMap: { customer_name: 'customer_name', supplier_name: 'supplier_name',product_name: 'product_name', quantity: 'quantity', unit: 'unit', expected_delivery_date: 'expected_delivery_date', shipping_mode: 'shipping_mode', transporter: 'transporter', tracking_number: 'tracking_number' }, group: 'Linked records' },
 // NEW
 { key: 'customer_name', label: 'Customer', type: 'lookup', lookupResource: '/clients', lookupValueKey: 'client_name', lookupLabelKey: 'client_code', listColumn: true, group: 'Linked records', onLookupChange: fillFromCustomer },
     { key: 'supplier_name', label: 'Supplier', type: 'lookup', lookupResource: '/trading/suppliers', lookupLabelKey: 'supplier_name', group: 'Linked records' },
@@ -216,10 +231,18 @@ const config: TradingModuleConfig = {
     { key: 'billing_address', label: 'Billing address', type: 'textarea', group: 'Addresses' },
     { key: 'shipping_address', label: 'Shipping / delivery address', type: 'textarea', group: 'Addresses' },
     { key: 'sales_rep', label: 'Sales representative', type: 'text', group: 'Addresses' },
-    { key: 'issue_date', label: 'Issue date', type: 'date', listColumn: true, group: 'Validity' },
+    {
+      key: 'issue_date', label: 'Issued / expiry', type: 'date', listColumn: true, group: 'Validity',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <span>{r.issue_date ? `Issued: ${String(r.issue_date)}` : 'Issued: —'}</span>
+          <span style={{ color: '#64748b', fontSize: '.78rem' }}>{r.expiry_date ? `Expires: ${String(r.expiry_date)}` : 'Expires: —'}</span>
+        </span>
+      ),
+    },
     { key: 'order_date', label: 'Order date', type: 'date', group: 'Validity' },
     { key: 'expected_delivery_date', label: 'Expected delivery date', type: 'date', group: 'Validity' },
-    { key: 'expiry_date', label: 'Expiry date', type: 'date', listColumn: true, group: 'Validity' },
+    { key: 'expiry_date', label: 'Expiry date', type: 'date', group: 'Validity' },
     { key: 'shipping_mode', label: 'Shipping mode', type: 'text', group: 'Transport' },
     { key: 'transporter', label: 'Transporter', type: 'text', group: 'Transport' },
     { key: 'tracking_number', label: 'Tracking number', type: 'text', group: 'Transport' },

@@ -120,13 +120,26 @@ const config: TradingModuleConfig = {
   codeField: 'commission_number',
   nameField: 'sales_rep',
   statusOptions: [...COMMISSION_STATUSES],
+  fitToScreen: true,
   searchableKeys: ['commission_number', 'sales_rep', 'deal_number', 'order_number', 'customer_name', 'product_name', 'rule_code'],
   fields: [
-    { key: 'commission_number', label: 'Commission number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'COM' },
+    { key: 'commission_number',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.commission_number ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.rule_code ? `Rule: ${String(r.rule_code)}` : 'No rule'}</span>
+        </span>
+      ), label: 'Commission', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'COM' },
 
     // The single point of entry.
     {
-      key: 'deal_number', label: 'Deal', type: 'lookup', required: true, listColumn: true,
+      key: 'deal_number',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.deal_number ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{String(r.customer_name ?? '')}</span>
+        </span>
+      ), label: 'Deal / customer', type: 'lookup', required: true, listColumn: true,
       lookupResource: '/trading/deals', lookupLabelKey: 'deal_name',
       onValueChangeAsync: (value, _form, setForm) => { void fillFromDeal(value, setForm); },
     },
@@ -134,7 +147,7 @@ const config: TradingModuleConfig = {
     // Everything below is owned by another module. Read-only here so the
     // same figure can't drift between commission and the deal it came from.
     { key: 'sales_rep', label: 'Sales representative', type: 'text', readOnly: true, listColumn: true, group: 'From the transaction' },
-    { key: 'customer_name', label: 'Customer', type: 'text', readOnly: true, listColumn: true, group: 'From the transaction' },
+    { key: 'customer_name', label: 'Customer', type: 'text', readOnly: true, group: 'From the transaction' },
     { key: 'product_name', label: 'Product', type: 'text', readOnly: true, group: 'From the transaction' },
     { key: 'quantity', label: 'Quantity', type: 'number', readOnly: true, group: 'From the transaction' },
     { key: 'order_number', label: 'Sales order', type: 'text', readOnly: true, group: 'From the transaction' },
@@ -159,7 +172,7 @@ const config: TradingModuleConfig = {
     { key: 'currency', label: 'Currency', type: 'text', readOnly: true, group: 'From the transaction' },
 
     // Calculated by the rule, stored as calculated.
-    { key: 'rule_code', label: 'Rule applied', type: 'text', readOnly: true, listColumn: true, group: 'Calculation' },
+    { key: 'rule_code', label: 'Rule applied', type: 'text', readOnly: true, group: 'Calculation' },
     { key: 'commission_basis', label: 'Basis', type: 'select', options: [...COMMISSION_BASES], readOnly: true, group: 'Calculation' },
     { key: 'commission_rate', label: 'Rate applied', type: 'number', readOnly: true, group: 'Calculation' },
     {
@@ -169,8 +182,14 @@ const config: TradingModuleConfig = {
     { key: 'calculation_note', label: 'Working', type: 'textarea', readOnly: true, group: 'Calculation' },
 
     { key: 'qualifying_event', label: 'Earned when', type: 'select', options: [...QUALIFYING_EVENTS], readOnly: true, group: 'Eligibility' },
-    { key: 'delivery_status', label: 'Delivery status', type: 'text', readOnly: true, listColumn: true, group: 'Eligibility' },
-    { key: 'payment_status', label: 'Collection status', type: 'text', readOnly: true, listColumn: true, group: 'Eligibility' },
+    { key: 'delivery_status',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <span>{`Delivery: ${String(r.delivery_status || '—')}`}</span>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{`Collection: ${String(r.payment_status || '—')}`}</span>
+        </span>
+      ), label: 'Delivery / collection', type: 'text', readOnly: true, listColumn: true, group: 'Eligibility' },
+    { key: 'payment_status', label: 'Collection status', type: 'text', readOnly: true, group: 'Eligibility' },
     { key: 'calculation_date', label: 'Calculated on', type: 'date', readOnly: true, group: 'Eligibility' },
     { key: 'eligible_date', label: 'Eligible from', type: 'date', readOnly: true, group: 'Eligibility' },
 

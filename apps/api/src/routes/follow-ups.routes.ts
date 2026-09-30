@@ -5,3 +5,4 @@ followUpsRouter.get('/follow-ups/mine', authenticate, requireRoles('sales_repres
 followUpsRouter.get('/follow-ups', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), followUps.all);
 followUpsRouter.post('/follow-ups', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), followUps.createManual);
 followUpsRouter.patch('/follow-ups/:id', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), followUps.update);
+followUpsRouter.post('/orders/:id/follow-ups', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), followUps.createForOrder);

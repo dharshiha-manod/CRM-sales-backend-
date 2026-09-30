@@ -33,11 +33,20 @@ const config: TradingModuleConfig = {
   nameField: 'product_name',
   statusOptions: STATUSES,
   inlineStatus: true,
+  fitToScreen: true,
   inlineStatusExtra: (record, next) => (next === 'Delivered' && !record.actual_delivery_date ? { actual_delivery_date: new Date().toISOString().slice(0, 10) } : undefined),
   searchableKeys: ['shipment_number', 'deal_number', 'customer_name', 'supplier_name', 'product_name', 'tracking_number'],
   fields: [
-    { key: 'shipment_number', label: 'Shipment number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'SHP' },
-  { key: 'deal_number', label: 'Deal', type: 'lookup', lookupResource: '/trading/deals', lookupLabelKey: 'deal_name', autoFillMap: { customer_name: 'customer_name', supplier_name: 'supplier_name', product_name: 'product_name', quantity: 'quantity', unit: 'unit', currency: 'currency' }, listColumn: true },
+    {
+      key: 'shipment_number', label: 'Shipment', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'SHP',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.shipment_number ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.deal_number ? `Deal: ${String(r.deal_number)}` : 'No deal linked'}</span>
+        </span>
+      ),
+    },
+  { key: 'deal_number', label: 'Deal', type: 'lookup', lookupResource: '/trading/deals', lookupLabelKey: 'deal_name', autoFillMap: { customer_name: 'customer_name', supplier_name: 'supplier_name', product_name: 'product_name', quantity: 'quantity', customer_quantity: 'quantity', unit: 'unit', currency: 'currency' } },
     { key: 'order_number', label: 'Sales order', type: 'text', readOnly: true, listColumn: true, group: 'Goods' },
     { key: 'customer_name', label: 'Customer', type: 'lookup', lookupResource: '/clients', lookupValueKey: 'client_name', lookupLabelKey: 'client_code', listColumn: true, group: 'Goods' },
     { key: 'supplier_name', label: 'Supplier', type: 'lookup', lookupResource: '/trading/suppliers', lookupLabelKey: 'supplier_name', group: 'Goods' },
@@ -46,15 +55,23 @@ const config: TradingModuleConfig = {
     { key: 'unit', label: 'Unit', type: 'text', group: 'Goods' },
     { key: 'batch_serial', label: 'Batch / serial information', type: 'text', group: 'Goods' },
     { key: 'shipment_date', label: 'Shipment date', type: 'date', group: 'Schedule', onValueChange: (_v, f) => deriveShipmentStatus(f) },
-    { key: 'expected_delivery_date', label: 'Expected delivery date', type: 'date', listColumn: true, group: 'Schedule', onValueChange: (_v, f) => deriveShipmentStatus(f) },
-      { key: 'actual_delivery_date', label: 'Actual delivery date', type: 'date', listColumn: true, group: 'Schedule' },
+    {
+      key: 'expected_delivery_date', label: 'Delivery (expected / actual)', type: 'date', listColumn: true, group: 'Schedule', onValueChange: (_v, f) => deriveShipmentStatus(f),
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <span>{r.expected_delivery_date ? `Exp: ${String(r.expected_delivery_date)}` : 'Exp: —'}</span>
+          <span style={{ color: r.actual_delivery_date ? '#166534' : '#64748b', fontSize: '.78rem' }}>{r.actual_delivery_date ? `Act: ${String(r.actual_delivery_date)}` : 'Act: —'}</span>
+        </span>
+      ),
+    },
+      { key: 'actual_delivery_date', label: 'Actual delivery date', type: 'date', group: 'Schedule', helpText: 'The date the goods were really delivered - it cannot be in the future.' },
     { key: 'origin', label: 'Origin', type: 'text', readOnly: true, group: 'Route (from Logistics)', helpText: 'Filled from the Logistics plan. Edit it on the Logistics page.' },
     { key: 'destination', label: 'Destination', type: 'text', readOnly: true, group: 'Route (from Logistics)' },
     { key: 'transporter', label: 'Transporter / logistics provider', type: 'text', readOnly: true, group: 'Route (from Logistics)' },
     { key: 'tracking_number', label: 'Tracking number', type: 'text', readOnly: true, group: 'Route (from Logistics)' },
     { key: 'vehicle_container_number', label: 'Vehicle / container number', type: 'text', readOnly: true, group: 'Route (from Logistics)' },
     { key: 'shipping_mode', label: 'Shipping mode', type: 'text', readOnly: true, listColumn: true, group: 'Route (from Logistics)' },
-    { key: 'freight_cost', label: 'Freight cost', type: 'number', readOnly: true, group: 'Route (from Logistics)' },
+    { key: 'freight_cost', label: 'Freight cost (as entered in Logistics)', type: 'number', readOnly: true, group: 'Route (from Logistics)', helpText: 'In the currency used on the Logistics record. Converted figures are on the Logistics page.' },
  { key: 'status', label: 'Shipment status', type: 'select', options: STATUSES, listColumn: true, group: 'Status', onValueChange: (_v, f) => deriveActualDeliveryDate(f), helpText: 'Dispatch is blocked until the Logistics plan has a carrier, origin, destination and pickup or departure date.' },
     { key: 'notes', label: 'Notes', type: 'textarea', group: 'Status' },
   ],

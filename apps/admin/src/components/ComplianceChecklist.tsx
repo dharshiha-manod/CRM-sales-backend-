@@ -35,7 +35,7 @@ export function ComplianceChecklist({ record }: { record: Record<string, unknown
   useEffect(() => {
     let cancelled = false;
     if (!dealNumber && !shipmentNumber) { setLoaded(true); return; }
-    loadTradingTables(activeIndustryTypeId)
+    loadTradingTables(activeIndustryTypeId, true)
       .then((tables) => {
         if (cancelled) return;
         const chain = buildChain(tables, {

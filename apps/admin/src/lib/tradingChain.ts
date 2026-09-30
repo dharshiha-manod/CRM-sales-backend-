@@ -223,6 +223,50 @@ const sum = (rows: ChainRow[], key: string): number | null => {
   return values.length ? values.reduce((a, b) => a + b, 0) : null;
 };
 
+/**
+ * Sum of `key` over rows that may each be saved in a DIFFERENT currency, returned in `currency`.
+ * Logistics and Customs rows keep the currency they were paid in plus the rate used and the company currency, so a
+ * USD 5,000 freight on an INR deal is counted as INR 4,82,500 - not as INR 5,000. A row with no usable rate keeps
+ * its amount as entered (a number is never invented). Same rule as the API's profit snapshot (currency-sum.ts).
+ */
+const sumInCurrency = (rows: ChainRow[], key: string, currency: string): number | null => {
+  const parts = rows
+    .map((r) => {
+      const value = num(r[key]);
+      if (value == null) return null;
+      const own = str(r.currency).trim();
+      if (!own || own === currency) return value;
+      const rate = num(r.exchange_rate);
+      if (rate != null && rate > 0 && str(r.base_currency).trim() === currency) {
+        // Freight also stores its converted value (base_value); the Logistics page shows it, so use it (same as the API).
+        const base = key === 'freight_cost' ? num(r.base_value) : null;
+        return base != null && base > 0 ? base : value * rate;
+      }
+      return value;
+    })
+    .filter((n): n is number => n != null);
+  return parts.length ? Math.round(parts.reduce((a, b) => a + b, 0) * 100) / 100 : null;
+};
+
+/**
+ * Customs duty and port charges are levied in the COMPANY currency (the Customs page shows them that way), so they are
+ * never multiplied by the record's own exchange rate. They only move into the deal's currency when that is not the
+ * company currency, using the rate stored on the same customs record. Same rule as the API's profit snapshot.
+ */
+const sumCompanyCurrency = (rows: ChainRow[], key: string, currency: string): number | null => {
+  const parts = rows
+    .map((r) => {
+      const value = num(r[key]);
+      if (value == null) return null;
+      const base = str(r.base_currency).trim();
+      if (!base || base === currency) return value;
+      const rate = num(r.exchange_rate);
+      return str(r.currency).trim() === currency && rate != null && rate > 0 ? value / rate : value;
+    })
+    .filter((n): n is number => n != null);
+  return parts.length ? Math.round(parts.reduce((a, b) => a + b, 0) * 100) / 100 : null;
+};
+
 export interface CostLine {
   key: string;
   label: string;
@@ -230,6 +274,15 @@ export interface CostLine {
   amount: number | null;
   /** which module the figure came from, shown in the breakdown panel */
   source: string;
+  /** Set (with the reason) when this cost can never exist for this deal - it is then not counted as missing. */
+  na?: string;
+}
+
+/** The one place the stored "Cost sources" text is written, so the API, Recalculate and the form all agree. */
+export function formatCostSources(lines: CostLine[]): string {
+  return lines
+    .map((l) => `${l.label}: ${l.amount == null ? (l.na ? `not applicable (${l.na})` : 'not recorded') : `${l.amount} (${l.source})`}`)
+    .join('\n');
 }
 
 export interface ChainFinancials {
@@ -250,6 +303,13 @@ export interface ChainFinancials {
   /** labels of costs with no source record — surfaced, not zero-filled */
   notRecorded: string[];
 }
+
+/** Cost line label -> key, so a stored "Cost sources" text can be read back (which lines were "not applicable"). */
+export const COST_KEY_BY_LABEL: Record<string, string> = {
+  'Purchase / product cost': 'purchase_cost', 'Freight / logistics': 'freight', 'Customs duty': 'customs_duty',
+  'Port / clearance charges': 'port_charges', 'Insurance': 'insurance', 'Other trade costs': 'other_costs',
+  'Trade finance charges': 'finance_charges', 'Commission': 'commission',
+};
 
 /** Commission only counts against profit once it is actually owed. */
 export const EARNED_COMMISSION_STATUSES = ['Eligible', 'Approved', 'Payable', 'Paid'];
@@ -289,7 +349,8 @@ export function chainFinancials(chain: TradingChain): ChainFinancials {
   let purchaseCost: number | null = null;
   let purchaseSource = '';
   if (deal) {
-    const q = num(deal.quantity);
+     const soldQty = num(deal.customer_quantity);
+    const q = soldQty != null && soldQty > 0 ? soldQty : num(deal.quantity);
     const rate = num(deal.purchase_rate);
     const supplierDiscount = num(deal.purchase_discount_percent) ?? 0;
     if (q != null && rate != null) { purchaseCost = q * rate * (1 - supplierDiscount / 100); purchaseSource = supplierDiscount ? `Deal · qty x purchase rate less ${supplierDiscount}% supplier discount` : 'Deal · qty x purchase rate'; }
@@ -304,28 +365,35 @@ export function chainFinancials(chain: TradingChain): ChainFinancials {
   // Freight: Logistics owns movement cost. Shipment's own freight_cost is
   // only the fallback for a shipment with no logistics record, so the same
   // freight is never counted twice.
-  const logisticsFreight = sum(chain.logistics, 'freight_cost');
+  const logisticsFreight = sumInCurrency(chain.logistics, 'freight_cost', currency);
   const freight = logisticsFreight ?? sum(chain.shipments, 'freight_cost');
-  const freightSource = logisticsFreight != null ? 'Logistics · freight charges' : (freight != null ? 'Shipment · freight cost' : '');
+  const freightSource = logisticsFreight != null ? `Logistics · freight charges (in ${currency})` : (freight != null ? 'Shipment · freight cost' : '');
 
-  const customsDuty = sum(chain.customs, 'customs_duty');
-  const customsCharges = sum(chain.customs, 'other_charges');
-  const logisticsOther = sum(chain.logistics, 'other_charges');
+  const customsDuty = sumCompanyCurrency(chain.customs, 'customs_duty', currency);
+  const customsCharges = sumCompanyCurrency(chain.customs, 'other_charges', currency);
+  const logisticsOther = sumInCurrency(chain.logistics, 'other_charges', currency);
 
   const earnedCommission = chain.commissions.filter((c) => EARNED_COMMISSION_STATUSES.includes(str(c.status)));
   const commission = sum(earnedCommission, 'commission_amount');
 
   const financeCharges = sum(chain.finance, 'finance_charges');
 
+  // "Not applicable": a cost that can never exist for this deal is not counted as missing.
+  // Same rules and wording as syncProfitabilitySnapshot() in the API's trading.repository.ts.
+  const isTradeDeal = chain.importExport.length > 0 || chain.customs.length > 0;
+  const naTrade = isTradeDeal ? undefined : 'domestic deal, no import/export or customs record';
+  const naFinance = chain.finance.length > 0 ? undefined : 'no trade finance record';
+  const naCommission = chain.commissions.length > 0 || str(deal?.sales_rep).trim() ? undefined : 'no commission record or sales rep';
+
   const lines: CostLine[] = [
     { key: 'purchase_cost', label: 'Purchase / product cost', amount: purchaseCost, source: purchaseSource },
     { key: 'freight', label: 'Freight / logistics', amount: freight, source: freightSource },
-    { key: 'customs_duty', label: 'Customs duty', amount: customsDuty, source: customsDuty != null ? 'Customs & Clearance' : '' },
-    { key: 'port_charges', label: 'Port / clearance charges', amount: customsCharges, source: customsCharges != null ? 'Customs & Clearance · other charges' : '' },
-    { key: 'insurance', label: 'Insurance', amount: null, source: '' },
-    { key: 'other_costs', label: 'Other trade costs', amount: logisticsOther, source: logisticsOther != null ? 'Logistics · other charges' : '' },
-    { key: 'finance_charges', label: 'Trade finance charges', amount: financeCharges, source: financeCharges != null ? 'Trade Finance' : '' },
-    { key: 'commission', label: 'Commission', amount: commission, source: commission != null ? 'Commission Management · earned' : '' },
+    { key: 'customs_duty', label: 'Customs duty', amount: customsDuty, source: customsDuty != null ? 'Customs & Clearance' : '', na: customsDuty == null ? naTrade : undefined },
+    { key: 'port_charges', label: 'Port / clearance charges', amount: customsCharges, source: customsCharges != null ? 'Customs & Clearance · other charges' : '', na: customsCharges == null ? naTrade : undefined },
+    { key: 'insurance', label: 'Insurance', amount: null, source: '', na: 'optional, not entered' },
+    { key: 'other_costs', label: 'Other trade costs', amount: logisticsOther, source: logisticsOther != null ? `Logistics · other charges (in ${currency})` : '', na: logisticsOther == null ? 'optional, none entered' : undefined },
+    { key: 'finance_charges', label: 'Trade finance charges', amount: financeCharges, source: financeCharges != null ? 'Trade Finance' : '', na: financeCharges == null ? naFinance : undefined },
+    { key: 'commission', label: 'Commission', amount: commission, source: commission != null ? 'Commission Management · earned' : '', na: commission == null ? naCommission : undefined },
   ];
 
   const recorded = lines.map((l) => l.amount).filter((n): n is number => n != null);
@@ -349,7 +417,7 @@ export function chainFinancials(chain: TradingChain): ChainFinancials {
     totalCost,
     netProfit,
     netMargin,
-    notRecorded: lines.filter((l) => l.amount == null).map((l) => l.label),
+    notRecorded: lines.filter((l) => l.amount == null && !l.na).map((l) => l.label),
   };
 }
 

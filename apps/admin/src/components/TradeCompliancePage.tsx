@@ -41,7 +41,7 @@ async function fillFromChain(
 ) {
   if (!anchor.deal_number && !anchor.shipment_number) return;
   try {
-    const tables = await loadTradingTables();
+    const tables = await loadTradingTables(undefined, true);
     const chain = buildChain(tables, anchor);
     const report = buildComplianceReport(chain);
     const deal = chain.deal;
@@ -103,25 +103,38 @@ const config: TradingModuleConfig = {
   codeField: 'compliance_reference',
   nameField: 'compliance_type',
   statusOptions: STATUSES,
+  fitToScreen: true,
   searchableKeys: ['compliance_reference', 'deal_number', 'shipment_number', 'customer_name', 'supplier_name', 'product_name', 'country', 'hs_code', 'responsible_person'],
   fields: [
-    { key: 'compliance_reference', label: 'Compliance reference', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'CMP' },
+    { key: 'compliance_reference',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.compliance_reference ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{String(r.compliance_type ?? '')}</span>
+        </span>
+      ), label: 'Compliance', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'CMP' },
 
     // Either anchor resolves the whole chain.
     {
-      key: 'shipment_number', label: 'Shipment', type: 'lookup', listColumn: true,
+      key: 'shipment_number',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.shipment_number || r.deal_number || '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.shipment_number && r.deal_number ? `Deal: ${String(r.deal_number)}` : ''}</span>
+        </span>
+      ), label: 'Shipment / deal', type: 'lookup', listColumn: true,
       lookupResource: '/trading/shipments', lookupLabelKey: 'product_name',
       onValueChangeAsync: (value, _form, setForm) => { void fillFromChain({ shipment_number: value }, setForm); },
     },
     {
-      key: 'deal_number', label: 'Deal (if not shipment-specific)', type: 'lookup', listColumn: true,
+      key: 'deal_number', label: 'Deal (if not shipment-specific)', type: 'lookup',
       lookupResource: '/trading/deals', lookupLabelKey: 'deal_name',
       onValueChangeAsync: (value, form, setForm) => {
         if (form.shipment_number) return; // the shipment is the narrower anchor
         void fillFromChain({ deal_number: value }, setForm);
       },
     },
-    { key: 'compliance_type', label: 'Compliance type', type: 'select', options: COMPLIANCE_TYPES, required: true, listColumn: true },
+    { key: 'compliance_type', label: 'Compliance type', type: 'select', options: COMPLIANCE_TYPES, required: true },
 
     { key: 'customer_name', label: 'Customer', type: 'text', readOnly: true, group: 'From the transaction' },
     { key: 'supplier_name', label: 'Supplier', type: 'text', readOnly: true, group: 'From the transaction' },
@@ -135,16 +148,28 @@ const config: TradingModuleConfig = {
     { key: 'required_documents', label: 'Required documents', type: 'textarea', readOnly: true, group: 'Detected position' },
     { key: 'missing_documents', label: 'Missing documents', type: 'textarea', readOnly: true, group: 'Detected position' },
     { key: 'expired_documents', label: 'Expired / expiring documents', type: 'textarea', readOnly: true, group: 'Detected position' },
-    { key: 'document_status', label: 'Document status', type: 'select', options: DOCUMENT_STATUSES, readOnly: true, listColumn: true, group: 'Detected position' },
-    { key: 'customs_status', label: 'Customs status', type: 'text', readOnly: true, listColumn: true, group: 'Detected position' },
+    { key: 'document_status',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.document_status || '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{`Customs: ${String(r.customs_status || '—')}`}</span>
+        </span>
+      ), label: 'Documents / customs', type: 'select', options: DOCUMENT_STATUSES, readOnly: true, listColumn: true, group: 'Detected position' },
+    { key: 'customs_status', label: 'Customs status', type: 'text', readOnly: true, group: 'Detected position' },
     { key: 'shipment_status', label: 'Shipment status', type: 'text', readOnly: true, group: 'Detected position' },
     { key: 'check_date', label: 'Checked on', type: 'date', readOnly: true, group: 'Detected position' },
 
     // Judgement and ownership — the genuinely manual part.
     { key: 'risk_level', label: 'Risk level', type: 'select', options: RISK_LEVELS, listColumn: true, group: 'Review' },
-    { key: 'responsible_person', label: 'Responsible person', type: 'text', listColumn: true, group: 'Review' },
+    { key: 'responsible_person',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.responsible_person || '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.due_date ? `Due: ${String(r.due_date)}` : 'No due date'}</span>
+        </span>
+      ), label: 'Owner / due', type: 'text', listColumn: true, group: 'Review' },
     { key: 'checked_by', label: 'Checked by', type: 'text', group: 'Review' },
-    { key: 'due_date', label: 'Due date', type: 'date', listColumn: true, group: 'Review' },
+    { key: 'due_date', label: 'Due date', type: 'date', group: 'Review' },
     { key: 'required_action', label: 'Required action', type: 'textarea', group: 'Review' },
     { key: 'approval_status', label: 'Approval status', type: 'select', options: APPROVAL_STATUSES, group: 'Resolution' },
     { key: 'exception_reason', label: 'Exception reason', type: 'textarea', group: 'Resolution' },

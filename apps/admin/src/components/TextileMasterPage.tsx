@@ -40,6 +40,8 @@ export interface FieldDef {
   listColumn?: boolean;
   /** format a value for table/detail display */
   format?: (value: unknown, record: TextileRecord) => string;
+  /** optional rich cell for the list table only (badges, stacked text); falls back to `format` */
+  render?: (value: unknown, record: TextileRecord) => ReactNode;
   /** shown but not editable — pairs with autoGenerate */
   readOnly?: boolean;
   /**
@@ -75,6 +77,11 @@ export interface FieldDef {
    * are still easy to tell apart.
    */
   lookupSecondaryLabelKey?: string;
+  /**
+   * for type: 'multi-lookup' — keeps only the options that belong with the current form (e.g. only the
+   * documents of the selected shipment). Runs on every render, so it follows the form as it changes.
+   */
+  lookupFilter?: (option: TextileRecord, form: Record<string, string>) => boolean;
   /**
    * for type: 'lookup' — which field on the looked-up record supplies the
    * value that gets stored/matched against. Defaults to this field's own
@@ -247,15 +254,20 @@ statusFilterable?: boolean;
   registerReload?: (reload: () => void) => void;
 }
 
-const GOOD_STATUSES = new Set(['active', 'in-stock', 'pass', 'approved', 'completed', 'in stock']);
-const BAD_STATUSES = new Set(['inactive', 'damaged', 'fail', 'rejected', 'discontinued', 'reject']);
-const WATCH_STATUSES = new Set(['pending', 'issued', 'draft', 'revision-requested', 'sold']);
+// Status colours. One shared function, so every module (Textile, Pharma, Trading) gets the same meaning:
+//   green = finished / good, red = cancelled / bad, amber = needs attention,
+//   blue = on the move, grey = not started yet (anything not listed here).
+const GOOD_STATUSES = new Set(['active', 'in-stock', 'pass', 'approved', 'completed', 'in stock', 'delivered']);
+const BAD_STATUSES = new Set(['inactive', 'damaged', 'fail', 'rejected', 'discontinued', 'reject', 'cancelled', 'canceled']);
+const WATCH_STATUSES = new Set(['pending', 'issued', 'draft', 'revision-requested', 'sold', 'delayed', 'customs hold']);
+const MOVING_STATUSES = new Set(['pickup scheduled', 'picked up', 'dispatched', 'in transit', 'at destination', 'out for delivery']);
 
 function statusBadgeClass(status?: string): string {
-  const s = (status ?? '').toLowerCase();
+  const s = (status ?? '').trim().toLowerCase();
   if (GOOD_STATUSES.has(s)) return 'status-badge status-completed';
   if (BAD_STATUSES.has(s)) return 'status-badge inactive';
   if (WATCH_STATUSES.has(s)) return 'status-badge status-quoted';
+  if (MOVING_STATUSES.has(s)) return 'status-badge status-new';
   return 'status-badge';
 }
 
@@ -669,7 +681,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
               {filtered.map((r) => (
                 <tr key={r.id}>
                   {listColumns.map((c) => (
-                    <td key={c.key}>{c.format ? c.format(r[c.key], r) : (r[c.key] != null && r[c.key] !== '' ? String(r[c.key]) : '—')}</td>
+              <td key={c.key}>{c.render ? c.render(r[c.key], r) : c.format ? c.format(r[c.key], r) : (r[c.key] != null && r[c.key] !== '' ? String(r[c.key]) : '—')}</td>
                   ))}
                          {!hideStatusColumn && (
                     <td>
@@ -1165,12 +1177,13 @@ function SearchableLookup({
 
 // Professional multi-select checklist (search, count, clear, tidy rows).
 // Value is stored as a comma-separated string, same as before.
-function MultiLookupField({ options, value, onChange, valueKey, labelKey }: {
+function MultiLookupField({ options, value, onChange, valueKey, labelKey, secondaryKey }: {
   options: TextileRecord[];
   value: string;
   onChange: (next: string) => void;
   valueKey: string;
   labelKey?: string;
+  secondaryKey?: string;
 }) {
   const [search, setSearch] = useState('');
   // Names are compared trimmed and case-insensitively, so a stray space or different
@@ -1186,7 +1199,9 @@ function MultiLookupField({ options, value, onChange, valueKey, labelKey }: {
     const rowValue = String(o[valueKey] ?? o.id).trim();
     if (!rowValue || seen.has(norm(rowValue))) continue;
     seen.add(norm(rowValue));
-    rows.push({ id: String(o.id), value: rowValue, sub: labelKey ? String(o[labelKey] ?? '') : '' });
+    const main = labelKey ? String(o[labelKey] ?? '') : '';
+    const extra = secondaryKey ? String(o[secondaryKey] ?? '') : '';
+    rows.push({ id: String(o.id), value: rowValue, sub: [extra, main].filter(Boolean).join(' · ') });
   }
   const tickedCount = rows.filter((r) => selectedKeys.has(norm(r.value))).length;
 
@@ -1324,11 +1339,12 @@ function renderInput(
   if (f.type === 'multi-lookup') {
     return (
       <MultiLookupField
-        options={lookupData[f.key] ?? []}
+        options={f.lookupFilter ? (lookupData[f.key] ?? []).filter((o) => f.lookupFilter!(o, form)) : (lookupData[f.key] ?? [])}
         value={value}
         onChange={onChange}
         valueKey={f.lookupValueKey ?? f.key}
         labelKey={f.lookupLabelKey}
+        secondaryKey={f.lookupSecondaryLabelKey}
       />
     );
   }

@@ -38,6 +38,26 @@ export async function createManual(organizationId: string, input: { clientId: st
   const { data, error } = await supabaseAdmin.from('follow_ups').insert({ organization_id: organizationId, representative_id: input.representativeId, client_id: input.clientId, title: input.title, due_at: input.dueAt, priority: input.priority, notes: input.notes }).select('*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))').single();
   return error ? fail(error) : data;
 }
+// Follow-up raised from the Collections page against an overdue sales order.
+// Reuses the order's own client and representative. If the order already has an
+// open follow-up (the automatic "Payment overdue" one), that one is returned
+// instead of creating a duplicate.
+export async function createForOrder(organizationId: string, orderId: string, input: { title: string; dueAt: string; priority: string; notes?: string | null }, scope?: IndustryScope) {
+  const { data: order, error: orderError } = await supabaseAdmin.from('sale_orders').select('id, client_id, representative_id, clients(industry_type_id)').eq('id', orderId).eq('organization_id', organizationId).maybeSingle();
+  if (orderError) fail(orderError);
+  if (!order) throw new AppError(404, 'ORDER_NOT_FOUND', 'Order not found in this organization.');
+  if (scope) {
+    const clientRow = order.clients as unknown as { industry_type_id?: string | null } | { industry_type_id?: string | null }[] | null;
+    const orderIndustryTypeId = Array.isArray(clientRow) ? clientRow[0]?.industry_type_id : clientRow?.industry_type_id;
+    assertRecordInScope(scope, orderIndustryTypeId, new AppError(404, 'ORDER_NOT_FOUND', 'Order not found in this organization.'));
+  }
+  const select = '*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))';
+  const { data: existing, error: existingError } = await supabaseAdmin.from('follow_ups').select(select).eq('organization_id', organizationId).eq('sale_order_id', order.id).in('status', ['pending', 'in_progress']).limit(1).maybeSingle();
+  if (existingError) fail(existingError);
+  if (existing) return existing;
+  const { data, error } = await supabaseAdmin.from('follow_ups').insert({ organization_id: organizationId, representative_id: order.representative_id, client_id: order.client_id, sale_order_id: order.id, title: input.title, due_at: input.dueAt, priority: input.priority, notes: input.notes ?? null }).select(select).single();
+  return error ? fail(error) : data;
+}
 // Scans confirmed sale_orders older than OVERDUE_DAYS with an outstanding
 // balance, and creates one follow-up per order that doesn't already have
 // one. Called opportunistically whenever the follow-ups list is fetched —

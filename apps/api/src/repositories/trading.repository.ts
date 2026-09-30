@@ -9,8 +9,14 @@ import {
 import { resolveIndustryTypeId, assertRecordInScope } from '../lib/industry-scope.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { logger } from '../lib/logger.js';
+import { sumInCurrency } from '../lib/currency-sum.js';
 import { sendPurchaseEnquiryEmail } from '../services/purchase-enquiry-email.service.js';
 import { promoteEnquiriesToComparison } from '../services/purchase-enquiry-comparison.service.js';
+import {
+  OPEN_COMPLIANCE_STATUSES, buildComplianceSnapshot, complianceTypeFor, customsFromTransaction, nextReference,
+  nextTransactionStatusFromCustoms, nextTransactionStatusFromShipment,
+} from '../lib/trade-links.js';
+import type { ComplianceInputs } from '../lib/trade-links.js';
 
 const fail = (error: unknown): never => { throw error; };
 
@@ -38,6 +44,47 @@ async function baseRateFor(org: string, industryTypeId: unknown, currency: strin
   if (direct) return { base, rate: Number(direct.exchange_rate) };
   const inverse = active.find((r) => same(r.base_currency, base) && same(r.target_currency, code));
   return { base, rate: inverse ? 1 / Number(inverse.exchange_rate) : null };
+}
+
+// Records that carry an amount in their own currency. The exchange rate, company currency and converted value are
+// worked out HERE from Currency Management, never trusted from the form: a stale rate of 1 (INR picked first, then
+// switched to USD) used to be saved as-is. Value = the column the admin form converts (see currencyLookup targets).
+const RATE_STAMPED_AMOUNT: Record<string, string> = {
+  trading_logistics: 'freight_cost',
+  trading_import_export: 'total_value',
+  trading_customs: 'declared_value',
+  trading_claims: 'claimed_value',
+};
+
+async function stampForeignRate(table: string, org: string, industryTypeId: unknown, payload: Record<string, unknown>, existing: Record<string, unknown> = {}) {
+  const amountKey = RATE_STAMPED_AMOUNT[table];
+  if (!amountKey) return;
+  if (!('currency' in payload) && !(amountKey in payload)) return;
+  const currency = String(('currency' in payload ? payload.currency : existing.currency) ?? '').trim();
+  if (!currency) return;
+  const fx = await baseRateFor(org, industryTypeId, currency);
+  if (fx.rate == null) {
+    throw new AppError(422, 'NO_EXCHANGE_RATE', `There is no active ${currency.toUpperCase()} to ${fx.base} exchange rate in Currency Management. Add one, then save this record again.`);
+  }
+  const amount = Number(amountKey in payload ? payload[amountKey] : existing[amountKey]) || 0;
+  payload.exchange_rate = Number(fx.rate.toFixed(6));
+  payload.base_currency = fx.base;
+  payload.base_value = Number((amount * fx.rate).toFixed(2));
+}
+
+// An Import / Export record must agree with the shipment it is raised for: goods going out to a customer are an
+// Export, goods coming in from a supplier are an Import. Shipments with no direction (older rows) are not checked.
+async function assertTypeMatchesShipment(org: string, payload: Record<string, unknown>, existing: Record<string, unknown> = {}) {
+  if (!('transaction_type' in payload) && !('shipment_number' in payload)) return;
+  const type = String(('transaction_type' in payload ? payload.transaction_type : existing.transaction_type) ?? '').trim();
+  const shipmentNumber = String(('shipment_number' in payload ? payload.shipment_number : existing.shipment_number) ?? '').trim();
+  if (!shipmentNumber || (type !== 'Import' && type !== 'Export')) return;
+  const { data } = await supabaseAdmin.from('trading_shipments').select('direction').eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
+  const direction = String((data as { direction?: string | null } | null)?.direction ?? '').toLowerCase();
+  const expected = direction === 'outbound' ? 'Export' : direction === 'inbound' ? 'Import' : '';
+  if (expected && expected !== type) {
+    throw new AppError(422, 'TRANSACTION_TYPE_MISMATCH', `Shipment ${shipmentNumber} is ${direction} (goods ${direction === 'outbound' ? 'going out to the customer' : 'coming in from the supplier'}), so this must be an ${expected}, not an ${type}.`);
+  }
 }
 
 // A foreign-currency deal cannot be Confirmed without a rate: the core FS- order that Collections reads is
@@ -76,13 +123,35 @@ async function cascadeShipmentStatus(org: string, shipment: Record<string, unkno
     if (!mapping) return;
     const orderNumber = typeof shipment.order_number === 'string' ? shipment.order_number : undefined;
     const dealNumber = typeof shipment.deal_number === 'string' ? shipment.deal_number : undefined;
-    if (orderNumber) {
-      const { error } = await supabaseAdmin.from('trading_sales_orders').update({ status: mapping.order }).eq('organization_id', org).eq('order_number', orderNumber);
+    // A deal or order with several shipments is Completed only when EVERY one of them is finished, and a Completed
+    // deal / order is never moved back to an earlier stage by a later shipment.
+    const FINISHED = ['Delivered', 'Completed', 'Cancelled'];
+    const allShipmentsFinished = async (column: 'deal_number' | 'order_number', value: string): Promise<boolean> => {
+      const { data, error } = await supabaseAdmin.from('trading_shipments').select('status').eq('organization_id', org).eq(column, value);
       if (error) throw error;
+      return (data ?? []).every((s) => FINISHED.includes(String((s as Row).status ?? '')));
+    };
+    if (orderNumber) {
+      const { data: currentOrder, error: orderReadError } = await supabaseAdmin.from('trading_sales_orders').select('status').eq('organization_id', org).eq('order_number', orderNumber).maybeSingle();
+      if (orderReadError) throw orderReadError;
+      const orderDone = String((currentOrder as Row | null)?.status ?? '') === 'Completed';
+      const allowed = mapping.order === 'Completed' ? await allShipmentsFinished('order_number', orderNumber) : !orderDone;
+      if (allowed) {
+        const { error } = await supabaseAdmin.from('trading_sales_orders').update({ status: mapping.order }).eq('organization_id', org).eq('order_number', orderNumber);
+        if (error) throw error;
+      }
     }
     if (mapping.deal && dealNumber) {
-      const { error } = await supabaseAdmin.from('trading_deals').update({ status: mapping.deal }).eq('organization_id', org).eq('deal_number', dealNumber);
-      if (!error && mapping.deal === 'Completed') await autoCreateProfitabilitySnapshot(org, dealNumber, true);      if (error) throw error;
+      const { data: currentDeal, error: dealReadError } = await supabaseAdmin.from('trading_deals').select('status').eq('organization_id', org).eq('deal_number', dealNumber).maybeSingle();
+      if (dealReadError) throw dealReadError;
+      const dealDone = String((currentDeal as Row | null)?.status ?? '') === 'Completed';
+      const allowed = mapping.deal === 'Completed' ? await allShipmentsFinished('deal_number', dealNumber) : !dealDone;
+      if (allowed) {
+        const { error } = await supabaseAdmin.from('trading_deals').update({ status: mapping.deal }).eq('organization_id', org).eq('deal_number', dealNumber);
+        if (!error && mapping.deal === 'Completed') await syncProfitabilitySnapshot(org, dealNumber, 'Completed', true);
+        if (!error && mapping.deal === 'In Progress') await syncProfitabilitySnapshot(org, dealNumber, 'In Progress');
+        if (error) throw error;
+      }
     }
   } catch (error) {
     logger.error({ err: error, shipmentNumber: shipment.shipment_number }, 'Shipment status cascade to order/deal failed');
@@ -260,10 +329,14 @@ async function convertConfirmedDealToOrders(org: string, deal: Record<string, un
 
     const customerId = typeof deal.customer_id === 'string' ? deal.customer_id : undefined;
     const productName = typeof deal.product_name === 'string' ? deal.product_name : undefined;
+       if (!deal.core_order_number && (!customerId || !productName)) {
+      logger.warn({ dealNumber }, 'Core order NOT created: the deal has no customer ID or product. Pick the customer from the list and save again.');
+    }
     if (customerId && productName && !deal.core_order_number && fx.rate == null) {
       logger.error({ dealNumber, currency: deal.currency }, 'Core order NOT created: no exchange rate to the company currency. Add the rate in Currency Management.');
     } else if (customerId && productName && !deal.core_order_number) {
-      const { data: product } = await supabaseAdmin.from('products').select('id').eq('organization_id', org).eq('product_name', productName).limit(1).maybeSingle();
+         const { data: product } = await supabaseAdmin.from('products').select('id').eq('organization_id', org).ilike('product_name', productName.trim()).limit(1).maybeSingle();
+      if (!product) logger.warn({ dealNumber, productName }, 'Core order NOT created: no product in the catalog with this name.');
       if (product) {
         const coreOrderNumber = `FS-${suffix}`;
         const { data: existingCore } = await supabaseAdmin.from('sale_orders').select('id, order_number').eq('organization_id', org).eq('order_number', coreOrderNumber).limit(1).maybeSingle();
@@ -383,10 +456,18 @@ async function autoCreateInboundShipmentForDeal(org: string, deal: Record<string
     logger.error({ err: error, dealNumber: deal.deal_number }, 'Automatic inbound shipment lookup for deal failed');
   }
 }
-// Auto Profitability snapshot: when a Deal is Completed, save one Deal-level
-// analysis row. Same formulas as chainFinancials() in admin/src/lib/tradingChain.ts.
-// Missing costs stay null (never 0). Skips if a Deal-level analysis already exists.
-// Never throws, so it can never block a deal / shipment save.
+// Auto Profitability: ONE Deal-level row per deal that moves through stages.
+//   Confirmed   -> created as [Estimated]   (agreed revenue minus the costs known so far)
+//   In Progress -> updated as [Provisional] (real costs replace estimates as they are entered)
+//   Completed   -> set to [Final] and locked (never auto-changed again)
+//   Refresh     -> a cost record changed: recalculate, keeping the current stage
+// The stage is stored as a tag at the start of `notes`. A row with no tag (older rows, or
+// one made by hand) is treated as Final and is never overwritten.
+// Same formulas as chainFinancials() in admin/src/lib/tradingChain.ts.
+// Missing costs stay null (never 0). Never throws, so it can never block a deal / shipment save.
+type ProfitStage = 'Confirmed' | 'In Progress' | 'Completed' | 'Refresh';
+const PROFIT_BASIS: Record<Exclude<ProfitStage, 'Refresh'>, string> = { 'Confirmed': 'Estimated', 'In Progress': 'Provisional', 'Completed': 'Final' };
+const PROFIT_TAG = /^\[(Estimated|Provisional|Final)\]/;
 type Row = Record<string, unknown>;
 const EARNED_COMMISSION_STATUSES = ['Eligible', 'Approved', 'Payable', 'Paid'];
 const toNum = (v: unknown): number | null => {
@@ -398,18 +479,34 @@ const sumOf = (rows: Row[], key: string): number | null => {
   const values = rows.map((r) => toNum(r[key])).filter((n): n is number => n != null);
   return values.length ? values.reduce((a, b) => a + b, 0) : null;
 };
+// Logistics and Customs rows are saved in the currency they were paid in (e.g. USD 3,000) together with the rate and
+// the company currency. Profit is reported in the DEAL's currency, so every such amount goes through sumInCurrency()
+// (lib/currency-sum.ts) - the same rule the admin Recalculate button uses (sumInCurrency in tradingChain.ts).
 const mergeRows = (...lists: Row[][]): Row[] => {
   const seen = new Map<string, Row>();
   for (const list of lists) for (const row of list) seen.set(String(row.id ?? `${seen.size}`), row);
   return [...seen.values()];
 };
 
-async function autoCreateProfitabilitySnapshot(org: string, dealNumber: string, requireDelivered = false) {
+async function syncProfitabilitySnapshot(org: string, dealNumber: string, stage: ProfitStage, requireDelivered = false, lateCost = false) {
   try {
-    const { data: already, error: alreadyError } = await supabaseAdmin.from('trading_profitability').select('id')
+    const { data: existingRow, error: existingError } = await supabaseAdmin.from('trading_profitability').select('*')
       .eq('organization_id', org).eq('deal_number', dealNumber).eq('analysis_level', 'Deal').limit(1).maybeSingle();
-    if (alreadyError) throw alreadyError;
-    if (already) return;
+    if (existingError) throw existingError;
+    const existingProfit = (existingRow ?? null) as Row | null;
+    const existingNotes = String(existingProfit?.notes ?? '');
+    // Rows made by the system before stages existed count as Final; hand-made rows are never touched.
+    const existingTag = PROFIT_TAG.exec(existingNotes)?.[1] ?? (/^Automatically created when deal/.test(existingNotes) ? 'Final' : undefined);
+    if (existingProfit && !existingTag) return;
+    // Final is locked, except that a late cost (commission becomes Eligible only after delivery and payment,
+    // finance charges arrive with the bank) is added to it.
+    const reopenFinal = existingTag === 'Final' && stage === 'Refresh' && lateCost;
+    if (existingProfit && existingTag === 'Final' && !reopenFinal) return;
+    // A cost changed but this deal has no live profit row yet: nothing to refresh.
+    if (stage === 'Refresh' && !existingProfit) return;
+    const basis = stage === 'Refresh' ? String(existingTag) : PROFIT_BASIS[stage];
+    // Never move backwards (e.g. saving a Confirmed deal again after it is In Progress).
+    if (existingTag === 'Provisional' && basis === 'Estimated') return;
 
     const { data: deal, error: dealError } = await supabaseAdmin.from('trading_deals').select('*')
       .eq('organization_id', org).eq('deal_number', dealNumber).maybeSingle();
@@ -432,7 +529,7 @@ async function autoCreateProfitabilitySnapshot(org: string, dealNumber: string, 
     ]);
 
     // Shipment-driven completion: wait until every shipment of the deal is delivered.
-    if (requireDelivered && shipments.some((s) => !['Delivered', 'Completed', 'Cancelled'].includes(String(s.status ?? '')))) return;
+    if (stage === 'Completed' && requireDelivered && shipments.some((s) => !['Delivered', 'Completed', 'Cancelled'].includes(String(s.status ?? '')))) return;
 
     const shipmentNumbers = shipments.map((s) => String(s.shipment_number ?? '')).filter(Boolean);
     const transactionNumbers = tradeRows.map((t) => String(t.transaction_number ?? '')).filter(Boolean);
@@ -467,7 +564,9 @@ async function autoCreateProfitabilitySnapshot(org: string, dealNumber: string, 
     let purchaseCost: number | null = null;
     let purchaseSource = '';
     {
-      const q = toNum(dealRow.quantity); const rate = toNum(dealRow.purchase_rate);
+      const soldQty = toNum(dealRow.customer_quantity);
+      const q = soldQty != null && soldQty > 0 ? soldQty : toNum(dealRow.quantity);
+      const rate = toNum(dealRow.purchase_rate);
       const supplierDiscount = toNum(dealRow.purchase_discount_percent) ?? 0;
       if (q != null && rate != null) { purchaseCost = q * rate * (1 - supplierDiscount / 100); purchaseSource = supplierDiscount ? `Deal · qty x purchase rate less ${supplierDiscount}% supplier discount` : 'Deal · qty x purchase rate'; }
     }
@@ -477,24 +576,42 @@ async function autoCreateProfitabilitySnapshot(org: string, dealNumber: string, 
       if (q != null && rate != null) { purchaseCost = q * rate * (1 - enquiryDiscount / 100); purchaseSource = enquiryDiscount ? `Purchase Enquiry · requested rate less ${enquiryDiscount}% supplier discount` : 'Purchase Enquiry · requested rate'; }
     }
 
-    const logisticsFreight = sumOf(logistics, 'freight_cost');
-    const freight = logisticsFreight ?? sumOf(shipments, 'freight_cost');
-    const freightSource = logisticsFreight != null ? 'Logistics · freight charges' : (freight != null ? 'Shipment · freight cost' : '');
-    const customsDuty = sumOf(customs, 'customs_duty');
-    const portCharges = sumOf(customs, 'other_charges');
-    const otherCosts = sumOf(logistics, 'other_charges');
+    const logisticsFreight = sumInCurrency(logistics, 'freight_cost', currency);
+    let freight = logisticsFreight;
+    if (freight == null) {
+      // A shipment's own freight is in the company currency; the report is in the deal's currency.
+      const shipmentFreight = sumOf(shipments, 'freight_cost');
+      const fx = shipmentFreight != null ? await baseRateFor(org, dealRow.industry_type_id, currency) : null;
+      freight = shipmentFreight != null && fx && fx.rate != null && fx.rate > 0 ? Math.round((shipmentFreight / fx.rate) * 100) / 100 : shipmentFreight;
+    }
+    const freightSource = logisticsFreight != null ? `Logistics · freight charges (in ${currency})` : (freight != null ? 'Shipment · freight cost' : '');
+    // Customs duty and port charges are levied in the company currency (the Customs page shows them that way), so
+    // they are NOT multiplied by the record's own exchange rate; they only move into the deal's currency when that differs.
+    const dealFx = await baseRateFor(org, dealRow.industry_type_id, currency);
+    const fromCompanyCurrency = (n: number | null): number | null => (n != null && dealFx.rate != null && dealFx.rate > 0 && currency.trim().toUpperCase() !== dealFx.base ? Math.round((n / dealFx.rate) * 100) / 100 : n);
+    const customsDuty = fromCompanyCurrency(sumOf(customs, 'customs_duty'));
+    const portCharges = fromCompanyCurrency(sumOf(customs, 'other_charges'));
+    const otherCosts = sumInCurrency(logistics, 'other_charges', currency);
     const financeCharges = sumOf(finance, 'finance_charges');
     const commission = sumOf(commissions.filter((c) => EARNED_COMMISSION_STATUSES.includes(String(c.status ?? ''))), 'commission_amount');
 
-    const lines: Array<{ key: string; label: string; amount: number | null; source: string }> = [
+    // "Not applicable": a cost that can never exist for this deal is not counted as missing.
+    // Same wording and rules as chainFinancials() in the admin tradingChain.ts.
+    const isTradeDeal = tradeRows.length > 0 || customs.length > 0;
+    const naTrade = !isTradeDeal ? 'domestic deal, no import/export or customs record' : undefined;
+    const naFinance = finance.length === 0 ? 'no trade finance record' : undefined;
+    const naCommission = commissions.length === 0 && !String(dealRow.sales_rep ?? '').trim() ? 'no commission record or sales rep' : undefined;
+    const insuranceAmount = toNum(existingProfit?.insurance);
+
+    const lines: Array<{ key: string; label: string; amount: number | null; source: string; na?: string }> = [
       { key: 'purchase_cost', label: 'Purchase / product cost', amount: purchaseCost, source: purchaseSource },
       { key: 'freight', label: 'Freight / logistics', amount: freight, source: freightSource },
-      { key: 'customs_duty', label: 'Customs duty', amount: customsDuty, source: customsDuty != null ? 'Customs & Clearance' : '' },
-      { key: 'port_charges', label: 'Port / clearance charges', amount: portCharges, source: portCharges != null ? 'Customs & Clearance · other charges' : '' },
-      { key: 'insurance', label: 'Insurance', amount: null, source: '' },
-      { key: 'other_costs', label: 'Other trade costs', amount: otherCosts, source: otherCosts != null ? 'Logistics · other charges' : '' },
-      { key: 'finance_charges', label: 'Trade finance charges', amount: financeCharges, source: financeCharges != null ? 'Trade Finance' : '' },
-      { key: 'commission', label: 'Commission', amount: commission, source: commission != null ? 'Commission Management · earned' : '' },
+      { key: 'customs_duty', label: 'Customs duty', amount: customsDuty, source: customsDuty != null ? 'Customs & Clearance' : '', na: customsDuty == null ? naTrade : undefined },
+      { key: 'port_charges', label: 'Port / clearance charges', amount: portCharges, source: portCharges != null ? 'Customs & Clearance · other charges' : '', na: portCharges == null ? naTrade : undefined },
+      { key: 'insurance', label: 'Insurance', amount: insuranceAmount, source: insuranceAmount != null ? 'Entered manually' : '', na: insuranceAmount == null ? 'optional, not entered' : undefined },
+      { key: 'other_costs', label: 'Other trade costs', amount: otherCosts, source: otherCosts != null ? `Logistics · other charges (in ${currency})` : '', na: otherCosts == null ? 'optional, none entered' : undefined },
+      { key: 'finance_charges', label: 'Trade finance charges', amount: financeCharges, source: financeCharges != null ? 'Trade Finance' : '', na: financeCharges == null ? naFinance : undefined },
+      { key: 'commission', label: 'Commission', amount: commission, source: commission != null ? 'Commission Management · earned' : '', na: commission == null ? naCommission : undefined },
     ];
 
     const recorded = lines.map((l) => l.amount).filter((n): n is number => n != null);
@@ -523,17 +640,305 @@ async function autoCreateProfitabilitySnapshot(org: string, dealNumber: string, 
       currency,
       revenue,
       revenue_source: revenueSource || null,
-      cost_sources: lines.map((l) => `${l.label}: ${l.amount == null ? 'not recorded' : `${l.amount} (${l.source})`}`).join('\n'),
+      cost_sources: lines.map((l) => `${l.label}: ${l.amount == null ? (l.na ? `not applicable (${l.na})` : 'not recorded') : `${l.amount} (${l.source})`}`).join('\n'),
       status: profitStatus,
-      notes: `Automatically created when deal ${dealNumber} was completed.`,
+      notes: [
+        `[${basis}] ${reopenFinal ? `Final figures, revised ${new Date().toISOString().slice(0, 10)} when a late cost (commission, finance, logistics or customs) was recorded.` : basis === 'Final' ? `Final figures, locked when deal ${dealNumber} was completed.` : basis === 'Provisional' ? `Provisional: deal ${dealNumber} is in progress; costs update as they are recorded.` : `Estimate created when deal ${dealNumber} was confirmed; costs update as they are recorded.`}`,
+        ...existingNotes.split('\n').slice(1),
+      ].join('\n').trim(),
     };
     for (const line of lines) record[line.key] = line.amount;
 
-    const { error } = await supabaseAdmin.from('trading_profitability').insert(record);
-    if (error && error.code !== '23505') throw error;
+    if (existingProfit) {
+      const { organization_id: _org, ...changes } = record;
+      const { error } = await supabaseAdmin.from('trading_profitability').update(changes).eq('organization_id', org).eq('id', existingProfit.id as string);
+      if (error) throw error;
+    } else {
+      const { error } = await supabaseAdmin.from('trading_profitability').insert(record);
+      if (error && error.code !== '23505') throw error;
+    }
   } catch (error) {
-    logger.error({ err: error, dealNumber }, 'Automatic profitability snapshot failed');
+    logger.error({ err: error, dealNumber }, 'Automatic profitability sync failed');
   }
+}
+
+// A cost-carrying record was saved (logistics, customs, finance, commission, shipment, import/export):
+// recalculate that deal's profit if it already has a live (Estimated / Provisional) row.
+const PROFIT_COST_TABLES = new Set(['trading_logistics', 'trading_customs', 'trading_trade_finance', 'trading_commissions', 'trading_shipments', 'trading_import_export']);
+// Costs that can legitimately arrive after the deal is Final: they reopen a system-made Final row (never a hand-made one).
+const LATE_COST_TABLES = new Set(['trading_commissions', 'trading_trade_finance', 'trading_logistics', 'trading_customs']);
+async function refreshProfitabilityForRecord(org: string, table: string, row: Row) {
+  try {
+    if (!PROFIT_COST_TABLES.has(table)) return;
+    let dealNumber = typeof row.deal_number === 'string' ? row.deal_number : '';
+    if (!dealNumber && typeof row.shipment_number === 'string' && row.shipment_number) {
+      const { data } = await supabaseAdmin.from('trading_shipments').select('deal_number').eq('organization_id', org).eq('shipment_number', row.shipment_number).limit(1).maybeSingle();
+      dealNumber = String((data as Row | null)?.deal_number ?? '');
+    }
+    if (!dealNumber && typeof row.transaction_number === 'string' && row.transaction_number) {
+      const { data } = await supabaseAdmin.from('trading_import_export').select('deal_number').eq('organization_id', org).eq('transaction_number', row.transaction_number).limit(1).maybeSingle();
+      dealNumber = String((data as Row | null)?.deal_number ?? '');
+    }
+    if (dealNumber) await syncProfitabilitySnapshot(org, dealNumber, 'Refresh', false, LATE_COST_TABLES.has(table));
+  } catch (error) {
+    logger.error({ err: error, table }, 'Profitability refresh after cost change failed');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Import/Export <-> Customs <-> Compliance links.
+// Same rules as the other cascades in this file: every helper is best-effort and NEVER throws,
+// because the record the person just saved has already succeeded.
+// ---------------------------------------------------------------------------
+
+// Marks a compliance check the system opened itself. While it says this, the suggested risk keeps following the paperwork.
+const AUTO_CHECKED_BY = 'System (auto)';
+
+/** Next free "<PREFIX>-<year>-<0001>" across the WHOLE organization (the database's unique rule counts every industry). */
+async function nextOrgReference(org: string, table: string, column: string, prefix: string): Promise<string> {
+  const year = new Date().getFullYear();
+  const { data, error } = await supabaseAdmin.from(table).select(column).eq('organization_id', org).like(column, `${prefix}-${year}-%`);
+  if (error) throw error;
+  return nextReference(prefix, ((data ?? []) as unknown as Row[]).map((r) => r[column]), year);
+}
+
+const cleanList = (values: unknown[]): string[] => [...new Set(values.map((v) => (v == null ? '' : String(v).trim())).filter(Boolean))];
+
+/** Rows of `table` that match ANY of the given keys (deduplicated by id). Skips a key when it has no values. */
+async function fetchByAnyKey(org: string, table: string, keys: Record<string, string[]>): Promise<Row[]> {
+  const found = new Map<string, Row>();
+  for (const [column, values] of Object.entries(keys)) {
+    if (values.length === 0) continue;
+    const { data, error } = await supabaseAdmin.from(table).select('*').eq('organization_id', org).in(column, values);
+    if (error) throw error;
+    for (const row of (data ?? []) as Row[]) found.set(String(row.id), row);
+  }
+  return [...found.values()];
+}
+
+/** Reads the shipment, transaction, customs, document and claim records a compliance check depends on. */
+async function loadComplianceInputs(org: string, anchor: { deal_number?: unknown; shipment_number?: unknown; transaction_number?: unknown }): Promise<ComplianceInputs> {
+  const shipmentNumber = String(anchor.shipment_number ?? '').trim();
+  const transactionNumber = String(anchor.transaction_number ?? '').trim();
+  let dealNumber = String(anchor.deal_number ?? '').trim();
+
+  // Anchor on the shipment when there is one, otherwise on the deal (the same order the screen uses).
+  const shipments = shipmentNumber
+    ? await fetchByAnyKey(org, 'trading_shipments', { shipment_number: [shipmentNumber] })
+    : await fetchByAnyKey(org, 'trading_shipments', { deal_number: cleanList([dealNumber]) });
+  if (!dealNumber) dealNumber = String(shipments[0]?.deal_number ?? '').trim();
+  const shipmentNumbers = cleanList([shipmentNumber, ...shipments.map((s) => s.shipment_number)]);
+  const deals = cleanList([dealNumber]);
+
+  const transactions = await fetchByAnyKey(org, 'trading_import_export', { transaction_number: cleanList([transactionNumber]), shipment_number: shipmentNumbers, deal_number: deals });
+  const transactionNumbers = cleanList([transactionNumber, ...transactions.map((t) => t.transaction_number)]);
+  const customs = await fetchByAnyKey(org, 'trading_customs', { shipment_number: shipmentNumbers, transaction_number: transactionNumbers });
+  const documents = await fetchByAnyKey(org, 'trading_documents', { shipment_number: shipmentNumbers, deal_number: deals });
+  const claims = await fetchByAnyKey(org, 'trading_claims', { shipment_number: shipmentNumbers, transaction_number: transactionNumbers });
+  return { transactions, customs, shipments, documents, claims };
+}
+
+// A new Import/Export transaction always needs a customs declaration, so start one (status "Not Started").
+// Skipped when this transaction already has one (a person may have raised it by hand first).
+async function autoCreateCustomsForTransaction(org: string, txn: Row) {
+  try {
+    const transactionNumber = String(txn.transaction_number ?? '').trim();
+    if (!transactionNumber || txn.status === 'Cancelled') return;
+    const { data: existing, error: existingError } = await supabaseAdmin.from('trading_customs').select('id').eq('organization_id', org).eq('transaction_number', transactionNumber).limit(1).maybeSingle();
+    if (existingError) throw existingError;
+    if (existing) return;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const reference = await nextOrgReference(org, 'trading_customs', 'customs_reference', 'CUS');
+      const { error } = await supabaseAdmin.from('trading_customs').insert({ ...customsFromTransaction(txn, reference), organization_id: org, industry_type_id: txn.industry_type_id ?? null });
+      if (!error) return;
+      if (error.code !== '23505') throw error;
+    }
+  } catch (error) {
+    logger.error({ err: error, transactionNumber: txn.transaction_number }, 'Automatic customs record for the transaction failed');
+  }
+}
+
+// A new Import/Export transaction also gets a Compliance check, so paperwork gaps show up without anyone remembering to look.
+// It starts open ("Pending Review" / "Failed") and is NEVER auto-passed - a person signs it off.
+async function autoCreateComplianceForTransaction(org: string, txn: Row) {
+  try {
+    const transactionNumber = String(txn.transaction_number ?? '').trim();
+    const shipmentNumber = String(txn.shipment_number ?? '').trim();
+    if (!transactionNumber || txn.status === 'Cancelled') return;
+    const already = await fetchByAnyKey(org, 'trading_compliance', { transaction_number: [transactionNumber], shipment_number: cleanList([shipmentNumber]) });
+    if (already.length > 0) return;
+    const inputs = await loadComplianceInputs(org, txn);
+    const snapshot = buildComplianceSnapshot(inputs);
+    const customs = inputs.customs[0];
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const reference = await nextOrgReference(org, 'trading_compliance', 'compliance_reference', 'CMP');
+      const { error } = await supabaseAdmin.from('trading_compliance').insert({
+        organization_id: org,
+        industry_type_id: txn.industry_type_id ?? null,
+        compliance_reference: reference,
+        compliance_type: complianceTypeFor(txn.transaction_type),
+        deal_number: txn.deal_number ?? null,
+        shipment_number: txn.shipment_number ?? null,
+        transaction_number: transactionNumber,
+        customs_reference: customs?.customs_reference ?? null,
+        customer_name: txn.customer_name ?? null,
+        supplier_name: txn.supplier_name ?? null,
+        product_name: txn.product_name ?? null,
+        country: txn.destination_country ?? null,
+        hs_code: customs?.hs_code ?? null,
+        incoterm: txn.incoterm ?? null,
+        required_documents: snapshot.required_documents,
+        missing_documents: snapshot.missing_documents,
+        expired_documents: snapshot.expired_documents,
+        document_status: snapshot.document_status,
+        customs_status: snapshot.customs_status,
+        shipment_status: snapshot.shipment_status,
+        risk_level: snapshot.suggested_risk,
+        check_date: new Date().toISOString().slice(0, 10),
+        checked_by: AUTO_CHECKED_BY,
+        status: snapshot.suggested_status,
+        notes: `Automatically created from ${transactionNumber}.`,
+      });
+      if (!error) return;
+      if (error.code !== '23505') throw error;
+    }
+  } catch (error) {
+    logger.error({ err: error, transactionNumber: txn.transaction_number }, 'Automatic compliance check for the transaction failed');
+  }
+}
+
+// Customs moved (declaration submitted, duty paid, cleared...): move the Import/Export transaction that it belongs to.
+async function syncTransactionFromCustoms(org: string, customs: Row) {
+  try {
+    const clearance = String(customs.clearance_status ?? '').trim();
+    if (!clearance) return;
+    let query = supabaseAdmin.from('trading_import_export').select('*').eq('organization_id', org);
+    const transactionNumber = String(customs.transaction_number ?? '').trim();
+    const shipmentNumber = String(customs.shipment_number ?? '').trim();
+    if (transactionNumber) query = query.eq('transaction_number', transactionNumber);
+    else if (shipmentNumber) query = query.eq('shipment_number', shipmentNumber);
+    else return;
+    const { data, error } = await query;
+    if (error) throw error;
+    for (const txn of (data ?? []) as Row[]) {
+      const next = nextTransactionStatusFromCustoms(String(txn.status ?? ''), clearance);
+      if (!next) continue;
+      const { data: updated, error: updateError } = await supabaseAdmin.from('trading_import_export').update({ status: next }).eq('organization_id', org).eq('id', txn.id as string).select().maybeSingle();
+      if (updateError) throw updateError;
+      if (updated) await refreshComplianceForRecord(org, 'trading_import_export', updated as Row);
+    }
+  } catch (error) {
+    logger.error({ err: error, customsReference: customs.customs_reference }, 'Syncing the transaction status from customs failed');
+  }
+}
+
+// A shipment moved (dispatched, in transit, arrived, delivered): move the Import/Export transaction that carries it.
+async function syncTransactionFromShipment(org: string, shipment: Row) {
+  try {
+    const shipmentNumber = String(shipment.shipment_number ?? '').trim();
+    const status = String(shipment.status ?? '').trim();
+    if (!shipmentNumber || !status) return;
+    const { data, error } = await supabaseAdmin.from('trading_import_export').select('*').eq('organization_id', org).eq('shipment_number', shipmentNumber);
+    if (error) throw error;
+    for (const txn of (data ?? []) as Row[]) {
+      const next = nextTransactionStatusFromShipment(String(txn.status ?? ''), status);
+      if (!next) continue;
+      const patch: Row = { status: next };
+      if (status === 'Delivered' && !txn.actual_arrival_date) patch.actual_arrival_date = shipment.actual_delivery_date ?? new Date().toISOString().slice(0, 10);
+      const { error: updateError } = await supabaseAdmin.from('trading_import_export').update(patch).eq('organization_id', org).eq('id', txn.id as string);
+      if (updateError) throw updateError;
+    }
+  } catch (error) {
+    logger.error({ err: error, shipmentNumber: shipment.shipment_number }, 'Syncing the transaction status from its shipment failed');
+  }
+}
+
+// Paperwork, customs, the transaction or the shipment changed: re-read the position and refresh every OPEN compliance check
+// that depends on it. A check a person has already signed off (Passed, Resolved, Closed, Exception...) is left exactly as they left it.
+const COMPLIANCE_WATCHED_TABLES = new Set(['trading_documents', 'trading_customs', 'trading_import_export', 'trading_shipments', 'trading_claims']);
+async function refreshComplianceForRecord(org: string, table: string, row: Row) {
+  try {
+    if (!COMPLIANCE_WATCHED_TABLES.has(table)) return;
+    let shipmentNumber = String(row.shipment_number ?? '').trim();
+    const transactionNumber = String(row.transaction_number ?? '').trim();
+    let dealNumber = String(row.deal_number ?? '').trim();
+    if (!dealNumber && shipmentNumber) {
+      const { data } = await supabaseAdmin.from('trading_shipments').select('deal_number').eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
+      dealNumber = String((data as Row | null)?.deal_number ?? '').trim();
+    }
+    if (!shipmentNumber && transactionNumber) {
+      const { data } = await supabaseAdmin.from('trading_import_export').select('shipment_number').eq('organization_id', org).eq('transaction_number', transactionNumber).limit(1).maybeSingle();
+      shipmentNumber = String((data as Row | null)?.shipment_number ?? '').trim();
+    }
+    const checks = await fetchByAnyKey(org, 'trading_compliance', { shipment_number: cleanList([shipmentNumber]), transaction_number: cleanList([transactionNumber]), deal_number: cleanList([dealNumber]) });
+    for (const check of checks) {
+      if (!OPEN_COMPLIANCE_STATUSES.includes(String(check.status ?? '').trim())) continue;
+      const inputs = await loadComplianceInputs(org, check);
+      const snapshot = buildComplianceSnapshot(inputs);
+      const customs = inputs.customs[0];
+      const trade = inputs.transactions[0];
+      const patch: Row = {
+        required_documents: snapshot.required_documents,
+        missing_documents: snapshot.missing_documents,
+        expired_documents: snapshot.expired_documents,
+        document_status: snapshot.document_status,
+        customs_status: snapshot.customs_status,
+        shipment_status: snapshot.shipment_status,
+        check_date: new Date().toISOString().slice(0, 10),
+        status: snapshot.suggested_status,
+      };
+      // Fill blanks only - never overwrite something a person typed.
+      const fillIfBlank = (key: string, value: unknown) => { if (!String(check[key] ?? '').trim() && value != null && value !== '') patch[key] = value; };
+      fillIfBlank('transaction_number', trade?.transaction_number);
+      fillIfBlank('customs_reference', customs?.customs_reference);
+      fillIfBlank('hs_code', customs?.hs_code);
+      fillIfBlank('country', trade?.destination_country ?? customs?.destination_country);
+      fillIfBlank('incoterm', trade?.incoterm);
+      // The suggested risk follows the paperwork only until a person puts their own name on the check.
+      const checkedBy = String(check.checked_by ?? '').trim();
+      if (!checkedBy || checkedBy === AUTO_CHECKED_BY) patch.risk_level = snapshot.suggested_risk;
+      const { error } = await supabaseAdmin.from('trading_compliance').update(patch).eq('organization_id', org).eq('id', check.id as string);
+      if (error) throw error;
+    }
+  } catch (error) {
+    logger.error({ err: error, table }, 'Refreshing compliance checks after a change failed');
+  }
+}
+
+// One place that runs every Import/Export <-> Customs <-> Compliance follow-up for a saved record.
+async function runTradeLinks(org: string, table: string, row: Row, isCreate: boolean) {
+  if (table === 'trading_import_export' && isCreate) {
+    // The shipment may already be on its way: start the transaction at the matching stage.
+    const shipmentNumber = String(row.shipment_number ?? '').trim();
+    if (shipmentNumber) {
+      const { data } = await supabaseAdmin.from('trading_shipments').select('*').eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
+      if (data) await syncTransactionFromShipment(org, data as Row);
+    }
+    await autoCreateCustomsForTransaction(org, row);
+    await autoCreateComplianceForTransaction(org, row);
+    return;
+  }
+  if (table === 'trading_customs') await syncTransactionFromCustoms(org, row);
+  if (table === 'trading_shipments') await syncTransactionFromShipment(org, row);
+  await refreshComplianceForRecord(org, table, row);
+}
+
+// One-time catch-up for records saved BEFORE these links existed (see scripts/backfill-trade-links.ts).
+// Safe to run again: it only creates a customs record / compliance check where one is missing, and only moves statuses forward.
+export async function backfillTradeLinks(): Promise<{ transactions: number; customs: number }> {
+  const { data: transactions, error } = await supabaseAdmin.from('trading_import_export').select('*');
+  if (error) throw error;
+  for (const txn of (transactions ?? []) as Row[]) await runTradeLinks(String(txn.organization_id), 'trading_import_export', txn, true);
+  const { data: customs, error: customsError } = await supabaseAdmin.from('trading_customs').select('*');
+  if (customsError) throw customsError;
+  for (const row of (customs ?? []) as Row[]) {
+    const org = String(row.organization_id);
+    if (!String(row.clearance_status ?? '').trim()) {
+      await supabaseAdmin.from('trading_customs').update({ clearance_status: 'Not Started', status: row.status || 'Not Started' }).eq('organization_id', org).eq('id', row.id as string);
+    }
+    await runTradeLinks(org, 'trading_customs', { ...row, clearance_status: row.clearance_status || 'Not Started' }, false);
+  }
+  return { transactions: (transactions ?? []).length, customs: (customs ?? []).length };
 }
 
 // Says WHICH columns collided (e.g. "organization_id, enquiry_number") without echoing any values,
@@ -644,20 +1049,49 @@ async function validatePriceList(org: string, industryTypeId: string | null | un
   }
 }
 
+// A delivery that has already happened cannot be dated in the future. One day of slack covers time zones (India is
+// ahead of UTC). Without this a wrong date such as 2026-10-14 marks the movement Delivered and completes the deal early.
+function assertNotFutureDelivery(resource: TradingResource, payload: Record<string, unknown>) {
+  if (resource.table !== 'trading_logistics' && resource.table !== 'trading_shipments') return;
+  const value = payload.actual_delivery_date;
+  if (typeof value !== 'string' || !value) return;
+  const limit = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  if (value.slice(0, 10) > limit) {
+    throw new AppError(422, 'FUTURE_DELIVERY_DATE', `Actual delivery date ${value.slice(0, 10)} is in the future. Enter the date the goods were really delivered, or leave it blank until they are.`);
+  }
+}
+
 export async function createTradingRecord(resource: TradingResource, org: string, input: Record<string, unknown>, scope: IndustryScope) {
   const payload = sanitizePayload(resource, input);
+  assertNotFutureDelivery(resource, payload);
   if (!scope || !('role' in scope)) throw new AppError(400, 'VALIDATION_ERROR', 'Industry scope is required.');
   const industryTypeId = resolveIndustryTypeId(scope, typeof payload.industry_type_id === 'string' ? payload.industry_type_id : undefined);
   if (!industryTypeId) throw new AppError(400, 'VALIDATION_ERROR', 'industry_type_id is required.');
   if (resource.table === 'trading_price_lists') await validatePriceList(org, industryTypeId, payload);
-  // Purchase enquiries get their ENQ number from the browser, which guesses it from the rows
+  await stampForeignRate(resource.table, org, industryTypeId, payload);
+  if (resource.table === 'trading_import_export') await assertTypeMatchesShipment(org, payload);
+  // A customs record always starts as "Not Started" (never blank), and the plain status mirrors the clearance status.
+  if (resource.table === 'trading_customs') {
+    if (!payload.clearance_status) payload.clearance_status = 'Not Started';
+    payload.status = payload.status || payload.clearance_status;
+  }
+  if (resource.table === 'trading_deals' && payload.status === 'Confirmed') await assertDealHasRate(org, industryTypeId, '', payload.currency);
+  // A shipment made by hand that is tied to a deal or order carries goods to a customer.
+  if (resource.table === 'trading_shipments' && !payload.direction) {
+    payload.direction = payload.deal_number || payload.order_number ? 'outbound' : 'inbound';
+  }
+  // Purchase enquiries get their ENQ numberfrom the browser, which guesses it from the rows
   // it can currently see (filtered by industry). That guess can land on a number that already
   // exists, so on an enquiry_number clash we pick the next truly free number and retry.
   const isEnquiry = resource.table === 'trading_purchase_enquiries';
   for (let attempt = 0; ; attempt += 1) {
     const { data, error } = await supabaseAdmin.from(resource.table).insert({ ...payload, industry_type_id: industryTypeId, organization_id: org }).select().single();
     if (!error) {
-      if (resource.table === 'trading_shipments') await ensureLogisticsPlan(org, data as Record<string, unknown>);
+         if (resource.table === 'trading_shipments') await ensureLogisticsPlan(org, data as Record<string, unknown>);
+      if (resource.table === 'trading_deals') await runDealSideEffects(org, data as Record<string, unknown>);
+      // A new cost record (logistics, customs, finance, commission...) updates the deal's live profit row.
+      await refreshProfitabilityForRecord(org, resource.table, data as Record<string, unknown>);
+      await runTradeLinks(org, resource.table, data as Record<string, unknown>, true);
       return data;
     }
     const clashOnNumber = error.code === '23505' && /enquiry_number/.test(error.details ?? error.message ?? '');
@@ -713,7 +1147,10 @@ async function syncShipmentFromLogistics(org: string, logistics: Record<string, 
     // 1) Route / carrier / freight: copy what the plan holds (only non-blank values that differ).
     const routePatch: Record<string, unknown> = {};
     for (const [from, to] of ROUTE_LOGISTICS_TO_SHIPMENT) {
-      const value = logistics[from];
+      let value = logistics[from];
+      // The shipment has no currency column, so its freight is always in the company currency: copy the converted
+      // freight, not the raw USD figure (USD 1,500 must not become INR 1,500 on the shipment).
+      if (from === 'freight_cost' && String(logistics.currency ?? '').trim() && String(logistics.currency).trim() !== String(logistics.base_currency ?? '').trim() && Number(logistics.base_value) > 0) value = logistics.base_value;
       if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) continue;
       if (String(current[to] ?? '') !== String(value)) routePatch[to] = value;
     }
@@ -744,7 +1181,18 @@ export async function updateTradingRecord(resource: TradingResource, org: string
   assertRecordInScope(scope, (existing as { industry_type_id?: string | null }).industry_type_id, notFound);
     const payload = sanitizePayload(resource, input);
   delete payload.industry_type_id; // never allow moving a record across industries via update
+  assertNotFutureDelivery(resource, payload);
   if (resource.table === 'trading_price_lists') await validatePriceList(org, (existing as { industry_type_id?: string | null }).industry_type_id, payload, id);
+  if (resource.table === 'trading_import_export') {
+    const { data: current } = await supabaseAdmin.from('trading_import_export').select('transaction_type, shipment_number').eq('organization_id', org).eq('id', id).maybeSingle();
+    await assertTypeMatchesShipment(org, payload, (current ?? {}) as unknown as Record<string, unknown>);
+  }
+  // Customs: the plain status always follows the clearance status.
+  if (resource.table === 'trading_customs' && typeof payload.clearance_status === 'string' && payload.clearance_status) payload.status = payload.clearance_status;
+  if (RATE_STAMPED_AMOUNT[resource.table]) {
+    const { data: current } = await supabaseAdmin.from(resource.table).select(`currency, ${RATE_STAMPED_AMOUNT[resource.table]}`).eq('organization_id', org).eq('id', id).maybeSingle();
+    await stampForeignRate(resource.table, org, (existing as { industry_type_id?: string | null }).industry_type_id, payload, (current ?? {}) as unknown as Record<string, unknown>);
+  }
   if (resource.table === 'trading_deals' && payload.status === 'Confirmed' && (existing as { status?: string | null }).status !== 'Confirmed') {
     await assertDealHasRate(org, (existing as { industry_type_id?: string | null }).industry_type_id, id, payload.currency);
   }
@@ -796,11 +1244,11 @@ export async function updateTradingRecord(resource: TradingResource, org: string
     }
   }
   if (resource.table === 'trading_logistics') await syncShipmentFromLogistics(org, data as Record<string, unknown>, scope);
-  if (resource.table === 'trading_deals') {
-    const deal = data as Record<string, unknown>;
-    if (deal.status === 'Confirmed' && !deal.order_number) await convertConfirmedDealToOrders(org, deal);
-    if (deal.status === 'Confirmed') await autoCreateInboundShipmentForDeal(org, deal);
-    if (deal.status === 'Completed' && (existing as { status?: string | null }).status !== 'Completed' && typeof deal.deal_number === 'string') await autoCreateProfitabilitySnapshot(org, deal.deal_number);  }
+  if (resource.table === 'trading_deals') await runDealSideEffects(org, data as Record<string, unknown>);
+  // A cost changed on a linked record: keep the deal's live profit row up to date.
+  await refreshProfitabilityForRecord(org, resource.table, data as Record<string, unknown>);
+  // Import/Export <-> Customs <-> Compliance: keep the linked records in step.
+  await runTradeLinks(org, resource.table, data as Record<string, unknown>, false);
   // Purchase Enquiry: when a supplier's status BECOMES "Supplier Responded" (typed in by
   // hand) and another supplier has also responded for the same product, move them to
   // "Under Comparison". Same rule the reply-mailbox poller applies.
@@ -821,6 +1269,17 @@ export async function updateTradingRecord(resource: TradingResource, org: string
     }
   }
   return data;
+}
+// Everything that follows a deal reaching a stage. Called from BOTH create and update, so a deal saved
+// straight as "Confirmed" behaves the same as one confirmed later. Every step is safe to repeat.
+async function runDealSideEffects(org: string, deal: Record<string, unknown>) {
+  if (deal.status === 'Confirmed' && (!deal.order_number || !deal.core_order_number)) await convertConfirmedDealToOrders(org, deal);
+  if (deal.status === 'Confirmed') await autoCreateInboundShipmentForDeal(org, deal);
+  if (typeof deal.deal_number === 'string') {
+    if (deal.status === 'Confirmed') await syncProfitabilitySnapshot(org, deal.deal_number, 'Confirmed');
+    else if (deal.status === 'In Progress') await syncProfitabilitySnapshot(org, deal.deal_number, 'In Progress');
+    else if (deal.status === 'Completed') await syncProfitabilitySnapshot(org, deal.deal_number, 'Completed');
+  }
 }
 async function autoCreateShipmentForConfirmedOrder(org: string, orderNumber: string, deal: Record<string, unknown>) {
   try {
@@ -864,9 +1323,13 @@ export async function deleteTradingRecord(resource: TradingResource, org: string
   if (existingError) fail(existingError);
   if (!existing) throw notFound;
   assertRecordInScope(scope, (existing as { industry_type_id?: string | null }).industry_type_id, notFound);
-  const { data, error } = await supabaseAdmin.from(resource.table).delete().eq('organization_id', org).eq('id', id).select().maybeSingle();
+    const { data, error } = await supabaseAdmin.from(resource.table).delete().eq('organization_id', org).eq('id', id).select().maybeSingle();
   if (error) fail(error);
   if (!data) throw notFound;
+  // A deleted logistics / customs / finance / commission / shipment record was part of the deal's profit.
+  await refreshProfitabilityForRecord(org, resource.table, data as Record<string, unknown>);
+  // A deleted document / customs record changes what compliance can see.
+  await refreshComplianceForRecord(org, resource.table, data as Record<string, unknown>);
   return data;
 }
 

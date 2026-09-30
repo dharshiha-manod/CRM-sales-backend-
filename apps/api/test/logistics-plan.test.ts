@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { missingPlanFields, nextLogisticsStatus, nextShipmentStatus, assertPlanReady } from '../src/lib/logistics-plan.js';
+import { MOVING_SHIPMENT_STATUSES, MOVING_LOGISTICS_STATUSES, STARTED_SHIPMENT_STATUSES, missingPlanFields, nextLogisticsStatus, nextShipmentStatus, assertPlanReady } from '../src/lib/logistics-plan.js';
 
 describe('logistics plan readiness', () => {
   it('blocks an empty plan and lists what is missing', () => {
@@ -35,5 +35,16 @@ describe('status sync is forward-only', () => {
     expect(nextShipmentStatus('Delivered', 'In Transit')).toBeNull();
     expect(nextShipmentStatus('Ready to Ship', 'Pickup Scheduled')).toBeNull();
     expect(nextShipmentStatus('Ready to Ship', 'Planned')).toBeNull();
+  });
+});
+describe('the plan check covers Delivered too', () => {
+  it('gates a jump straight to Delivered, but not a shipment that already started', () => {
+    expect(MOVING_SHIPMENT_STATUSES.has('Delivered')).toBe(true);
+    expect(MOVING_LOGISTICS_STATUSES.has('Delivered')).toBe(true);
+    // Planned / Ready to Ship have not started, so moving them to Delivered is checked.
+    expect(STARTED_SHIPMENT_STATUSES.has('Planned')).toBe(false);
+    expect(STARTED_SHIPMENT_STATUSES.has('Ready to Ship')).toBe(false);
+    // Dispatched -> Delivered is a normal finish and is not checked again.
+    expect(STARTED_SHIPMENT_STATUSES.has('Dispatched')).toBe(true);
   });
 });

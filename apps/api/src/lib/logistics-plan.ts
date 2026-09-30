@@ -19,13 +19,15 @@ const isBlank = (v: unknown): boolean => v === null || v === undefined || (typeo
 const text = (v: unknown): string => (v === null || v === undefined ? '' : String(v).trim());
 const today = () => new Date().toISOString().slice(0, 10);
 
-/** Shipment statuses that mean the goods have physically left. Moving INTO one needs a complete plan. */
-export const MOVING_SHIPMENT_STATUSES = new Set(['Dispatched', 'In Transit', 'At Destination']);
+/** Shipment statuses that mean the goods have left (or arrived). Moving INTO one needs a complete plan.
+ *  'Delivered' is included so a Planned shipment cannot skip the plan by jumping straight to Delivered. */
+export const MOVING_SHIPMENT_STATUSES = new Set(['Dispatched', 'In Transit', 'At Destination', 'Delivered']);
 /** Shipment statuses after which the "may it start?" question no longer applies. */
 export const STARTED_SHIPMENT_STATUSES = new Set(['Dispatched', 'In Transit', 'At Destination', 'Delivered', 'Delayed', 'Cancelled']);
 /** Logistics statuses that mean the goods are on the move. */
-export const MOVING_LOGISTICS_STATUSES = new Set(['Picked Up', 'Dispatched', 'In Transit', 'At Destination', 'Out for Delivery']);
-export const STARTED_LOGISTICS_STATUSES = new Set([...MOVING_LOGISTICS_STATUSES, 'Delivered', 'Delayed', 'Cancelled', 'Customs Hold']);
+const IN_MOTION_LOGISTICS = ['Picked Up', 'Dispatched', 'In Transit', 'At Destination', 'Out for Delivery'];
+export const MOVING_LOGISTICS_STATUSES = new Set([...IN_MOTION_LOGISTICS, 'Delivered']);
+export const STARTED_LOGISTICS_STATUSES = new Set([...IN_MOTION_LOGISTICS, 'Delivered', 'Delayed', 'Cancelled', 'Customs Hold']);
 
 const SHIPMENT_RANK: Record<string, number> = { Planned: 0, 'Ready to Ship': 1, Dispatched: 2, 'In Transit': 3, 'At Destination': 4, Delivered: 5 };
 const LOGISTICS_RANK: Record<string, number> = { Planned: 0, 'Pickup Scheduled': 1, 'Picked Up': 2, Dispatched: 3, 'In Transit': 4, 'At Destination': 5, 'Out for Delivery': 6, Delivered: 7 };

@@ -9,6 +9,7 @@ import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { LinkedRecords } from './LinkedRecords';
 import { TRADING_HASH } from '../lib/recordFocus';
 import { applyCurrencyConversion } from '../lib/currencyLookup';
+import { documentsForShipment } from '../lib/documentsForShipment';
 
 const TRANSACTION_TYPES = ['Import', 'Export'];
 const SHIPPING_MODES = ['Road', 'Air', 'Sea', 'Rail', 'Courier', 'Multimodal'];
@@ -47,16 +48,30 @@ const config: TradingModuleConfig = {
   codeField: 'transaction_number',
   nameField: 'product_name',
   statusOptions: STATUSES,
+  fitToScreen: true,
   searchableKeys: ['transaction_number', 'deal_number', 'order_number', 'customer_name', 'supplier_name', 'product_name', 'invoice_number', 'shipment_number'],
   fields: [
-    { key: 'transaction_number', label: 'Trade transaction number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'TXN' },
-    { key: 'transaction_type', label: 'Transaction type', type: 'select', options: TRANSACTION_TYPES, required: true, listColumn: true },
+    { key: 'transaction_number',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.transaction_number ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{String(r.transaction_type ?? '')}</span>
+        </span>
+      ), label: 'Transaction', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'TXN' },
+    { key: 'transaction_type', label: 'Transaction type', type: 'select', options: TRANSACTION_TYPES, required: true },
 
     // Source records. Pick whichever the transaction actually originates
     // from — each fills the commercial side from the existing record.
     {
       key: 'shipment_number', label: 'Shipment', type: 'lookup', listColumn: true,
-      lookupResource: '/trading/shipments', lookupLabelKey: 'product_name',
+      lookupResource: '/trading/shipments', lookupLabelKey: 'product_name', lookupSecondaryLabelKey: 'shipment_number',
+      // A different shipment means the ticked documents no longer apply: start the document list afresh.
+      // Goods going out to a customer are an Export, goods coming in from a supplier are an Import.
+      onLookupChange: (m, setForm) => setForm((prev) => {
+        const direction = String(m.direction ?? '').toLowerCase();
+        const type = direction === 'outbound' ? 'Export' : direction === 'inbound' ? 'Import' : prev.transaction_type;
+        return { ...prev, transaction_type: type ?? '', required_documents: '' };
+      }),
       autoFillMap: {
         deal_number: 'deal_number',
         customer_name: 'customer_name',
@@ -122,8 +137,14 @@ const config: TradingModuleConfig = {
     { key: 'quantity', label: 'Quantity', type: 'number', group: 'Parties' },
     { key: 'unit', label: 'Unit', type: 'text', group: 'Parties' },
 
-    { key: 'country_of_origin', label: 'Country of origin', type: 'text', listColumn: true, group: 'Route' },
-    { key: 'destination_country', label: 'Destination country', type: 'text', listColumn: true, group: 'Route' },
+    { key: 'country_of_origin',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{`${String(r.country_of_origin || '—')} → ${String(r.destination_country || '—')}`}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{'Origin → destination'}</span>
+        </span>
+      ), label: 'Route', type: 'text', listColumn: true, group: 'Route' },
+    { key: 'destination_country', label: 'Destination country', type: 'text', group: 'Route' },
     { key: 'port_of_loading', label: 'Port of loading', type: 'text', group: 'Route' },
     { key: 'port_of_discharge', label: 'Port of discharge', type: 'text', group: 'Route' },
     { key: 'shipping_mode', label: 'Shipping mode', type: 'select', options: SHIPPING_MODES, group: 'Route' },
@@ -135,17 +156,24 @@ const config: TradingModuleConfig = {
       lookupResource: '/trading/currency-rates', lookupValueKey: 'currency_code', lookupLabelKey: 'currency_name',
       onValueChangeAsync: convertValue,
     },
-    { key: 'total_value', label: 'Total value', type: 'number', listColumn: true, group: 'Value', onValueChangeAsync: convertValue },
+    { key: 'total_value',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{r.total_value != null && r.total_value !== '' ? `${r.currency ? `${String(r.currency)} ` : ''}${Number(r.total_value).toLocaleString()}` : '—'}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.base_value != null && r.base_value !== '' && r.currency !== r.base_currency ? `${r.base_currency ? `${String(r.base_currency)} ` : ''}${Number(r.base_value).toLocaleString()}` : ''}</span>
+        </span>
+      ), label: 'Value', type: 'number', listColumn: true, group: 'Value', onValueChangeAsync: convertValue },
     { key: 'exchange_rate', label: 'Exchange rate applied', type: 'number', readOnly: true, group: 'Value' },
     { key: 'base_currency', label: 'Company currency', type: 'text', readOnly: true, group: 'Value' },
-    { key: 'base_value', label: 'Value in company currency', type: 'number', readOnly: true, listColumn: true, group: 'Value' },
+    { key: 'base_value', label: 'Value in company currency', type: 'number', readOnly: true, group: 'Value' },
 
     // Documents already raised against this deal/shipment in Trade
     // Documents. Referenced by number — the document itself stays in Trade
     // Documents, which remains its single source of truth.
     {
       key: 'required_documents', label: 'Linked trade documents', type: 'multi-lookup',
-      lookupResource: '/trading/documents', lookupValueKey: 'document_number', lookupLabelKey: 'document_type',
+      lookupResource: '/trading/documents', lookupValueKey: 'document_number', lookupLabelKey: 'document_type', lookupSecondaryLabelKey: 'shipment_number',
+      lookupFilter: documentsForShipment,
       group: 'Documents & milestones',
     },
     { key: 'expected_shipment_date', label: 'Expected shipment date', type: 'date', group: 'Documents & milestones', onValueChangeAsync: convertValue },

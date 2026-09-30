@@ -160,11 +160,20 @@ export async function applyCurrencyConversion(
 
     const base = getBaseCurrency(rows);
     const on = target.onDateField && prev[target.onDateField] ? new Date(prev[target.onDateField]) : new Date();
-    const rate = findRate(rows, currency, base, on);
-    if (rate == null) return prev;
+    // Try the record's own date first, then today: a rate that has not started / has already
+    // expired on that date must not leave the previous currency's rate sitting in the form.
+    const rate = findRate(rows, currency, base, on) ?? findRate(rows, currency, base);
 
     const next = { ...prev };
     if (target.baseCurrency) next[target.baseCurrency] = base;
+    if (rate == null) {
+      // No usable rate: blank the stored rate and converted value instead of keeping the old
+      // currency's (e.g. INR's 1) - a silent stale rate priced USD amounts as rupees.
+      // The API refuses to save a foreign-currency record without a rate (NO_EXCHANGE_RATE).
+      if (target.rate) next[target.rate] = '';
+      if (target.baseValue) next[target.baseValue] = '';
+      return next;
+    }
     if (target.rate) next[target.rate] = String(Number(rate.toFixed(6)));
     if (target.baseValue && Number.isFinite(amount) && prev[target.amount] !== '') {
       next[target.baseValue] = String(Number((amount * rate).toFixed(2)));

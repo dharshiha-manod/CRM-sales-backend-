@@ -25,9 +25,18 @@ const STATUSES = [
 
 const IN_MOTION = ['Picked Up', 'Dispatched', 'In Transit', 'At Destination', 'Out for Delivery'];
 
-/** Freight + other charges, in the transaction currency. */
+/** Freight + other charges, in the transaction currency (e.g. USD 5,500). */
 function totalLogisticsCost(r: Record<string, unknown>): number {
   return (Number(r.freight_cost) || 0) + (Number(r.other_charges) || 0);
+}
+
+/** Freight + other charges, in the COMPANY currency (e.g. INR 5,30,750), using the rate stored on the record.
+ *  Other charges are converted with the same rate as freight, so nothing is left out. */
+function totalInCompanyCurrency(r: Record<string, unknown>): number {
+  const rate = Number(r.exchange_rate) || 0;
+  if (rate <= 0) return totalLogisticsCost(r);          // no conversion stored: treated as already in company currency
+  const freightBase = Number(r.base_value) || (Number(r.freight_cost) || 0) * rate;
+  return freightBase + (Number(r.other_charges) || 0) * rate;
 }
 
 /** Delivery status follows the dates the user actually recorded, so nobody
@@ -35,9 +44,13 @@ function totalLogisticsCost(r: Record<string, unknown>): number {
  *  terminal states (Cancelled, Customs Hold, Delayed) are never overwritten. */
 const AUTO_MANAGED = new Set(['', 'Planned', 'Pickup Scheduled', 'Picked Up', 'Dispatched', 'In Transit', 'At Destination', 'Out for Delivery']);
 
+/** True when the date is later than tomorrow (one day of slack for time zones). The API refuses it too. */
+const isFutureDate = (d: string | undefined): boolean => Boolean(d) && String(d).slice(0, 10) > new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+
 function deriveStatus(form: Record<string, string>): Record<string, string> | void {
   if (!AUTO_MANAGED.has(form.status ?? '')) return;
-  if (form.actual_delivery_date) return { status: 'Delivered' };
+  // A delivery date in the future has not happened yet: it must not mark the movement Delivered.
+  if (form.actual_delivery_date && !isFutureDate(form.actual_delivery_date)) return { status: 'Delivered' };
   if (form.actual_departure_date) {
     if (form.estimated_arrival_date && new Date() > new Date(form.estimated_arrival_date)) return { status: 'Delayed' };
     return { status: 'In Transit' };
@@ -66,9 +79,18 @@ const config: TradingModuleConfig = {
   codeField: 'logistics_number',
   nameField: 'shipment_number',
   statusOptions: STATUSES,
+  fitToScreen: true,
   searchableKeys: ['logistics_number', 'shipment_number', 'deal_number', 'customer_name', 'supplier_name', 'carrier', 'tracking_number', 'vehicle_container_number', 'current_location'],
   fields: [
-    { key: 'logistics_number', label: 'Logistics reference', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'LOG' },
+    {
+      key: 'logistics_number', label: 'Logistics reference', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'LOG',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.logistics_number ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.shipment_number ? String(r.shipment_number) : 'No shipment'}</span>
+        </span>
+      ),
+    },
     // The single point of entry. Everything commercial below is filled from
     // the shipment record rather than retyped, per the automation rule.
     {
@@ -77,9 +99,10 @@ const config: TradingModuleConfig = {
       type: 'lookup',
       required: true,
       helpText: 'Every shipment already has a plan. Open and edit its existing plan instead of adding a new one.',
-      listColumn: true,
       lookupResource: '/trading/shipments',
       lookupLabelKey: 'product_name',
+      // Only the facts that belong to the SHIPMENT are copied in (who, what, how much). Route, carrier, dates, freight
+      // and currency belong to Logistics now, so picking a shipment must never overwrite what was typed for them.
       autoFillMap: {
         deal_number: 'deal_number',
         customer_name: 'customer_name',
@@ -87,16 +110,6 @@ const config: TradingModuleConfig = {
         product_name: 'product_name',
         quantity: 'quantity',
         unit: 'unit',
-        origin: 'origin',
-        destination: 'destination',
-        transporter: 'carrier',
-        shipping_mode: 'shipping_mode',
-        tracking_number: 'tracking_number',
-        vehicle_container_number: 'vehicle_container_number',
-        expected_delivery_date: 'estimated_arrival_date',
-        actual_delivery_date: 'actual_delivery_date',
-        freight_cost: 'freight_cost',
-        currency: 'currency',
       },
       onValueChangeAsync: convertFreight,
     },
@@ -109,9 +122,17 @@ const config: TradingModuleConfig = {
     { key: 'quantity', label: 'Quantity', type: 'number', readOnly: true, group: 'From shipment' },
     { key: 'unit', label: 'Unit', type: 'text', readOnly: true, group: 'From shipment' },
 
-    { key: 'origin', label: 'Origin', type: 'text', listColumn: true, group: 'Route & carrier (needed before dispatch)' },
-    { key: 'destination', label: 'Destination', type: 'text', listColumn: true, group: 'Route & carrier (needed before dispatch)' },
-    { key: 'carrier', label: 'Carrier / transport provider', type: 'text', listColumn: true, group: 'Route & carrier (needed before dispatch)' },
+    {
+      key: 'origin', label: 'Route / carrier', type: 'text', listColumn: true, group: 'Route & carrier (needed before dispatch)',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <span>{r.origin || r.destination ? `${String(r.origin || '—')} → ${String(r.destination || '—')}` : '—'}</span>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.carrier ? String(r.carrier) : 'No carrier'}</span>
+        </span>
+      ),
+    },
+    { key: 'destination', label: 'Destination', type: 'text', group: 'Route & carrier (needed before dispatch)' },
+    { key: 'carrier', label: 'Carrier / transport provider', type: 'text', group: 'Route & carrier (needed before dispatch)' },
     { key: 'shipping_mode', label: 'Transport mode', type: 'select', options: SHIPPING_MODES, group: 'Route & carrier (needed before dispatch)' },
     { key: 'tracking_number', label: 'Tracking number', type: 'text', group: 'Route & carrier (needed before dispatch)' },
     { key: 'vehicle_container_number', label: 'Vehicle / container number', type: 'text', group: 'Route & carrier (needed before dispatch)' },
@@ -123,7 +144,7 @@ const config: TradingModuleConfig = {
     { key: 'estimated_departure_date', label: 'Estimated departure', type: 'date', group: 'Movement' },
     { key: 'actual_departure_date', label: 'Actual departure', type: 'date', group: 'Movement', onValueChange: (_v, f) => deriveStatus(f) },
     { key: 'estimated_arrival_date', label: 'Estimated arrival', type: 'date', listColumn: true, group: 'Movement', onValueChange: (_v, f) => deriveStatus(f) },
-    { key: 'actual_delivery_date', label: 'Actual delivery', type: 'date', group: 'Movement', onValueChange: (_v, f) => deriveStatus(f) },
+    { key: 'actual_delivery_date', label: 'Actual delivery', type: 'date', group: 'Movement', helpText: 'The date the goods were really delivered - it cannot be in the future.', onValueChange: (_v, f) => deriveStatus(f) },
     { key: 'status', label: 'Delivery status', type: 'select', options: STATUSES, listColumn: true, group: 'Movement' },
 
     { key: 'freight_cost', label: 'Freight charges', type: 'number', group: 'Charges', onValueChangeAsync: convertFreight },
@@ -140,7 +161,21 @@ const config: TradingModuleConfig = {
     { key: 'base_value', label: 'Freight in company currency', type: 'number', readOnly: true, group: 'Charges' },
     {
       key: 'total_cost', label: 'Total logistics cost', type: 'text', readOnly: true, listColumn: true,
-      format: (_v, r) => `${r.currency ? `${r.currency} ` : ''}${totalLogisticsCost(r).toLocaleString()}`,
+      render: (_v, r) => {
+        const own = `${r.currency ? `${r.currency} ` : ''}${totalLogisticsCost(r).toLocaleString()}`;
+        const converted = r.currency && r.base_currency && r.currency !== r.base_currency && Number(r.exchange_rate) > 0;
+        return (
+          <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+            <strong style={{ fontWeight: 600 }}>{own}</strong>
+            {converted && <span style={{ color: '#64748b', fontSize: '.74rem' }}>{`${String(r.base_currency)} ${totalInCompanyCurrency(r).toLocaleString()}`}</span>}
+          </span>
+        );
+      },
+      format: (_v, r) => {
+        const own = `${r.currency ? `${r.currency} ` : ''}${totalLogisticsCost(r).toLocaleString()}`;
+        const converted = r.currency && r.base_currency && r.currency !== r.base_currency && Number(r.exchange_rate) > 0;
+        return converted ? `${own}  (${r.base_currency} ${totalInCompanyCurrency(r).toLocaleString()})` : own;
+      },
       group: 'Charges',
     },
     { key: 'notes', label: 'Remarks', type: 'textarea', group: 'Charges' },
@@ -160,9 +195,9 @@ const config: TradingModuleConfig = {
       },
     },
     {
-      icon: '₹', iconClass: 'kpi-icon-school', label: 'Freight cost (company currency)',
+      icon: '₹', iconClass: 'kpi-icon-school', label: 'Total logistics cost (company currency)',
       value: (r) => {
-        const total = r.reduce((sum, x) => sum + (Number(x.base_value) || Number(x.freight_cost) || 0), 0);
+        const total = r.reduce((sum, x) => sum + totalInCompanyCurrency(x), 0);
         const base = r.find((x) => x.base_currency)?.base_currency;
         return `${base ?? '₹'}${base ? ' ' : ''}${total.toLocaleString()}`;
       },

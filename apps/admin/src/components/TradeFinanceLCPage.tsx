@@ -111,13 +111,26 @@ const config: TradingModuleConfig = {
   codeField: 'finance_reference',
   nameField: 'instrument_type',
   statusOptions: STATUSES,
+  fitToScreen: true,
   searchableKeys: ['finance_reference', 'lc_number', 'deal_number', 'order_number', 'customer_name', 'supplier_name', 'issuing_bank', 'bank_reference'],
   fields: [
-    { key: 'finance_reference', label: 'Finance reference', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'TF' },
-    { key: 'instrument_type', label: 'Instrument', type: 'select', options: INSTRUMENTS, required: true, listColumn: true },
+    { key: 'finance_reference',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.finance_reference ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{String(r.instrument_type ?? '')}</span>
+        </span>
+      ), label: 'Finance', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'TF' },
+    { key: 'instrument_type', label: 'Instrument', type: 'select', options: INSTRUMENTS, required: true },
 
     {
-      key: 'deal_number', label: 'Deal', type: 'lookup', required: true, listColumn: true,
+      key: 'deal_number',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.deal_number ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{String(r.customer_name ?? '')}</span>
+        </span>
+      ), label: 'Deal / customer', type: 'lookup', required: true, listColumn: true,
       lookupResource: '/trading/deals', lookupLabelKey: 'deal_name',
       onValueChangeAsync: (value, _form, setForm) => { void fillFromDeal(value, setForm); },
     },
@@ -125,7 +138,7 @@ const config: TradingModuleConfig = {
     { key: 'order_number', label: 'Sales order', type: 'text', readOnly: true, group: 'From the transaction' },
     { key: 'shipment_number', label: 'Shipment', type: 'text', readOnly: true, group: 'From the transaction' },
     { key: 'invoice_number', label: 'Invoice', type: 'text', readOnly: true, group: 'From the transaction' },
-    { key: 'customer_name', label: 'Customer', type: 'text', readOnly: true, listColumn: true, group: 'From the transaction' },
+    { key: 'customer_name', label: 'Customer', type: 'text', readOnly: true, group: 'From the transaction' },
     { key: 'supplier_name', label: 'Supplier', type: 'text', readOnly: true, group: 'From the transaction' },
     { key: 'currency', label: 'Currency', type: 'text', readOnly: true, group: 'From the transaction' },
     {
@@ -138,13 +151,19 @@ const config: TradingModuleConfig = {
     { key: 'advance_percent', label: 'Advance %', type: 'number', group: 'Terms', visibleIf: (f) => f.instrument_type === 'Advance Payment' || f.instrument_type === 'Open Account' },
     { key: 'advance_amount', label: 'Advance amount', type: 'number', group: 'Terms', visibleIf: (f) => f.instrument_type === 'Advance Payment' || f.instrument_type === 'Open Account' },
     {
-      key: 'financing_amount', label: 'Financing amount', type: 'number', listColumn: true, group: 'Terms',
+      key: 'financing_amount',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{(config.fields.find((f) => f.key === 'financing_amount')?.format?.(r.financing_amount, r) ?? '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{r.lc_number ? `LC / guarantee: ${String(r.lc_number)}` : ''}</span>
+        </span>
+      ), label: 'Financing / LC', type: 'number', listColumn: true, group: 'Terms',
       format: (v, r) => money(num(v), str(r.currency)),
     },
     { key: 'finance_charges', label: 'Bank / finance charges', type: 'number', group: 'Terms', placeholder: 'Flows into Trade Profitability as a trade cost' },
 
     // Bank block — only for instruments that actually involve a bank.
-    { key: 'lc_number', label: 'LC / guarantee number', type: 'text', listColumn: true, group: 'Bank & instrument', visibleIf: (f) => BANKED.includes(f.instrument_type ?? '') },
+    { key: 'lc_number', label: 'LC / guarantee number', type: 'text', group: 'Bank & instrument', visibleIf: (f) => BANKED.includes(f.instrument_type ?? '') },
     { key: 'issuing_bank', label: 'Issuing bank', type: 'text', group: 'Bank & instrument', visibleIf: (f) => BANKED.includes(f.instrument_type ?? '') },
     { key: 'advising_bank', label: 'Advising bank', type: 'text', group: 'Bank & instrument', visibleIf: (f) => BANKED.includes(f.instrument_type ?? '') },
     { key: 'confirming_bank', label: 'Confirming bank', type: 'text', group: 'Bank & instrument', visibleIf: (f) => BANKED.includes(f.instrument_type ?? '') },
@@ -162,20 +181,32 @@ const config: TradingModuleConfig = {
 
     { key: 'issue_date', label: 'Issue date', type: 'date', group: 'Timeline' },
     { key: 'latest_shipment_date', label: 'Latest shipment date', type: 'date', readOnly: true, group: 'Timeline' },
-    { key: 'due_date', label: 'Payment due date', type: 'date', listColumn: true, group: 'Timeline' },
+    { key: 'due_date',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.due_date || '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{(config.fields.find((f) => f.key === 'expiry_alert')?.format?.(null, r) ?? '—')}</span>
+        </span>
+      ), label: 'Due / alert', type: 'date', listColumn: true, group: 'Timeline' },
     { key: 'expiry_date', label: 'Instrument expiry date', type: 'date', group: 'Timeline', visibleIf: (f) => BANKED.includes(f.instrument_type ?? '') },
     {
-      key: 'expiry_alert', label: 'Due / expiry alert', type: 'text', readOnly: true, listColumn: true, group: 'Timeline',
+      key: 'expiry_alert', label: 'Due / expiry alert', type: 'text', readOnly: true, group: 'Timeline',
       format: (_v, r) => expiryAlert(r),
     },
 
-    { key: 'payment_status', label: 'Collection status', type: 'text', readOnly: true, listColumn: true, group: 'Settlement' },
+    { key: 'payment_status',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{String(r.payment_status || '—')}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{`Outstanding: ${(config.fields.find((f) => f.key === 'outstanding')?.format?.(null, r) ?? '—')}`}</span>
+        </span>
+      ), label: 'Collection / outstanding', type: 'text', readOnly: true, listColumn: true, group: 'Settlement' },
     {
       key: 'collected_amount', label: 'Collected to date', type: 'number', readOnly: true, group: 'Settlement',
       format: (v, r) => money(num(v), str(r.currency)),
     },
     {
-      key: 'outstanding', label: 'Outstanding', type: 'text', readOnly: true, listColumn: true, group: 'Settlement',
+      key: 'outstanding', label: 'Outstanding', type: 'text', readOnly: true, group: 'Settlement',
       format: (_v, r) => money(outstanding(r), str(r.currency)),
     },
     { key: 'status', label: 'Financing status', type: 'select', options: STATUSES, listColumn: true, group: 'Settlement' },
@@ -212,4 +243,4 @@ const config: TradingModuleConfig = {
 
 export function TradeFinanceLCPage() {
   return <TradingMasterPage config={config} />;
-}
+}  

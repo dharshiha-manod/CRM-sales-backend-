@@ -10,6 +10,7 @@ const org = (req: Parameters<RequestHandler>[0]) => { const value = req.header('
 export const followUps: Record<string, RequestHandler> = {
   createFromVisit: async (req, res) => { const organizationId = org(req); const rep = await fieldActivityService.currentRepresentative(organizationId, req.auth!.sub!); res.status(201).json({ data: await followUpService.createFromVisit(organizationId, rep.id, id(req.params.id), followUpCreateSchema.parse(req.body)) }); },
   createManual: async (req, res) => { const organizationId = org(req); res.status(201).json({ data: await followUpService.createManual(organizationId, followUpManualCreateSchema.parse(req.body)) }); },
+  createForOrder: async (req, res) => { const organizationId = org(req); res.status(201).json({ data: await followUpService.createForOrder(organizationId, id(req.params.id), followUpCreateSchema.parse(req.body), req.industryScope!) }); },
   mine: async (req, res) => { const organizationId = org(req); const rep = await fieldActivityService.currentRepresentative(organizationId, req.auth!.sub!); res.json({ data: await followUpService.list(organizationId, rep.id) }); },
   all: async (req, res) => {
     const requested = typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : undefined;

@@ -16,16 +16,92 @@
 import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { LinkedRecords } from './LinkedRecords';
 import { ProfitabilityBreakdown } from './ProfitabilityBreakdown';
+import { RecalculateProfitButton } from './RecalculateProfitButton';
 import { TRADING_HASH } from '../lib/recordFocus';
 import {
-  buildChain, chainFinancials, loadTradingTables, money, num, percent,
+  buildChain, chainFinancials, COST_KEY_BY_LABEL, formatCostSources, loadTradingTables, money, num, percent,
 } from '../lib/tradingChain';
 
 const str = (v: unknown): string => (v == null ? '' : String(v));
 
+// Stage of the profit record, kept as a tag at the start of `notes` by the API.
+// Untagged rows (older or hand-made) are Final and never auto-updated.
+const STAGES = ['Estimated', 'Provisional', 'Final'] as const;
+const STAGE_COLOURS: Record<string, { bg: string; fg: string }> = {
+  Estimated: { bg: '#fef3c7', fg: '#92400e' },
+  Provisional: { bg: '#dbeafe', fg: '#1e40af' },
+  Final: { bg: '#dcfce7', fg: '#166534' },
+};
+const stageOf = (r: Record<string, unknown>): string => /^\[(Estimated|Provisional|Final)\]/.exec(str(r.notes))?.[1] ?? 'Final';
+
+// Pill + three-step tracker: one filled dot per stage reached.
+function StageTracker({ stage }: { stage: string }) {
+  const reached = STAGES.indexOf(stage as (typeof STAGES)[number]) + 1;
+  const c = STAGE_COLOURS[stage] ?? STAGE_COLOURS.Final;
+  return (
+    <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+      <span style={{ background: c.bg, color: c.fg, fontWeight: 700, fontSize: '.72rem', padding: '2px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{stage}</span>
+      <span aria-hidden style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+        {STAGES.map((st, i) => (
+          <span key={st} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: i < reached ? c.fg : '#e2e8f0' }} />
+            {i < STAGES.length - 1 && <span style={{ width: 10, height: 2, background: i < reached - 1 ? c.fg : '#e2e8f0' }} />}
+          </span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+const RESULT_COLOURS: Record<string, { bg: string; fg: string }> = {
+  'Highly Profitable': { bg: '#dcfce7', fg: '#166534' },
+  'Profitable': { bg: '#ecfccb', fg: '#3f6212' },
+  'Low Margin': { bg: '#fef3c7', fg: '#92400e' },
+  'Break-even': { bg: '#f1f5f9', fg: '#475569' },
+  'Loss': { bg: '#fee2e2', fg: '#991b1b' },
+  'Incomplete': { bg: '#f1f5f9', fg: '#64748b' },
+};
+
+// Handed this page's own reload() so the list and the open record refresh after a recalculation.
+let reloadPage: (() => void) | undefined;
+
 const LEVELS = ['Deal', 'Order', 'Shipment', 'Product', 'Customer'];
 
 const COST_KEYS = ['purchase_cost', 'freight', 'insurance', 'customs_duty', 'port_charges', 'other_costs', 'finance_charges', 'commission'];
+/** Never counted as missing: insurance has no module of its own, and "other trade costs" are extra charges. */
+const OPTIONAL_KEYS = ['insurance', 'other_costs'];
+
+/** Costs the saved "Cost sources" text marked "not applicable" (e.g. customs on a domestic deal). */
+function notApplicableKeys(r: Record<string, unknown>): Set<string> {
+  const out = new Set<string>();
+  for (const line of str(r.cost_sources).split('\n')) {
+    const label = /^(.+?): not applicable/.exec(line.trim())?.[1];
+    if (label && COST_KEY_BY_LABEL[label]) out.add(COST_KEY_BY_LABEL[label]);
+  }
+  return out;
+}
+
+/** A cost's value for display: the amount, or "Not applicable" when the saved analysis found it can never exist for this deal. */
+const costShown = (key: string) => (v: unknown, r: Record<string, unknown>): string => (
+  num(v) == null && notApplicableKeys(r).has(key) ? 'Not applicable' : money(num(v), str(r.currency))
+);
+
+/** The stage tag ("[Final] ...") is kept in the notes for the system; people only read the sentence after it. */
+const cleanNotes = (v: unknown): string => str(v).replace(/^\[(Estimated|Provisional|Final)\]\s*/, '');
+
+/** Deals can be in different currencies (INR, USD...). Adding them into one card would be meaningless, so the cards
+ *  add up the most common currency only and say how many records were left out. */
+const currencyOf = (r: Record<string, unknown>): string => str(r.currency) || 'INR';
+function mainCurrency(rows: Record<string, unknown>[]): string {
+  const counts = new Map<string, number>();
+  for (const r of rows) counts.set(currencyOf(r), (counts.get(currencyOf(r)) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'INR';
+}
+const inMainCurrency = (rows: Record<string, unknown>[]) => rows.filter((r) => currencyOf(r) === mainCurrency(rows));
+const otherCurrencyNote = (rows: Record<string, unknown>[]): string => {
+  const left = rows.length - inMainCurrency(rows).length;
+  return left > 0 ? `${mainCurrency(rows)} only · ${left} in other currencies not added` : `all in ${mainCurrency(rows)}`;
+};
 
 /** Recomputed from the STORED figures, so the table and the saved record agree. */
 function figures(r: Record<string, unknown>) {
@@ -37,7 +113,8 @@ function figures(r: Record<string, unknown>) {
   const grossMargin = grossProfit != null && revenue ? (grossProfit / revenue) * 100 : null;
   const netProfit = revenue != null && totalCost != null ? revenue - totalCost : null;
   const netMargin = netProfit != null && revenue ? (netProfit / revenue) * 100 : null;
-  const missing = COST_KEYS.filter((k) => num(r[k]) == null).length;
+  const na = notApplicableKeys(r);
+  const missing = COST_KEYS.filter((k) => num(r[k]) == null && !na.has(k) && !OPTIONAL_KEYS.includes(k)).length;
   return { revenue, totalCost, grossProfit, grossMargin, netProfit, netMargin, missing };
 }
 
@@ -86,9 +163,7 @@ async function fillFromChain(
       for (const line of f.lines) put(line.key, line.amount);
       // Recorded so the saved analysis says which costs were outstanding
       // at the time, instead of leaving a future reader to guess.
-      next.cost_sources = f.lines
-        .map((l) => `${l.label}: ${l.amount == null ? 'not recorded' : `${l.amount} (${l.source})`}`)
-        .join('\n');
+      next.cost_sources = formatCostSources(f.lines);
       next.analysis_date = new Date().toISOString().slice(0, 10);
       return next;
     });
@@ -108,10 +183,12 @@ const config: TradingModuleConfig = {
   nameField: 'product_name',
   statusOptions: ['Highly Profitable', 'Profitable', 'Low Margin', 'Break-even', 'Loss', 'Incomplete'],
   hideStatusColumn: true,
+  detailVisibilityFromRecord: true,
+  fitToScreen: true,
   statusFilterable: false,
   searchableKeys: ['deal_number', 'order_number', 'shipment_number', 'customer_name', 'supplier_name', 'product_name', 'period'],
   fields: [
-    { key: 'analysis_level', label: 'Analysis level', type: 'select', options: LEVELS, required: true, listColumn: true },
+    { key: 'analysis_level', label: 'Analysis level', type: 'select', options: LEVELS, required: true },
 
     {
       key: 'deal_number', label: 'Deal', type: 'lookup', required: true, listColumn: true,
@@ -128,9 +205,17 @@ const config: TradingModuleConfig = {
     },
 
     { key: 'order_number', label: 'Sales order', type: 'text', readOnly: true, group: 'Transaction' },
-    { key: 'customer_name', label: 'Customer', type: 'text', readOnly: true, listColumn: true, group: 'Transaction' },
+    {
+      key: 'customer_name', label: 'Customer / product', type: 'text', readOnly: true, listColumn: true, group: 'Transaction',
+      render: (_v, r) => (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <strong style={{ fontWeight: 600 }}>{str(r.customer_name) || '—'}</strong>
+          <span style={{ color: '#64748b', fontSize: '.74rem' }}>{str(r.product_name) || '—'}</span>
+        </span>
+      ),
+    },
     { key: 'supplier_name', label: 'Supplier', type: 'text', readOnly: true, group: 'Transaction' },
-    { key: 'product_name', label: 'Product', type: 'text', readOnly: true, listColumn: true, group: 'Transaction' },
+    { key: 'product_name', label: 'Product', type: 'text', readOnly: true, group: 'Transaction' },
     { key: 'quantity', label: 'Quantity', type: 'number', readOnly: true, group: 'Transaction' },
     { key: 'currency', label: 'Currency', type: 'text', readOnly: true, group: 'Transaction' },
     { key: 'period', label: 'Reporting period', type: 'text', group: 'Transaction', placeholder: 'e.g. 2026-Q3' },
@@ -144,13 +229,13 @@ const config: TradingModuleConfig = {
 
     // Read-only: each of these belongs to another module. Editing them here
     // would put two different answers in the system for the same cost.
-    { key: 'purchase_cost', label: 'Purchase / product cost', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: (v, r) => money(num(v), str(r.currency)) },
-    { key: 'freight', label: 'Freight / logistics', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: (v, r) => money(num(v), str(r.currency)) },
-    { key: 'customs_duty', label: 'Customs duty', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: (v, r) => money(num(v), str(r.currency)) },
-    { key: 'port_charges', label: 'Port / clearance charges', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: (v, r) => money(num(v), str(r.currency)) },
-    { key: 'other_costs', label: 'Other trade costs', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: (v, r) => money(num(v), str(r.currency)) },
-    { key: 'finance_charges', label: 'Trade finance charges', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: (v, r) => money(num(v), str(r.currency)) },
-    { key: 'commission', label: 'Commission (earned)', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: (v, r) => money(num(v), str(r.currency)) },
+    { key: 'purchase_cost', label: 'Purchase / product cost', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: costShown('purchase_cost') },
+    { key: 'freight', label: 'Freight / logistics', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: costShown('freight') },
+    { key: 'customs_duty', label: 'Customs duty', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: costShown('customs_duty') },
+    { key: 'port_charges', label: 'Port / clearance charges', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: costShown('port_charges') },
+    { key: 'other_costs', label: 'Other trade costs', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: costShown('other_costs') },
+    { key: 'finance_charges', label: 'Trade finance charges', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: costShown('finance_charges') },
+    { key: 'commission', label: 'Commission (earned)', type: 'number', readOnly: true, group: 'Costs (from linked records)', format: costShown('commission') },
 
     // The one cost with no module of its own. Entered here, and clearly
     // labelled as such rather than pretending it came from somewhere.
@@ -158,10 +243,11 @@ const config: TradingModuleConfig = {
       key: 'insurance', label: 'Insurance', type: 'number', group: 'Costs (entered here)',
       placeholder: 'No insurance module exists yet — leave blank if not recorded',
     },
-    { key: 'cost_sources', label: 'Cost sources at analysis time', type: 'textarea', readOnly: true, group: 'Costs (entered here)' },
+    // Still stored (audit trail) and still sent on save, but not drawn: the Cost breakdown panel shows the same facts line by line.
+    { key: 'cost_sources', label: 'Cost sources at analysis time', type: 'textarea', readOnly: true, group: 'Costs (entered here)', visibleIf: () => false },
 
     {
-      key: 'gross_profit', label: 'Gross profit', type: 'text', readOnly: true, listColumn: true, group: 'Result',
+      key: 'gross_profit', label: 'Gross profit', type: 'text', readOnly: true, group: 'Result',
       format: (_v, r) => money(figures(r).grossProfit, str(r.currency)),
     },
     {
@@ -169,7 +255,7 @@ const config: TradingModuleConfig = {
       format: (_v, r) => percent(figures(r).grossMargin),
     },
     {
-      key: 'total_cost', label: 'Total recorded cost', type: 'text', readOnly: true, listColumn: true, group: 'Result',
+      key: 'total_cost', label: 'Recorded cost', type: 'text', readOnly: true, listColumn: true, group: 'Result',
       format: (_v, r) => money(figures(r).totalCost, str(r.currency)),
     },
     {
@@ -177,32 +263,47 @@ const config: TradingModuleConfig = {
       format: (_v, r) => money(figures(r).netProfit, str(r.currency)),
     },
     {
-      key: 'net_margin_percent', label: 'Net margin %', type: 'text', readOnly: true, listColumn: true, group: 'Result',
+      key: 'net_margin_percent', label: 'Margin', type: 'text', readOnly: true, listColumn: true, group: 'Result',
       format: (_v, r) => percent(figures(r).netMargin),
     },
     {
-      key: 'profit_status', label: 'Profit status', type: 'text', readOnly: true, listColumn: true, group: 'Result',
-      format: (_v, r) => profitStatus(r),
+      key: 'profit_stage', label: 'Stage', type: 'text', readOnly: true, listColumn: true, group: 'Result',
+      format: (_v, r) => stageOf(r),
+      render: (_v, r) => <StageTracker stage={stageOf(r)} />,
     },
     {
-      key: 'completeness', label: 'Cost completeness', type: 'text', readOnly: true, listColumn: true, group: 'Result',
+      key: 'profit_status', label: 'Result', type: 'text', readOnly: true, listColumn: true, group: 'Result',
+      format: (_v, r) => profitStatus(r),
+      render: (_v, r) => {
+        const label = profitStatus(r);
+        const c = RESULT_COLOURS[label] ?? RESULT_COLOURS.Incomplete;
+        return <span style={{ background: c.bg, color: c.fg, fontWeight: 700, fontSize: '.74rem', padding: '3px 10px', borderRadius: 999, whiteSpace: 'nowrap' }}>{label}</span>;
+      },
+    },
+    {
+      key: 'completeness', label: 'Costs', type: 'text', readOnly: true, listColumn: true, group: 'Result',
       format: (_v, r) => {
         const { missing } = figures(r);
-        return missing === 0 ? 'Complete' : `${missing} cost${missing > 1 ? 's' : ''} not recorded`;
+        return missing === 0 ? 'Complete' : `${missing} missing`;
       },
     },
-    { key: 'notes', label: 'Notes', type: 'textarea', group: 'Result' },
+    // `format` only changes how the detail view reads; the edit form still holds the raw text so the stage tag is kept.
+    { key: 'notes', label: 'Notes', type: 'textarea', group: 'Result', format: (v) => cleanNotes(v) },
   ],
   kpis: [
-    { icon: '₹', iconClass: 'kpi-icon-ink', label: 'Revenue', value: (r) => money(r.reduce((s, x) => s + (num(x.revenue) ?? 0), 0)) },
-    { icon: '₹', iconClass: 'kpi-icon-amber', label: 'Recorded cost', value: (r) => money(r.reduce((s, x) => s + (figures(x).totalCost ?? 0), 0)) },
-    { icon: '↗', iconClass: 'kpi-icon-green', label: 'Net profit', value: (r) => money(r.reduce((s, x) => s + (figures(x).netProfit ?? 0), 0)) },
+    { icon: '₹', iconClass: 'kpi-icon-ink', label: 'Revenue', value: (r) => money(inMainCurrency(r).reduce((s, x) => s + (num(x.revenue) ?? 0), 0), mainCurrency(r)), sub: otherCurrencyNote },
+    { icon: '₹', iconClass: 'kpi-icon-amber', label: 'Recorded cost', value: (r) => money(inMainCurrency(r).reduce((s, x) => s + (figures(x).totalCost ?? 0), 0), mainCurrency(r)), sub: otherCurrencyNote },
+    { icon: '↗', iconClass: 'kpi-icon-green', label: 'Net profit', value: (r) => money(inMainCurrency(r).reduce((s, x) => s + (figures(x).netProfit ?? 0), 0), mainCurrency(r)), sub: otherCurrencyNote },
     {
-      icon: '％', iconClass: 'kpi-icon-school', label: 'Average net margin',
+      // Total profit / total revenue, so one small bad deal cannot swamp the figure the way a plain average of percentages does.
+      icon: '％', iconClass: 'kpi-icon-school', label: 'Overall net margin',
       value: (r) => {
-        const margins = r.map((x) => figures(x).netMargin).filter((m): m is number => m != null);
-        return margins.length ? percent(margins.reduce((a, b) => a + b, 0) / margins.length) : 'Not recorded';
+        const rows = inMainCurrency(r).map(figures).filter((x) => x.revenue != null && x.revenue > 0 && x.netProfit != null);
+        const revenue = rows.reduce((s, x) => s + (x.revenue ?? 0), 0);
+        const net = rows.reduce((s, x) => s + (x.netProfit ?? 0), 0);
+        return revenue > 0 ? percent((net / revenue) * 100) : 'Not recorded';
       },
+      sub: () => 'total profit ÷ total revenue',
     },
     { icon: '⊘', iconClass: 'kpi-icon-red', label: 'Loss-making', value: (r) => String(r.filter((x) => (figures(x).netMargin ?? 0) < 0).length) },
     {
@@ -211,6 +312,8 @@ const config: TradingModuleConfig = {
       sub: () => 'net profit is an upper bound',
     },
   ],
+  registerReload: (reload) => { reloadPage = reload; },
+  detailActions: (r) => <RecalculateProfitButton record={r} onDone={() => reloadPage?.()} />,
   detailExtra: (r) => (
     <>
       <ProfitabilityBreakdown record={r} />
