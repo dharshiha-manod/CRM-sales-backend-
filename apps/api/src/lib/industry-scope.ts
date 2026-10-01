@@ -5,6 +5,8 @@ export const GLOBAL_ROLES = ['super_admin', 'admin'] as const;
 export interface IndustryScope {
   role: string;
   lockedIndustryTypeId: string | null;
+  /** Admin / Super Admin only: the industry picked in the header switcher (sent as x-industry-code). */
+  activeIndustryTypeId?: string | null;
 }
 
 export function isGlobalRole(role: string | undefined | null): boolean {
@@ -23,7 +25,9 @@ export function isGlobalRole(role: string | undefined | null): boolean {
  *    quietly returning the "safe" answer.
  */
 export function resolveIndustryTypeId(scope: IndustryScope, requested?: string | null): string | null {
-  if (isGlobalRole(scope.role)) return requested ?? null;
+  // Admins / super admins: an explicit request wins, otherwise they get the industry selected in the
+  // header switcher, so a page that forgets to pass industryTypeId can never show other industries.
+  if (isGlobalRole(scope.role)) return requested ?? scope.activeIndustryTypeId ?? null;
   if (requested && requested !== scope.lockedIndustryTypeId) {
     throw new AppError(403, 'INDUSTRY_NOT_ASSIGNED', 'You are not assigned to this industry.');
   }

@@ -2,11 +2,11 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
-import { getVisitConfig, getTrackingRulesConfig, getGpsConfig, getCheckInOutConfig } from '../lib/settings.js';
+import { getVisitConfig, getGpsConfig, getFollowUpConfig, loadSettingsSnapshot, industryTypeIdOfClient, industryTypeIdOfVisit } from '../lib/settings.js';
 const fail = (error: unknown): never => { throw error; };
 // Settings → GPS & Location → "Verification enabled" + "Minimum accuracy (meters)"
-async function assertGpsAccuracy(organizationId: string, accuracyMeters?: number | null) {
-  const gpsConfig = await getGpsConfig(organizationId);
+async function assertGpsAccuracy(organizationId: string, accuracyMeters?: number | null, industryTypeId?: string | null) {
+  const gpsConfig = await getGpsConfig(organizationId, industryTypeId);
   if (!gpsConfig.verificationEnabled || accuracyMeters == null) return;
   if (accuracyMeters > gpsConfig.minAccuracyMeters) {
     throw new AppError(422, 'GPS_ACCURACY_TOO_LOW', `GPS accuracy is ${Math.round(accuracyMeters)} m, but at least ${gpsConfig.minAccuracyMeters} m is required. Move to open sky and try again.`);
@@ -43,9 +43,12 @@ export async function listNearbyAssignedClients(organizationId: string, represen
 }
 
 export async function checkIn(organizationId: string, representativeId: string, input: Record<string, unknown>) {
-  const visitConfig = await getVisitConfig(organizationId);
+  // Visit and GPS settings are per industry — use the industry of the client being visited
+  // (a visit to an unlisted client has none and falls back to the org-wide base).
+  const industryTypeId = await industryTypeIdOfClient(organizationId, input.clientId as string | null | undefined);
+  const visitConfig = await getVisitConfig(organizationId, industryTypeId);
   const location = input.location as { latitude: number; longitude: number; accuracyMeters?: number | null };
-  await assertGpsAccuracy(organizationId, location.accuracyMeters);
+  await assertGpsAccuracy(organizationId, location.accuracyMeters, industryTypeId);
   let distance: number | null = null; let withinGeofence: boolean | null = null;
   if (input.clientId) {
     // A rep may only check in at a client that is actively assigned to them.
@@ -72,9 +75,10 @@ export async function addPing(organizationId: string, representativeId: string, 
 }
 
 export async function checkOut(organizationId: string, representativeId: string, visitId: string, input: Record<string, unknown>) {
-  const visitConfig = await getVisitConfig(organizationId);
+  const industryTypeId = await industryTypeIdOfVisit(organizationId, visitId);
+  const visitConfig = await getVisitConfig(organizationId, industryTypeId);
   const location = input.location as { latitude: number; longitude: number; accuracyMeters?: number | null };
-  await assertGpsAccuracy(organizationId, location.accuracyMeters);
+  await assertGpsAccuracy(organizationId, location.accuracyMeters, industryTypeId);
   const notes = input.notes as string | null | undefined;
   const { data: activeVisit, error: visitError } = await supabaseAdmin.from('field_visits').select('id, check_in_time, clients(latitude, longitude, gps_radius_meters)').eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).in('status', ['checked_in', 'in_progress']).maybeSingle();
   if (visitError) fail(visitError); if (!activeVisit) throw new AppError(404, 'ACTIVE_VISIT_NOT_FOUND', 'An active visit was not found.');
@@ -99,7 +103,7 @@ export async function checkOut(organizationId: string, representativeId: string,
     const { data: existingFollowUp } = await supabaseAdmin.from('follow_ups').select('id').eq('visit_id', visitId).eq('organization_id', organizationId).maybeSingle();
     if (!existingFollowUp) {
       const clientName = (data.clients as { client_name?: string } | null)?.client_name ?? 'client';
-      const dueAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+       const dueAt = new Date(Date.now() + (await getFollowUpConfig(organizationId, industryTypeId)).defaultDurationDays * 24 * 60 * 60 * 1000).toISOString();
       const { error: followUpError } = await supabaseAdmin.from('follow_ups').insert({ organization_id: organizationId, representative_id: representativeId, client_id: data.client_id, visit_id: visitId, title: `Follow up with ${clientName}`, due_at: dueAt, priority: 'high', notes: input.notes ?? null });
       if (followUpError) console.error('Auto follow-up creation failed for visit', visitId, followUpError);
     }
@@ -114,13 +118,23 @@ export async function checkOut(organizationId: string, representativeId: string,
 // "checked_in"/"in_progress" past the threshold gets force-checked-out the
 // next time a visit list is fetched, by admin or by the rep's own app.
 async function sweepStaleCheckIns(organizationId: string) {
-  const checkInOutConfig = await getCheckInOutConfig(organizationId);
-  if (!checkInOutConfig.autoCheckoutAfterMinutes || checkInOutConfig.autoCheckoutAfterMinutes <= 0) return;
-  const cutoff = new Date(Date.now() - checkInOutConfig.autoCheckoutAfterMinutes * 60000).toISOString();
-  const { data: stale, error } = await supabaseAdmin.from('field_visits').select('id, notes').eq('organization_id', organizationId).in('status', ['checked_in', 'in_progress']).lt('check_in_time', cutoff);
+  // The auto check-out limit is a per-industry setting, so each visit is judged by
+  // the limit of the industry of ITS client (no client / unlisted client = org-wide base).
+  const snapshot = await loadSettingsSnapshot(organizationId);
+  const limitFor = (industryTypeId: string | null) => snapshot.checkInOut(industryTypeId).autoCheckoutAfterMinutes;
+  const limits = [null, ...snapshot.industryTypeIds].map(limitFor).filter((minutes) => minutes && minutes > 0);
+  if (limits.length === 0) return;
+  // Fetch from the shortest limit in use, then re-check each visit against its own industry's limit.
+  const cutoff = new Date(Date.now() - Math.min(...limits) * 60000).toISOString();
+  const { data: stale, error } = await supabaseAdmin.from('field_visits').select('id, notes, check_in_time, clients(industry_type_id)').eq('organization_id', organizationId).in('status', ['checked_in', 'in_progress']).lt('check_in_time', cutoff);
   if (error) { console.error('Auto checkout sweep failed', error); return; }
   for (const visit of stale ?? []) {
-    const notes = `${visit.notes ? visit.notes + '\n' : ''}Auto checked-out by system after ${checkInOutConfig.autoCheckoutAfterMinutes} minute(s) with no check-out.`;
+    const related = (visit as unknown as { clients?: unknown }).clients;
+    const visitClient = (Array.isArray(related) ? related[0] : related) as { industry_type_id?: string | null } | null | undefined;
+    const autoCheckoutAfterMinutes = limitFor(visitClient?.industry_type_id ?? null);
+    if (!autoCheckoutAfterMinutes || autoCheckoutAfterMinutes <= 0) continue;
+    if (!visit.check_in_time || new Date(visit.check_in_time).getTime() > Date.now() - autoCheckoutAfterMinutes * 60000) continue;
+    const notes = `${visit.notes ? visit.notes + '\n' : ''}Auto checked-out by system after ${autoCheckoutAfterMinutes} minute(s) with no check-out.`;
     const { error: updateError } = await supabaseAdmin.from('field_visits').update({ status: 'checked_out', check_out_time: new Date().toISOString(), notes }).eq('id', visit.id).eq('organization_id', organizationId).in('status', ['checked_in', 'in_progress']);
     if (updateError) console.error('Auto checkout failed for visit', visit.id, updateError);
   }
@@ -157,10 +171,10 @@ export async function createVisitActivity(organizationId: string, representative
 
 export async function listLiveVisits(organizationId: string, industryTypeId?: string | null) {
   await sweepStaleCheckIns(organizationId);
-  const trackingConfig = await getTrackingRulesConfig(organizationId);
+  const settingsSnapshot = await loadSettingsSnapshot(organizationId);
   const select = industryTypeId
     ? 'id, status, check_in_time, check_in_lat, check_in_lng, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))'
-    : 'id, status, check_in_time, check_in_lat, check_in_lng, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))';
+    : 'id, status, check_in_time, check_in_lat, check_in_lng, clients(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))';
   let query = supabaseAdmin.from('field_visits').select(select).eq('organization_id', organizationId).in('status', ['checked_in', 'in_progress']).order('check_in_time', { ascending: false });
   if (industryTypeId) query = query.eq('clients.industry_type_id', industryTypeId);
   const { data: visits, error } = await query;
@@ -178,6 +192,10 @@ export async function listLiveVisits(organizationId: string, industryTypeId?: st
     const lastPing = latest.get(visit.id) as { captured_at: string } | undefined;
     const lastSeenAt = lastPing?.captured_at ?? visit.check_in_time;
     const minutesSinceLastSeen = lastSeenAt ? (Date.now() - new Date(lastSeenAt).getTime()) / 60000 : null;
+    // Idle threshold is a per-industry Tracking Rule — use the visited client's industry.
+    const related = (visit as unknown as { clients?: unknown }).clients;
+    const visitClient = (Array.isArray(related) ? related[0] : related) as { industry_type_id?: string | null } | null | undefined;
+    const trackingConfig = settingsSnapshot.tracking(visitClient?.industry_type_id ?? null);
     const idle = minutesSinceLastSeen !== null && minutesSinceLastSeen >= trackingConfig.idleAlertAfterMinutes;
     return { ...visit, latest_ping: lastPing ?? null, idle };
   });

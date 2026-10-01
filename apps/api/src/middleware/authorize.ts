@@ -1,6 +1,6 @@
 import type { RequestHandler } from 'express';
 import { AppError } from '../errors/app-error.js';
-import type { IndustryScope } from '../lib/industry-scope.js';
+import { isGlobalRole, type IndustryScope } from '../lib/industry-scope.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 
 export const requireRoles = (...roles: string[]): RequestHandler => async (req, _res, next) => {
@@ -20,6 +20,15 @@ export const requireRoles = (...roles: string[]): RequestHandler => async (req, 
     if (!roleCode || !roles.includes(roleCode)) throw new AppError(403, 'FORBIDDEN', 'You do not have permission for this organization');
     req.organizationRole = roleCode;
     const scope: IndustryScope = { role: roleCode, lockedIndustryTypeId: (data.industry_type_id as string | null) ?? null };
+    // Admins / super admins switch industry in the UI; the admin app sends it as x-industry-code.
+    // Resolve it to the industry id here so every list endpoint is limited to the selected industry.
+    const industryCode = (req.header('x-industry-code') ?? '').trim().toLowerCase();
+    if (isGlobalRole(roleCode) && /^[a-z0-9_-]{2,40}$/.test(industryCode)) {
+      const { data: industryRows, error: industryError } = await supabaseAdmin.from('industry_types').select('id, code').eq('organization_id', organizationId);
+      if (industryError) throw industryError;
+      const match = (industryRows ?? []).find((row) => String(row.code).toLowerCase() === industryCode);
+      if (match) scope.activeIndustryTypeId = match.id as string;
+    }
     req.industryScope = scope;
     next();
   } catch (error) { next(error); }

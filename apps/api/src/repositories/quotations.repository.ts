@@ -1,5 +1,5 @@
 import { AppError } from '../errors/app-error.js';
-import { getOrderConfig, getSalesConfig } from '../lib/settings.js';
+import { getOrderConfig, getSalesConfig, industryTypeIdOfClient } from '../lib/settings.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { formatOrderNumber } from './orders.repository.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
@@ -142,7 +142,8 @@ export async function convertToOrder(organizationId: string, representativeId: s
   if (representativeId && quotation.representative_id !== representativeId) throw new AppError(404, 'QUOTATION_NOT_FOUND', 'Quotation not found in this organization.');
   if (quotation.converted_order_id) return quotation;
   if (quotation.status !== 'accepted' || !quotation.approved_at) throw new AppError(422, 'QUOTATION_NOT_APPROVED', 'Only a manager-approved quotation can be converted into an order.');
-   const orderConfig = await getOrderConfig(organizationId);
+  // Order numbering comes from the Order Configuration of the quotation's own industry.
+  const orderConfig = await getOrderConfig(organizationId, await industryTypeIdOfClient(organizationId, quotation.client_id as string | null));
   const number = formatOrderNumber(orderConfig.numberingFormat);
   // quotation_id must be set here so the Orders page can correctly show
   // this as "converted from a quotation" instead of "Manual entry" — the

@@ -13,6 +13,6 @@ export const organizationSettings: Record<string, RequestHandler> = {
   get: async (req, res) => res.json({ data: await organizationSettingsService.get(organizationId(req)) }),
   save: async (req, res) => {
     const input = organizationSettingsSaveSchema.parse(req.body);
-    res.json({ data: await organizationSettingsService.save(organizationId(req), req.auth!.sub!, input.settings) });
+    res.json({ data: await organizationSettingsService.save(organizationId(req), req.auth!.sub!, input.settings, input.industryKey, req.industryScope) });
   },
 };

@@ -1,6 +1,6 @@
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { getOrderConfig } from '../lib/settings.js';
+import { getOrderConfig, industryTypeIdOfClient } from '../lib/settings.js';
 import { assertRecordInScope, type IndustryScope } from '../lib/industry-scope.js';
 
 const fail = (error: unknown): never => { throw error; };
@@ -28,7 +28,8 @@ export async function createOrderFromVisit(organizationId: string, representativ
   const total = lines.reduce((sum, line) => sum + line.subtotal, 0);
   const discount = lines.reduce((sum, line) => sum + line.discount_amount, 0);
 
-  const orderConfig = await getOrderConfig(organizationId);
+  // Each industry has its own Order Configuration — use the one for this visit's client.
+  const orderConfig = await getOrderConfig(organizationId, await industryTypeIdOfClient(organizationId, visit.client_id));
 
   if (total < orderConfig.minOrderValue) {
     throw new AppError(422, 'ORDER_BELOW_MINIMUM', `Order total (₹${total}) is below the minimum order value of ₹${orderConfig.minOrderValue} set in Settings.`);
@@ -70,7 +71,7 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
   const total = lines.reduce((sum, line) => sum + line.subtotal, 0);
   const discount = lines.reduce((sum, line) => sum + line.discount_amount, 0);
 
-  const orderConfig = await getOrderConfig(organizationId);
+  const orderConfig = await getOrderConfig(organizationId, client.industry_type_id as string | null);
   if (total < orderConfig.minOrderValue) {
     throw new AppError(422, 'ORDER_BELOW_MINIMUM', `Order total (₹${total}) is below the minimum order value of ₹${orderConfig.minOrderValue} set in Settings.`);
   }
@@ -103,7 +104,7 @@ export async function cancelOrder(organizationId: string, scope: IndustryScope, 
   if (order.status === 'cancelled') return order;
   if (order.status === 'completed') throw new AppError(422, 'ORDER_ALREADY_COMPLETED', 'A completed order cannot be cancelled.');
   if (order.status !== 'pending_approval') {
-    const orderConfig = await getOrderConfig(organizationId);
+    const orderConfig = await getOrderConfig(organizationId, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null);
     if (!orderConfig.allowCancellation) throw new AppError(422, 'CANCELLATION_DISABLED', 'Order cancellation is turned off in Settings → Order Configuration.');
   }
 
@@ -125,14 +126,14 @@ export async function approveOrder(organizationId: string, scope: IndustryScope,
 }
 
 export async function updateOrder(organizationId: string, scope: IndustryScope, id: string, input: { items?: OrderItem[]; notes?: string | null }) {
-  const orderConfig = await getOrderConfig(organizationId);
-  if (!orderConfig.allowEditing) throw new AppError(422, 'EDITING_DISABLED', 'Order editing is turned off in Settings → Order Configuration.');
-
   const { data: order, error: fetchError } = await supabaseAdmin.from('sale_orders').select('id, status, clients!inner(industry_type_id)').eq('id', id).eq('organization_id', organizationId).maybeSingle();
   if (fetchError) fail(fetchError);
   const notFound = new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
   if (!order) throw notFound;
-  assertRecordInScope(scope, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null, notFound);
+  const orderIndustryTypeId = (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null;
+  assertRecordInScope(scope, orderIndustryTypeId, notFound);
+  const orderConfig = await getOrderConfig(organizationId, orderIndustryTypeId);
+  if (!orderConfig.allowEditing) throw new AppError(422, 'EDITING_DISABLED', 'Order editing is turned off in Settings → Order Configuration.');
   if (order.status === 'cancelled' || order.status === 'completed') throw new AppError(422, 'ORDER_NOT_EDITABLE', `A ${order.status} order cannot be edited.`);
 
   const update: Record<string, unknown> = {};

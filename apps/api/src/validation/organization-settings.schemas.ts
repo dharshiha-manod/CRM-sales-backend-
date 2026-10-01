@@ -6,4 +6,8 @@ export const organizationSettingsSaveSchema = z.object({
   settings: z.record(z.string(), z.unknown()).refine((value) => Object.getPrototypeOf(value) === Object.prototype, {
     message: 'settings must be an object',
   }),
+  // Which industry's overrides this save is for (industry_types.code, e.g. 'trading').
+  // Only that industry's entry under settings.byIndustry is written; every other
+  // industry's stored overrides are kept as they are.
+  industryKey: z.string().trim().toLowerCase().regex(/^[a-z0-9_-]{2,40}$/).optional(),
 });

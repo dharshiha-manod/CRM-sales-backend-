@@ -5,4 +5,8 @@ followUpsRouter.get('/follow-ups/mine', authenticate, requireRoles('sales_repres
 followUpsRouter.get('/follow-ups', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), followUps.all);
 followUpsRouter.post('/follow-ups', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), followUps.createManual);
 followUpsRouter.patch('/follow-ups/:id', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), followUps.update);
+followUpsRouter.patch('/follow-ups/:id/reschedule', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), followUps.reschedule);
+followUpsRouter.get('/follow-ups/:id/history', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), followUps.history);
 followUpsRouter.post('/orders/:id/follow-ups', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), followUps.createForOrder);
+followUpsRouter.patch('/follow-ups/mine/:id', authenticate, requireRoles('sales_representative'), followUps.updateMine);
+followUpsRouter.patch('/follow-ups/mine/:id/reschedule', authenticate, requireRoles('sales_representative'), followUps.rescheduleMine);

@@ -86,7 +86,7 @@ export const leads: Record<string, RequestHandler> = {
     const organizationId = org(req);
     const repId = await representativeIdIfRep(req, organizationId);
     const body = leadNextActionSchema.parse(req.body);
-    res.json({ data: await leadService.setNextAction(organizationId, id(req.params.id), req.auth!.sub!, body.nextAction ?? null, body.nextActionDueAt ?? null, scope(req), repId) });
+    res.json({ data: await leadService.setNextAction(organizationId, id(req.params.id), req.auth!.sub!, body.nextAction ?? null, body.nextActionDueAt ?? null, scope(req), repId, body.nextActionType) });
   },
   followUps: async (req, res) => {
     const organizationId = org(req);

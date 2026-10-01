@@ -35,6 +35,7 @@ const leadFieldsSchema = z.object({
   // up as "Next follow-up" in the leads table instead of only living inside
   // the packed notes metadata the frontend keeps for its own bookkeeping.
   nextActionDueAt: z.string().datetime().optional().nullable(),
+  nextActionType: z.enum(['call', 'visit', 'whatsapp', 'email', 'meeting', 'other']).optional().nullable(),
 });
 
 export const leadCreateSchema = leadFieldsSchema.refine((value) => Boolean(value.phone) || Boolean(value.email), {
@@ -47,6 +48,7 @@ export const leadUpdateSchema = leadFieldsSchema.omit({ leadCode: true }).partia
 export const leadNextActionSchema = z.object({
   nextAction: z.string().trim().min(1).max(500).optional().nullable(),
   nextActionDueAt: z.string().datetime().optional().nullable(),
+  nextActionType: z.enum(['call', 'visit', 'whatsapp', 'email', 'meeting', 'other']).optional().nullable(),
 });
 
 export const leadStatusChangeSchema = z.object({

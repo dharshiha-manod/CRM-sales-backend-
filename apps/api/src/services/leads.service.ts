@@ -3,6 +3,7 @@ import { getSalesConfig } from '../lib/settings.js';
 
 import { assertRecordInScope, isGlobalRole, resolveIndustryTypeId, type IndustryScope } from '../lib/industry-scope.js';
 import * as repository from '../repositories/leads.repository.js';
+import { listFollowUps as listAllFollowUps } from '../repositories/follow-ups.repository.js';
 
 const leadNotFound = () => new AppError(404, 'LEAD_NOT_FOUND', 'Lead was not found');
 
@@ -66,22 +67,23 @@ function computeLeadScore(input: { phone?: string | null; email?: string | null;
  * changes (assigned late, reassigned, or removed), move the client's rep
  * assignment too. Respects Settings -> Sales -> "Auto-assign customers".
  */
-async function syncConvertedClientOwner(organizationId: string, lead: { converted_client_id?: string | null; representative_id?: string | null }, newRepresentativeId: string | null) {
+async function syncConvertedClientOwner(organizationId: string, lead: { converted_client_id?: string | null; representative_id?: string | null; industry_type_id?: string | null }, newRepresentativeId: string | null) {
   if (!lead.converted_client_id) return;
   const previous = lead.representative_id ?? null;
   if (previous === newRepresentativeId) return;
-  const salesConfig = await getSalesConfig(organizationId);
+  // "Auto-assign customers" is a per-industry Sales setting — use the lead's own industry.
+  const salesConfig = await getSalesConfig(organizationId, lead.industry_type_id ?? null);
   if (!salesConfig.autoAssignCustomers) return;
   await repository.syncClientAssignmentWithLeadRep(organizationId, lead.converted_client_id, newRepresentativeId, previous);
 }
 async function create(organizationId: string, createdBy: string, input: Parameters<typeof repository.createLead>[2], scope: IndustryScope, representativeId?: string) {
-  const salesConfig = await getSalesConfig(organizationId); // ← NEW
-
   if (representativeId) {
     await assertRepresentativeCanAccessIndustry(organizationId, representativeId, input.industryTypeId!);
     input = { ...input, representativeId: input.representativeId ?? representativeId };
   } else {
     input = { ...input, industryTypeId: resolveIndustryTypeId(scope, input.industryTypeId) ?? input.industryTypeId };
+    // Sales settings are per industry — read them for the industry this lead is being created in.
+    const salesConfig = await getSalesConfig(organizationId, input.industryTypeId);
     // ↓ CHANGED: only auto-suggest a rep if the setting is turned on
     if (!input.representativeId && salesConfig.autoAssignReps) {
       const suggestion = await repository.suggestRepresentativeForIndustry(organizationId, input.industryTypeId!);
@@ -116,13 +118,19 @@ async function deleteLead(organizationId: string, id: string, scope: IndustrySco
   return repository.deleteLead(organizationId, id);
 }
 
-async function setNextAction(organizationId: string, id: string, actorId: string, nextAction: string | null, nextActionDueAt: string | null, scope: IndustryScope, representativeId?: string) {
+async function setNextAction(organizationId: string, id: string, actorId: string, nextAction: string | null, nextActionDueAt: string | null, scope: IndustryScope, representativeId?: string, nextActionType?: string | null) {
   await getScoped(organizationId, id, scope, representativeId);
-  return repository.setLeadNextAction(organizationId, id, actorId, nextAction, nextActionDueAt);
+  return repository.setLeadNextAction(organizationId, id, actorId, nextAction, nextActionDueAt, nextActionType);
 }
 
 async function listFollowUps(organizationId: string, representativeId: string | undefined, overdueOnly: boolean) {
-  return repository.listFollowUps(organizationId, { representativeId, overdueOnly });
+  const rows = await listAllFollowUps(organizationId, representativeId);
+  if (!overdueOnly) return rows;
+  const now = Date.now();
+  return rows.filter((row) => {
+    const { status, due_at: dueAt } = row as { status?: string; due_at?: string | null };
+    return (status === 'pending' || status === 'in_progress') && !!dueAt && new Date(dueAt).getTime() < now;
+  });
 }
 
 async function suggestRepresentative(organizationId: string, industryTypeId: string, scope: IndustryScope) {

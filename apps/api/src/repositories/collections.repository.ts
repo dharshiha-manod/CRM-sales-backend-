@@ -2,7 +2,7 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
-import { getCollectionConfig } from '../lib/settings.js';
+import { getCollectionConfig, industryTypeIdOfClient } from '../lib/settings.js';
 
 // Maps your app's internal mode codes to the labels shown in Settings →
 // Collection Configuration → Payment Methods, so we can check the right toggle.
@@ -14,8 +14,8 @@ const PAYMENT_MODE_LABELS: Record<string, string> = {
   other: 'Other',
 };
 
-async function assertPaymentAllowed(organizationId: string, mode: string, referenceNo: string | null | undefined) {
-  const config = await getCollectionConfig(organizationId);
+async function assertPaymentAllowed(organizationId: string, mode: string, referenceNo: string | null | undefined, industryTypeId?: string | null) {
+  const config = await getCollectionConfig(organizationId, industryTypeId);
   const label = PAYMENT_MODE_LABELS[mode] ?? mode;
   if (config.paymentMethods[label] === false) {
     throw new AppError(422, 'PAYMENT_METHOD_DISABLED', `${label} is not an enabled payment method. An Admin can enable it in Settings → Collection Configuration.`);
@@ -30,7 +30,7 @@ export async function createFromVisit(organizationId: string, representativeId: 
   const { data: visit, error: visitError } = await supabaseAdmin.from('field_visits').select('id, client_id').eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).in('status', ['checked_in', 'in_progress']).maybeSingle();
   if (visitError) throw visitError;
   if (!visit?.client_id) throw new AppError(422, 'COLLECTION_REQUIRES_CLIENT', 'A collection requires a visit linked to a client.');
-  await assertPaymentAllowed(organizationId, input.mode, input.referenceNo);
+  await assertPaymentAllowed(organizationId, input.mode, input.referenceNo, await industryTypeIdOfClient(organizationId, visit.client_id));
   if (input.saleOrderId) {
     const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, total_amount').eq('id', input.saleOrderId).eq('organization_id', organizationId).eq('visit_id', visit.id).eq('client_id', visit.client_id).eq('representative_id', representativeId).maybeSingle();
     if (error) throw error;
@@ -48,7 +48,6 @@ export async function createFromVisit(organizationId: string, representativeId: 
 }
 
 export async function createForOrder(organizationId: string, input: { orderId: string; amount: number; mode: string; referenceNo?: string | null; notes?: string | null }, scope: IndustryScope) {
-    await assertPaymentAllowed(organizationId, input.mode, input.referenceNo);
   const { data: order, error: orderError } = await supabaseAdmin
     .from('sale_orders')
     .select('id, client_id, representative_id, total_amount, status, clients!inner(industry_type_id)')
@@ -57,7 +56,9 @@ export async function createForOrder(organizationId: string, input: { orderId: s
     .maybeSingle();
   if (orderError) throw orderError;
   if (!order || !order.client_id || !order.representative_id) throw new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
-  assertRecordInScope(scope, order.clients?.industry_type_id, new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.'));
+assertRecordInScope(scope, (order.clients as unknown as { industry_type_id?: string | null } | null)?.industry_type_id ?? null, new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.'));
+  // Payment methods / receipt rules are per industry — check them against this order's industry.
+  await assertPaymentAllowed(organizationId, input.mode, input.referenceNo, (order.clients as unknown as { industry_type_id?: string | null } | null)?.industry_type_id ?? null);
   if (order.status === 'cancelled') throw new AppError(422, 'COLLECTION_CANCELLED_ORDER', 'A payment cannot be recorded for a cancelled order.');
 
   const { data: priorCollections, error: collectionsError } = await supabaseAdmin

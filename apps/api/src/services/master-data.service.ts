@@ -22,7 +22,7 @@ function cleanIndustryDetails(code: string | null, details: unknown) {
   }
 }
 
-export const representativeService = { list: repo.listRepresentatives, get: repo.getRepresentative, async create(org: string, input: Record<string, unknown>) { await repo.assertRepresentativeUserMembership(org, input.userId as string); return repo.createRepresentative(org, input); }, update: repo.updateRepresentative };
+export const representativeService = { list(org: string, search: string | undefined, status: string | undefined, industryTypeId: string | undefined, scope: IndustryScope) { return repo.listRepresentatives(org, search, status, resolveIndustryTypeId(scope, industryTypeId) ?? undefined); }, get: repo.getRepresentative, async create(org: string, input: Record<string, unknown>) { await repo.assertRepresentativeUserMembership(org, input.userId as string); return repo.createRepresentative(org, input); }, update: repo.updateRepresentative };
 
 export const clientService = {
   list(org: string, search: string | undefined, type: string | undefined, status: string | undefined, industryTypeId: string | undefined, scope: IndustryScope) {

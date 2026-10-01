@@ -6,7 +6,7 @@ const org = (req: Parameters<RequestHandler>[0]) => { const value = req.header('
 const id = (value: string | string[] | undefined) => uuid.parse(Array.isArray(value) ? value[0] : value);
 const scope = (req: Parameters<RequestHandler>[0]) => { if (!req.industryScope) throw new AppError(500, 'INDUSTRY_SCOPE_MISSING', 'Industry scope was not resolved for this request.'); return req.industryScope; };
 export const representatives: Record<string, RequestHandler> = {
-  list: async (req, res) => res.json({ data: await representativeService.list(org(req), req.query.search as string | undefined, req.query.status as string | undefined, req.query.industryTypeId as string | undefined) }),
+  list: async (req, res) => res.json({ data: await representativeService.list(org(req), req.query.search as string | undefined, req.query.status as string | undefined, req.query.industryTypeId as string | undefined, scope(req)) }),
   get: async (req, res) => res.json({ data: await representativeService.get(org(req), id(req.params.id)) }),
   create: async (req, res) => res.status(201).json({ data: await representativeService.create(org(req), representativeCreateSchema.parse(req.body)) }),
   update: async (req, res) => res.json({ data: await representativeService.update(org(req), id(req.params.id), representativeUpdateSchema.parse(req.body)) }),

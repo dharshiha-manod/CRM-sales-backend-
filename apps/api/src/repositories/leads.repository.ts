@@ -153,6 +153,7 @@ type LeadInput = {
   notes?: string | null;
   nextAction?: string | null;
   nextActionDueAt?: string | null;
+  nextActionType?: string | null;
 };
 
 const columnMap: Record<string, string> = {
@@ -164,6 +165,7 @@ const columnMap: Record<string, string> = {
   streetAddress: 'street_address',
   nextAction: 'next_action',
   nextActionDueAt: 'next_action_due_at',
+  nextActionType: 'next_action_type',
 };  
 // Postgres text columns reject the null byte (\u0000) — code 22P05. Strip it
 // from any string value before it reaches the DB, since it can silently ride
@@ -323,6 +325,7 @@ export async function createLead(
     new_status: data.status,
     actor_id: createdBy,
   });
+  await syncLeadFollowUp(organizationId, data.id);
 
   return getLead(organizationId, data.id);
 }
@@ -355,9 +358,7 @@ export async function updateLead(organizationId: string, id: string, input: Lead
     fail(error);
   }
   if (!data) throw new AppError(404, 'LEAD_NOT_FOUND', 'Lead not found in this organization.');
-  if (data.status === 'unqualified' && input.nextActionDueAt !== undefined) {
-    await syncOpenLeadFollowUpDueAt(organizationId, id, input.nextActionDueAt);
-  }
+  await syncLeadFollowUp(organizationId, id);
   return getLead(organizationId, id);
 }
 
@@ -405,51 +406,16 @@ export async function changeLeadStatus(organizationId: string, id: string, actor
   if (status === 'qualified' && !data.converted_client_id) {
     await autoConvertQualifiedLead(organizationId, data, actorId);
   }
-  if (status === 'unqualified') {
-    const lead = data as LeadForFollowUp;
-    // ↓ CHANGED: default follow-up window now comes from Settings →
-    // Follow-up Configuration → "Default Duration (Days)", not a fixed 2 days.
-    const followUpConfig = await getFollowUpConfig(organizationId);
-    const dueAt = lead.next_action_due_at ?? new Date(Date.now() + followUpConfig.defaultDurationDays * 24 * 60 * 60 * 1000).toISOString();
-    const priority = ['low', 'normal', 'high', 'critical'].includes(lead.priority ?? '') ? lead.priority! : 'normal';
-    const values = {
-      representative_id: lead.representative_id,
-      title: `Follow up: ${lead.company_name}`,
-      due_at: dueAt,
-      priority,
-      notes: leadNotesText(lead.notes),
-    };
-    const { data: existingFollowUp, error: existingFollowUpError } = await supabaseAdmin
-      .from('follow_ups')
-      .select('id')
-      .eq('organization_id', organizationId)
-      .eq('lead_id', lead.id)
-      .in('status', ['pending', 'in_progress'])
-      .maybeSingle();
-    if (existingFollowUpError) fail(existingFollowUpError);
-
-    if (existingFollowUp) {
-      const { error: updateFollowUpError } = await supabaseAdmin
-        .from('follow_ups')
-        .update(values)
-        .eq('id', existingFollowUp.id)
-        .eq('organization_id', organizationId);
-      if (updateFollowUpError) fail(updateFollowUpError);
-    } else {
-      console.info('[unqualified-follow-up] inserting', { organizationId, leadId: lead.id, representativeId: lead.representative_id });
-      const { data: insertedFollowUp, error: insertFollowUpError } = await supabaseAdmin
-        .from('follow_ups')
-        .insert({ organization_id: organizationId, lead_id: lead.id, ...values })
-        .select('id')
-        .single();
-      if (insertFollowUpError) {
-        console.error('[unqualified-follow-up] insert failed', insertFollowUpError);
-        fail(insertFollowUpError);
-      }
-      if (!insertedFollowUp) throw new AppError(500, 'FOLLOW_UP_CREATE_FAILED', 'Follow-up creation returned no row.');
-      console.info('[unqualified-follow-up] inserted', { followUpId: insertedFollowUp.id });
-    }
+  if (status === 'unqualified' && !(data as LeadForFollowUp).next_action_due_at) {
+    // The "Follow-up" stage always needs a date. Use the default window from Settings -> Follow-up Configuration
+    // and write it to the LEAD, so the Leads page and the Follow-ups page always show the same date.
+    const followUpConfig = await getFollowUpConfig(organizationId, (data as { industry_type_id?: string | null }).industry_type_id ?? null);
+    const defaultDueAt = new Date(Date.now() + followUpConfig.defaultDurationDays * 24 * 60 * 60 * 1000).toISOString();
+    const { error: defaultDateError } = await supabaseAdmin.from('leads').update({ next_action_due_at: defaultDueAt }).eq('id', id).eq('organization_id', organizationId);
+    if (defaultDateError) fail(defaultDateError);
   }
+  // new / contacted keep their follow-up, a lost lead's follow-up is cancelled, a re-opened lead gets it back
+  await syncLeadFollowUp(organizationId, id);
 
   return getLead(organizationId, id);
 }
@@ -468,6 +434,7 @@ export async function assignLeadRepresentative(organizationId: string, id: strin
     activity_type: 'assigned',
     actor_id: actorId,
   });
+  await syncLeadFollowUp(organizationId, id); // the open follow-up moves to the new rep
 
   return getLead(organizationId, id);
 }
@@ -500,19 +467,17 @@ export async function syncClientAssignmentWithLeadRep(organizationId: string, cl
   }
 }
 
-export async function setLeadNextAction(organizationId: string, id: string, actorId: string, nextAction: string | null, nextActionDueAt: string | null) {
+export async function setLeadNextAction(organizationId: string, id: string, actorId: string, nextAction: string | null, nextActionDueAt: string | null, nextActionType?: string | null) {
   const { data, error } = await supabaseAdmin
     .from('leads')
-    .update({ next_action: nextAction, next_action_due_at: nextActionDueAt })
+    .update({ next_action: nextAction, next_action_due_at: nextActionDueAt, ...(nextActionType !== undefined ? { next_action_type: nextActionType } : {}) })
     .eq('id', id)
     .eq('organization_id', organizationId)
     .select()
     .maybeSingle();
   if (error) fail(error);
   if (!data) throw new AppError(404, 'LEAD_NOT_FOUND', 'Lead not found in this organization.');
-  if (data.status === 'unqualified') {
-    await syncOpenLeadFollowUpDueAt(organizationId, id, nextActionDueAt);
-  }
+  await syncLeadFollowUp(organizationId, id);
 
   await supabaseAdmin.from('lead_activities').insert({
     organization_id: organizationId,
@@ -525,16 +490,59 @@ export async function setLeadNextAction(organizationId: string, id: string, acto
   return getLead(organizationId, id);
 }
 
-/** Keeps the operational follow-up aligned when an unqualified lead's due date changes. */
-async function syncOpenLeadFollowUpDueAt(organizationId: string, leadId: string, dueAt: string | null) {
-  if (!dueAt) return;
-  const { error } = await supabaseAdmin
+/**
+ * Keeps ONE open follow-up in step with a lead, like the "next step" task in other CRMs:
+ *  - a new / contacted / unqualified lead WITH a next-follow-up date  -> exactly one open follow-up
+ *    (created if missing, otherwise refreshed with the lead's date, rep and priority)
+ *  - a lost lead -> its open follow-up is cancelled
+ *  - a converted lead -> untouched (conversion carries the follow-up over to the client)
+ * Best-effort: a problem here is logged but never blocks saving the lead itself.
+ */
+async function syncLeadFollowUp(organizationId: string, leadId: string) {
+  const { data: lead, error: leadError } = await supabaseAdmin
+    .from('leads')
+    .select('*')
+    .eq('id', leadId)
+    .eq('organization_id', organizationId)
+    .maybeSingle();
+  if (leadError) { console.error('[lead-follow-up] could not read lead', leadError); return; }
+  if (!lead) return;
+
+  const { data: openRows, error: openError } = await supabaseAdmin
     .from('follow_ups')
-    .update({ due_at: dueAt })
+    .select('id')
     .eq('organization_id', organizationId)
     .eq('lead_id', leadId)
-    .in('status', ['pending', 'in_progress']);
-  if (error) fail(error);
+    .in('status', ['pending', 'in_progress'])
+    .order('due_at');
+  if (openError) { console.error('[lead-follow-up] could not read follow-ups', openError); return; }
+  const open = openRows ?? [];
+
+  if (lead.status === 'lost') {
+    if (open.length > 0) {
+      const { error } = await supabaseAdmin.from('follow_ups').update({ status: 'cancelled' }).eq('organization_id', organizationId).in('id', open.map((row) => row.id));
+      if (error) console.error('[lead-follow-up] could not cancel follow-up for lost lead', error);
+    }
+    return;
+  }
+  if (!['new', 'contacted', 'unqualified'].includes(lead.status) || !lead.next_action_due_at) return;
+
+  // Fields the lead owns. `follow_up_type` only comes from the lead when one was chosen on it, so a type
+  // changed on the follow-up itself is not silently reset on every lead edit.
+  const leadOwned: Record<string, unknown> = {
+    representative_id: lead.representative_id,
+    title: `Follow up: ${lead.company_name}`,
+    due_at: lead.next_action_due_at,
+    priority: ['low', 'normal', 'high', 'critical'].includes(lead.priority ?? '') ? lead.priority : 'normal',
+  };
+  const leadType = (lead as { next_action_type?: string | null }).next_action_type;
+  if (leadType) leadOwned.follow_up_type = leadType;
+  // Notes are only seeded when the follow-up is first created. After that they belong to the rep working it,
+  // and a lead edit must not overwrite what they wrote.
+  const { error } = open.length > 0
+    ? await supabaseAdmin.from('follow_ups').update(leadOwned).eq('id', open[0].id).eq('organization_id', organizationId)
+    : await supabaseAdmin.from('follow_ups').insert({ organization_id: organizationId, lead_id: leadId, follow_up_type: leadType ?? 'other', ...leadOwned, notes: leadNotesText(lead.notes) });
+  if (error) console.error('[lead-follow-up] could not sync follow-up', error);
 }
 
 export async function addLeadNote(organizationId: string, id: string, actorId: string, note: string) {
@@ -600,7 +608,7 @@ export async function convertLeadToClient(
   // Settings -> Sales -> "Auto-assign customers to reps": when ON (default),
   // the new client is handed to the lead's representative automatically.
   // When OFF, the manager assigns it later from Sales Representatives.
-  const salesConfig = await getSalesConfig(organizationId);
+  const salesConfig = await getSalesConfig(organizationId, lead.industry_type_id ?? null);
   if (lead.representative_id && salesConfig.autoAssignCustomers) {
     const { error: assignError } = await supabaseAdmin
       .from('sales_representative_client_assignments')
@@ -632,15 +640,27 @@ export async function convertLeadToClient(
   // read from the `follow_ups` table, which conversion never touched, so a
   // lead's next-follow-up date used to just disappear once it converted.
   if (lead.next_action_due_at && lead.representative_id) {
-    const { error: followUpError } = await supabaseAdmin.from('follow_ups').insert({
-      organization_id: organizationId,
-      representative_id: lead.representative_id,
-      client_id: client.id,
-      title: lead.next_action || `Follow up with ${lead.company_name}`,
-      due_at: lead.next_action_due_at,
-      priority: lead.priority ?? 'normal',
-      notes: leadNotesText(lead.notes),
-    });
+    // If the lead already has an open follow-up, move it to the client instead of creating a duplicate.
+    const { data: openLeadFollowUp } = await supabaseAdmin
+      .from('follow_ups')
+      .select('id')
+      .eq('organization_id', organizationId)
+      .eq('lead_id', id)
+      .in('status', ['pending', 'in_progress'])
+      .limit(1)
+      .maybeSingle();
+
+    const { error: followUpError } = openLeadFollowUp
+      ? await supabaseAdmin.from('follow_ups').update({ client_id: client.id }).eq('id', openLeadFollowUp.id).eq('organization_id', organizationId)
+      : await supabaseAdmin.from('follow_ups').insert({
+          organization_id: organizationId,
+          representative_id: lead.representative_id,
+          client_id: client.id,
+          title: lead.next_action || `Follow up with ${lead.company_name}`,
+          due_at: lead.next_action_due_at,
+          priority: lead.priority ?? 'normal',
+          notes: leadNotesText(lead.notes),
+        });
     if (followUpError) {
       await supabaseAdmin.from('lead_activities').insert({
         organization_id: organizationId,
@@ -651,7 +671,6 @@ export async function convertLeadToClient(
       });
     }
   }
-
   const { error: updateError } = await supabaseAdmin
     .from('leads')
     .update({ status: 'converted', converted_client_id: client.id, converted_at: new Date().toISOString() })
