@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
 import { consumeRecordFocus } from '../lib/recordFocus';
+import { kpiClick } from '../lib/kpiClick';
 import './MasterDataPages.css';
 /**
  * One config-driven page powers every Textile module (Design & Pattern,
@@ -149,8 +150,9 @@ export interface KpiDef {
   iconClass: 'kpi-icon-ink' | 'kpi-icon-amber' | 'kpi-icon-green' | 'kpi-icon-red' | 'kpi-icon-school';
   tone?: 'ink' | 'blue' | 'amber' | 'green' | 'red';
   label: string;
-  value: (rows: TextileRecord[]) => string;
+   value: (rows: TextileRecord[]) => string;
   sub?: (rows: TextileRecord[]) => string;
+  match?: (row: TextileRecord) => boolean;
 }
 
 export type TextileRecord = Record<string, unknown> & { id: string; status?: string; created_at?: string };
@@ -297,6 +299,15 @@ function dateLabel(value: unknown): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(d);
 }
 
+function kpiMatches(k: KpiDef, row: TextileRecord): boolean {
+  if (k.match) return k.match(row);
+  const num = (s: string) => Number(String(s).replace(/[^0-9.\-]/g, ''));
+  const one = num(k.value([row]));
+  const none = num(k.value([]));
+  if (!Number.isFinite(one) || !Number.isFinite(none)) return true;
+  return one !== none;
+}
+
 export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
  const { resource, eyebrowModule, title, description, icon, emptyIcon, codeField, nameField, statusOptions, fields, searchableKeys, kpis, statusFilterable = true, hideStatusColumn = false, inlineStatus = false, sampleRecords, afterSave } = config;
   const { activeIndustry, activeIndustryTypeId } = useIndustryScope();
@@ -310,6 +321,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [kpiFilter, setKpiFilter] = useState<string | null>(null);
 
   const [viewing, setViewing] = useState<TextileRecord | null>(null);
   const [modal, setModal] = useState(false);
@@ -433,14 +445,16 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
   const usingDemoData = !loading && records.length === 0 && (sampleRecords?.length ?? 0) > 0;
   const displayRecords = usingDemoData ? sampleRecords! : records;
 
+   const activeKpi = kpiFilter ? kpis.find((k) => k.label === kpiFilter) : undefined;
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return displayRecords.filter((r) => {
       if (statusFilter !== 'all' && String(r.status ?? '').toLowerCase() !== statusFilter) return false;
+      if (activeKpi && !kpiMatches(activeKpi, r)) return false;
       if (!q) return true;
       return searchableKeys.some((key) => String(r[key] ?? '').toLowerCase().includes(q));
     });
-  }, [displayRecords, search, statusFilter, searchableKeys]);
+  }, [displayRecords, search, statusFilter, activeKpi, searchableKeys]);
 
   function openCreate(prefill?: Record<string, string>) {
     setEditing(null);
@@ -626,7 +640,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
        {kpis.length > 0 && (
         <div className="kpi-grid" style={{ '--kpi-count': kpis.length } as CSSProperties}>
           {kpis.map((k) => (
-            <div className="kpi-card" data-tone={k.tone ?? 'ink'} key={k.label}>
+                     <div className="kpi-card" data-tone={k.tone ?? 'ink'} key={k.label} {...kpiClick(kpiFilter === k.label, () => setKpiFilter(kpiFilter === k.label ? null : k.label))}>  
               <div className="kpi-icon">{k.icon}</div>
               <div>
                 <span>{k.label}</span>

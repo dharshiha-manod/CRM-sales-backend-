@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { supabase } from '../lib/supabase'; // NEW
 import { useIndustry } from '../industry/IndustryContext';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { kpiClick } from '../lib/kpiClick';
 import './MasterDataPages.css';
 
 type Call = {
@@ -130,6 +131,8 @@ export function CallsPage() {
   const sorted = useMemo(() => [...filtered].sort((a, b) => new Date(b.started_at ?? 0).getTime() - new Date(a.started_at ?? 0).getTime()), [filtered]);
 
   const clearFilters = () => { setSearch(''); setDirection(''); setOutcome(''); };
+  // KPI card clicks: set exactly the filter(s) that reproduce the card's number.
+  const showCalls = (nextDirection: '' | 'inbound' | 'outbound', nextOutcome: '' | CallBucket) => { setDirection(nextDirection); setOutcome(nextOutcome); };
 
   return (
     <section className="page-panel master-page">
@@ -147,12 +150,12 @@ export function CallsPage() {
         </div>
       )}
       <div className="kpi-grid lead-kpi-grid">
-                <div className="kpi-card" data-tone="ink"><div className="kpi-icon">☎</div><div><span>Total Calls</span><strong>{totalCalls}</strong></div></div>
-        <div className="kpi-card" data-tone="blue"><div className="kpi-icon">↓</div><div><span>Incoming</span><strong>{incoming}</strong></div></div>
-        <div className="kpi-card" data-tone="amber"><div className="kpi-icon">↑</div><div><span>Outgoing</span><strong>{outgoing}</strong></div></div>
-        <div className="kpi-card" data-tone="green"><div className="kpi-icon">✓</div><div><span>Answered</span><strong>{answered}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon">⊘</div><div><span>Missed</span><strong>{missed}</strong></div></div>
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon">◔</div><div><span>Call Duration</span><strong>{totalDurationLabel(totalDuration)}</strong></div></div>
+                <div className="kpi-card" data-tone="ink" {...kpiClick(!direction && !outcome, () => showCalls('', ''))}><div className="kpi-icon">☎</div><div><span>Total Calls</span><strong>{totalCalls}</strong></div></div>
+        <div className="kpi-card" data-tone="blue" {...kpiClick(direction === 'inbound' && !outcome, () => showCalls('inbound', ''))}><div className="kpi-icon">↓</div><div><span>Incoming</span><strong>{incoming}</strong></div></div>
+        <div className="kpi-card" data-tone="amber" {...kpiClick(direction === 'outbound' && !outcome, () => showCalls('outbound', ''))}><div className="kpi-icon">↑</div><div><span>Outgoing</span><strong>{outgoing}</strong></div></div>
+        <div className="kpi-card" data-tone="green" {...kpiClick(outcome === 'answered' && !direction, () => showCalls('', 'answered'))}><div className="kpi-icon">✓</div><div><span>Answered</span><strong>{answered}</strong></div></div>
+        <div className="kpi-card" data-tone="red" {...kpiClick(outcome === 'missed' && !direction, () => showCalls('', 'missed'))}><div className="kpi-icon">⊘</div><div><span>Missed</span><strong>{missed}</strong></div></div>
+        <div className="kpi-card" data-tone="ink" {...kpiClick(false, () => showCalls('', ''))}><div className="kpi-icon">◔</div><div><span>Call Duration</span><strong>{totalDurationLabel(totalDuration)}</strong></div></div>
           </div>
 
       <div className="master-toolbar">

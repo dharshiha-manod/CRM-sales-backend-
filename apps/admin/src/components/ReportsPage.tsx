@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustry } from '../industry/IndustryContext';
 import { REPORT_TERMS } from '../industry/reportConfig';
+import { kpiClick, goToPage } from '../lib/kpiClick';
 import { getReportMockData } from '../industry/reportMockData';
 import './ReportsPage.css';
 
@@ -653,6 +654,8 @@ export function ReportsPage() {
   const fieldTotal = Math.max(view.fieldActivity.total, 1);
   const followUpTotal = Math.max(view.followUps.overdue + view.followUps.pending + view.followUps.completed, 1);
 
+  // The report cards have no list of their own, so clicking one opens the page that holds the underlying records.
+  const KPI_TARGET_PAGE: Record<string, string> = { sales: 'orders', orders: 'orders', collections: 'collections', outstanding: 'collections', aov: 'orders' };
   const kpiCards = [
     { key: 'sales', label: 'Total Sales', value: money(view.kpis.totalSales), delta: view.kpis.deltaSales, icon: '\u20B9', tone: 'ink' as const, trend: view.salesCurrent },
     { key: 'orders', label: 'Total Orders', value: view.kpis.totalOrders.toLocaleString('en-IN'), delta: view.kpis.deltaOrders, icon: '\u25A4', tone: 'amber' as const, trend: view.salesCurrent.map((v, i) => Math.round(v / (view.kpis.avgOrderValue || 1) / 6 * (i + 1))) },
@@ -714,7 +717,7 @@ export function ReportsPage() {
     ) : <>
            <div className="kpi-grid rp-kpi-grid">
         {kpiCards.map((k) => (
-     <div className="kpi-card" data-tone={k.tone} key={k.key}>
+     <div className="kpi-card" data-tone={k.tone} key={k.key} {...kpiClick(false, () => goToPage(KPI_TARGET_PAGE[k.key] ?? 'orders'))}>
             <div className="kpi-card-top">
               <div className={`kpi-icon kpi-icon-${k.tone}`}>{k.icon}</div>
               {k.delta !== null && <small className={k.delta >= 0 ? 'text-trend-up' : 'text-trend-down'}>{k.delta >= 0 ? '\u2191' : '\u2193'} {Math.abs(k.delta)}%</small>}

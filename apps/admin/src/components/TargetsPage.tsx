@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { useIndustry } from '../industry/IndustryContext';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { TARGET_TYPE_OPTIONS, TARGET_TYPE_LABELS, CURRENCY_TYPES, COMMON_TARGET_TYPES, INDUSTRY_TARGET_TYPES } from '../lib/targetTypes';
+import { kpiClick } from '../lib/kpiClick';
 import { useOrgSettings } from '../settings/useOrgSettings';           // ← NEW
 import type { TargetConfig } from '../settings/types';                 // ← NEW
 import './MasterDataPages.css';
@@ -104,6 +105,20 @@ export function TargetsPage() {
   }, [activeIndustryKey]);
   const { settings: orgSettings, loading: settingsLoading } = useOrgSettings(); // ← NEW
 
+  // Settings → Localization → Currency (e.g. "INR (₹)") now drives how money is shown on this page.
+  const currencyCode = (() => {
+    const code = String(orgSettings.localization.currency ?? '').trim().slice(0, 3).toUpperCase();
+    return /^[A-Z]{3}$/.test(code) ? code : 'INR';
+  })();
+  const money = (v: number) => {
+    try {
+      return new Intl.NumberFormat(currencyCode === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: currencyCode, maximumFractionDigits: 0 }).format(Math.round(v || 0));
+    } catch {
+      return `${currencyCode} ${plain(v)}`;
+    }
+  };
+  const formatByType = (v: number, type: string) => (CURRENCY_TYPES.has(type) ? money(v) : plain(v));
+
   // Settings → Target Configuration → Default period
   const DEFAULT_PERIOD_MAP: Record<TargetConfig['defaultPeriod'], 'week' | 'month' | 'quarter'> = { Weekly: 'week', Monthly: 'month', Quarterly: 'quarter' };
   const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'quarter' | 'year'>('month');
@@ -126,6 +141,8 @@ export function TargetsPage() {
   }
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  // Set by the Achieved / Remaining KPI cards: 'met' = target reached, 'open' = still to go.
+  const [progressFilter, setProgressFilter] = useState<'' | 'met' | 'open'>('');
 
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState<TargetApiRow | null>(null);
@@ -163,8 +180,10 @@ export function TargetsPage() {
   const filtered = useMemo(() => targets.filter((t) => {
     if (search && !repName(t).toLowerCase().includes(search.toLowerCase())) return false;
 if (statusFilter && computeStatus(t, orgSettings.target) !== statusFilter) return false;
+    if (progressFilter === 'met' && Number(t.achieved_value) < Number(t.target_value)) return false;
+    if (progressFilter === 'open' && Number(t.achieved_value) >= Number(t.target_value)) return false;
     return true;
-}), [targets, search, statusFilter, orgSettings.target]);
+}), [targets, search, statusFilter, progressFilter, orgSettings.target]);
 
   const kpi = useMemo(() => {
     const totalTarget = filtered.reduce((s, t) => s + Number(t.target_value), 0);
@@ -178,6 +197,8 @@ return { totalTarget, achieved, remaining, pct, atRisk };
   const oneMetricType = metricTypes.length === 1 ? metricTypes[0] : null;
   const kpiLabel = oneMetricType ? targetTypeLabel(oneMetricType) : 'Selected targets';
   const formatKpi = (value: number) => oneMetricType ? formatByType(value, oneMetricType) : '—';
+  // KPI card clicks: Total / Achievement % show everything, Achieved shows reached targets, Remaining shows targets still open.
+  const showTargets = (next: '' | 'met' | 'open') => { setStatusFilter(''); setProgressFilter(next); };
 
 const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings.target) === 'at_risk'), [filtered, orgSettings.target]);
 
@@ -241,10 +262,10 @@ const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings
       </div>
 
       <div className="kpi-grid" style={{ '--kpi-count': 4 } as React.CSSProperties}>
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon">▦</div><div><span>Total Target · {kpiLabel}</span><strong>{formatKpi(kpi.totalTarget)}</strong></div></div>
-        <div className="kpi-card" data-tone="green"><div className="kpi-icon">✓</div><div><span>Achieved · {kpiLabel}</span><strong>{formatKpi(kpi.achieved)}</strong></div></div>
-        <div className="kpi-card" data-tone="amber"><div className="kpi-icon">◔</div><div><span>Remaining · {kpiLabel}</span><strong>{formatKpi(kpi.remaining)}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon">%</div><div><span>Achievement %</span><strong>{oneMetricType ? `${kpi.pct}%` : '—'}</strong></div></div>
+        <div className="kpi-card" data-tone="ink" {...kpiClick(!statusFilter && !progressFilter, () => showTargets(''))}><div className="kpi-icon">▦</div><div><span>Total Target · {kpiLabel}</span><strong>{formatKpi(kpi.totalTarget)}</strong></div></div>
+        <div className="kpi-card" data-tone="green" {...kpiClick(progressFilter === 'met', () => showTargets('met'))}><div className="kpi-icon">✓</div><div><span>Achieved · {kpiLabel}</span><strong>{formatKpi(kpi.achieved)}</strong></div></div>
+        <div className="kpi-card" data-tone="amber" {...kpiClick(progressFilter === 'open', () => showTargets('open'))}><div className="kpi-icon">◔</div><div><span>Remaining · {kpiLabel}</span><strong>{formatKpi(kpi.remaining)}</strong></div></div>
+        <div className="kpi-card" data-tone="red" {...kpiClick(false, () => showTargets(''))}><div className="kpi-icon">%</div><div><span>Achievement %</span><strong>{oneMetricType ? `${kpi.pct}%` : '—'}</strong></div></div>
       </div>
 
       <div className="master-toolbar">

@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { GenerateDocumentButton } from './GenerateDocumentButton';
 import { buildDraftFromOrder } from '../lib/tradeDocumentHandoff';
+import { kpiClick } from '../lib/kpiClick';
 import './MasterDataPages.css';
 
 const ORDER_DOC_TYPES = ['Commercial Invoice', 'Packing List', 'Delivery Note', 'Bill of Lading', 'Other'];
@@ -532,12 +533,12 @@ export function OrdersPage() {
         </div>
       )}
       <div className="kpi-grid order-kpi-grid order-kpi-grid-6">
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon">▤</div><div><span>Total Orders</span><strong>{totalOrders}</strong></div></div>
-        <div className="kpi-card" data-tone="amber"><div className="kpi-icon">◔</div><div><span>Pending</span><strong>{pendingCount}</strong></div></div>
-        <div className="kpi-card" data-tone="blue"><div className="kpi-icon">●</div><div><span>Confirmed</span><strong>{confirmedCount}</strong></div></div>
-        <div className="kpi-card" data-tone="green"><div className="kpi-icon">✓</div><div><span>Completed</span><strong>{completedCount}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon">⊘</div><div><span>Cancelled</span><strong>{cancelledCount}</strong></div></div>
-        <div className="kpi-card" data-tone="amber"><div className="kpi-icon">₹</div><div><span>Total Sales Value</span><strong>{currency(totalSalesValue)}</strong></div></div>
+        <div className="kpi-card" data-tone="ink" {...kpiClick(status === '', () => setStatus(''))}><div className="kpi-icon">▤</div><div><span>Total Orders</span><strong>{totalOrders}</strong></div></div>
+        <div className="kpi-card" data-tone="amber" {...kpiClick(status === 'pending_approval', () => setStatus('pending_approval'))}><div className="kpi-icon">◔</div><div><span>Pending</span><strong>{pendingCount}</strong></div></div>
+        <div className="kpi-card" data-tone="blue" {...kpiClick(status === 'confirmed', () => setStatus('confirmed'))}><div className="kpi-icon">●</div><div><span>Confirmed</span><strong>{confirmedCount}</strong></div></div>
+        <div className="kpi-card" data-tone="green" {...kpiClick(status === 'completed', () => setStatus('completed'))}><div className="kpi-icon">✓</div><div><span>Completed</span><strong>{completedCount}</strong></div></div>
+        <div className="kpi-card" data-tone="red" {...kpiClick(status === 'cancelled', () => setStatus('cancelled'))}><div className="kpi-icon">⊘</div><div><span>Cancelled</span><strong>{cancelledCount}</strong></div></div>
+        <div className="kpi-card" data-tone="amber" {...kpiClick(false, () => setStatus(''))}><div className="kpi-icon">₹</div><div><span>Total Sales Value</span><strong>{currency(totalSalesValue)}</strong></div></div>
       </div>  
            {scopedReadyQuotations.length > 0 && (
         <div className="ready-for-order-section">
@@ -1050,4 +1051,4 @@ export function OrdersPage() {
       })()}
     </section>
   );
-}
+} 

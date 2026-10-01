@@ -23,6 +23,19 @@ type LeadActivity = {
   user_profiles?: { display_name?: string | null } | null;
 };
   
+type LeadFollowUp = {
+  id: string;
+  lead_id?: string | null;
+  due_at: string;
+  status: string;
+  follow_up_type?: string | null;
+  outcome?: string | null;
+  completion_note?: string | null;
+};
+const followUpTypeLabels: Record<string, string> = { call: 'Call', visit: 'Visit', whatsapp: 'WhatsApp', email: 'Email', meeting: 'Meeting', other: 'Other' };
+const followUpOutcomeLabels: Record<string, string> = { connected: 'Spoke to the customer', no_answer: 'No answer / not reachable', promised_payment: 'Customer promised payment', visit_needed: 'Needs another visit', not_interested: 'Not interested', other: 'Other' };
+const followUpStatusLabels: Record<string, string> = { pending: 'Pending', in_progress: 'In progress', completed: 'Completed', cancelled: 'Cancelled' };
+
 type Lead = {
   id: string;
   lead_code: string;
@@ -39,6 +52,7 @@ type Lead = {
   score: number;
   next_action?: string | null;
   next_action_due_at?: string | null;
+  next_action_type?: string | null;
   notes?: string | null;
   converted_client_id?: string | null;
   created_at: string;
@@ -69,6 +83,7 @@ type LeadForm = {
   interestedProduct: string;
   expectedOrderValue: string;
   nextFollowUp: string;
+  nextActionType: string;
 };
 
 const blankForm: LeadForm = {
@@ -92,6 +107,7 @@ const blankForm: LeadForm = {
   interestedProduct: '',
   expectedOrderValue: '',
   nextFollowUp: '',
+  nextActionType: '',
 };
 
 const sourceLabels: Record<string, string> = {
@@ -409,6 +425,16 @@ function unpackFmcgMeta(notes?: string | null): { text: string; meta: FmcgMeta }
   }
 }
 
+// <input type="datetime-local"> needs LOCAL time. Slicing the UTC ISO string shows the time 5h30 early in India
+// (11:59 became 6:29) and shifts the follow-up again on every save.
+const toLocalInput = (iso?: string | null) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
 const isOverdue = (lead: Lead) =>
   Boolean(lead.next_action_due_at) &&
   new Date(lead.next_action_due_at as string).getTime() < Date.now() &&
@@ -458,6 +484,8 @@ const [status, setStatus] = useState('');
   const [selected, setSelected] = useState<Lead | null>(null);
   const [activities, setActivities] = useState<LeadActivity[]>([]);
   const [activitiesLoading, setActivitiesLoading] = useState(false);
+  const [cardFilter, setCardFilter] = useState<'all' | 'new' | 'contacted' | 'qualified' | 'converted' | 'due'>('all');
+  const [leadFollowUps, setLeadFollowUps] = useState<LeadFollowUp[]>([]);
  const [noteDraft, setNoteDraft] = useState('');
 const [savingNote, setSavingNote] = useState(false);
 const [calling, setCalling] = useState(false);
@@ -465,6 +493,9 @@ const [callError, setCallError] = useState<string | null>(null);
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [rowStatusUpdating, setRowStatusUpdating] = useState<Record<string, boolean>>({});
   const [detailError, setDetailError] = useState<string | null>(null);
+  // Converted leads have no date of their own: show the live date of their client's next open follow-up.
+  const [clientNextFollowUp, setClientNextFollowUp] = useState<Record<string, string>>({});
+  const convertedFollowUpDate = (lead: Lead): string | null => (lead.converted_client_id ? clientNextFollowUp[lead.converted_client_id] ?? null : null);
 
 
   const [convertOpen, setConvertOpen] = useState(false);
@@ -485,6 +516,7 @@ const [callError, setCallError] = useState<string | null>(null);
 
   const [nextActionDraft, setNextActionDraft] = useState('');
   const [nextActionDueDraft, setNextActionDueDraft] = useState('');
+  const [nextActionTypeDraft, setNextActionTypeDraft] = useState('');
   const [savingNextAction, setSavingNextAction] = useState(false);
   const [suggestingRep, setSuggestingRep] = useState(false);
 
@@ -499,7 +531,18 @@ const [callError, setCallError] = useState<string | null>(null);
       if (search) params.set('search', search);
       const query = params.toString();
       const leads = (await api<{ data: Lead[] }>(`/leads${query ? `?${query}` : ''}`)).data ?? [];
-      setItems(leads);
+          setItems(leads);
+      try {
+        const followUps = (await api<{ data: Array<{ client_id?: string | null; due_at: string; status: string }> }>('/follow-ups')).data ?? [];
+        const next: Record<string, string> = {};
+        for (const f of followUps) {
+          if (!f.client_id || !['pending', 'in_progress'].includes(f.status)) continue;
+          if (!next[f.client_id] || new Date(f.due_at) < new Date(next[f.client_id])) next[f.client_id] = f.due_at;
+        }
+        setClientNextFollowUp(next);
+      } catch {
+        // optional: the column simply shows — if follow-ups cannot be loaded
+      }
       const focusLeadId = sessionStorage.getItem('fs-focus-lead-id');
       if (focusLeadId) {
         const focusedLead = leads.find((lead) => lead.id === focusLeadId);
@@ -560,10 +603,12 @@ const [callError, setCallError] = useState<string | null>(null);
     () =>
       industryScoped.filter((lead) => {
         if (priorityFilter && lead.priority !== priorityFilter) return false;
-        if (repFilter && lead.sales_representatives?.id !== repFilter) return false;
+           if (repFilter && lead.sales_representatives?.id !== repFilter) return false;
+        if (cardFilter === 'due') return isOverdue(lead);
+        if (cardFilter !== 'all' && lead.status !== cardFilter) return false;
         return true;
       }),
-    [industryScoped, priorityFilter, repFilter],
+    [industryScoped, priorityFilter, repFilter, cardFilter],
   );
 
   // Step 4: sort
@@ -612,6 +657,16 @@ const [callError, setCallError] = useState<string | null>(null);
     return counts;
   }, [industryScoped]);
 
+// Clickable KPI cards: click a card to filter the table to it, click "Total Leads" to clear.
+const cardProps = (key: typeof cardFilter) => ({
+  role: 'button' as const,
+  tabIndex: 0,
+  'aria-pressed': cardFilter === key,
+  style: { cursor: 'pointer', boxShadow: cardFilter === key ? '0 0 0 2px var(--ink, #1a1a1a)' : undefined },
+  onClick: () => setCardFilter(key),
+  onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setCardFilter(key); } },
+});
+
 function openCreate() {
   setEditingLeadId(null);
   setForm({
@@ -656,7 +711,8 @@ function openCreate() {
       // Prefer the real next_action_due_at column (what the table/KPIs read)
       // and fall back to the legacy meta-only value for leads saved before
       // this field was wired to a real column.
- nextFollowUp: lead.next_action_due_at ? lead.next_action_due_at.slice(0, 16) : meta.nextFollowUp ?? '',
+ nextFollowUp: lead.next_action_due_at ? toLocalInput(lead.next_action_due_at) : meta.nextFollowUp ?? '',
+      nextActionType: lead.next_action_type ?? '',
     });
     setFormError(null);
     setDuplicateWarning(null);
@@ -729,6 +785,7 @@ function openCreate() {
     if (!form.industryTypeId) { savingRef.current = false; return setFormError('Select an industry.'); }
     if (!form.companyName.trim()) { savingRef.current = false; return setFormError('Enter a company name.'); }
     if (!form.phone.trim() && !form.email.trim()) { savingRef.current = false; return setFormError('Enter a phone number or an email address.'); }
+    if (form.nextFollowUp && !form.nextActionType) { savingRef.current = false; return setFormError('Choose a follow-up type (call, visit, WhatsApp…).'); }
     if (duplicateWarning && !confirmDespiteDuplicate) {
       savingRef.current = false;
       return setFormError('Confirm you want to create this lead despite the possible duplicate.');
@@ -758,6 +815,7 @@ function openCreate() {
           nextFollowUp: form.nextFollowUp,
         }) || null,
         nextActionDueAt: form.nextFollowUp ? new Date(form.nextFollowUp).toISOString() : null,
+        nextActionType: form.nextFollowUp ? form.nextActionType : null,
       };
           if (editingLeadId) {
         const response = await api<{ data: Lead }>(`/leads/${editingLeadId}`, {
@@ -811,7 +869,13 @@ setDetailError(null);
 setCallError(null);
 setNoteDraft('');
     setNextActionDraft(lead.next_action ?? '');
-    setNextActionDueDraft(lead.next_action_due_at ? lead.next_action_due_at.slice(0, 16) : '');
+    setNextActionDueDraft(toLocalInput(lead.next_action_due_at));
+    setNextActionTypeDraft(lead.next_action_type ?? '');
+
+    setLeadFollowUps([]);
+    void api<{ data: LeadFollowUp[] }>('/follow-ups')
+      .then((res) => setLeadFollowUps((res.data ?? []).filter((f) => f.lead_id === lead.id).sort((a, b) => new Date(b.due_at).getTime() - new Date(a.due_at).getTime())))
+      .catch(() => setLeadFollowUps([]));
 
     setActivitiesLoading(true);
     try {
@@ -888,9 +952,9 @@ async function changeStatus(newStatus: Lead['status']) {
       setSavingNote(false);
     }
   }
-
   async function saveNextAction() {
     if (!selected) return;
+    if (nextActionDueDraft && !nextActionTypeDraft) { setDetailError('Choose a follow-up type.'); return; }
     setSavingNextAction(true);
     setDetailError(null);
     try {
@@ -899,12 +963,15 @@ async function changeStatus(newStatus: Lead['status']) {
         body: JSON.stringify({
           nextAction: nextActionDraft.trim() || null,
           nextActionDueAt: nextActionDueDraft ? new Date(nextActionDueDraft).toISOString() : null,
+          nextActionType: nextActionDueDraft ? nextActionTypeDraft : null,
         }),
       });
       setSelected(response.data);
       setItems((current) => current.map((item) => (item.id === response.data.id ? response.data : item)));
-      const refreshed = await api<{ data: LeadActivity[] }>(`/leads/${selected.id}/activities`);
+          const refreshed = await api<{ data: LeadActivity[] }>(`/leads/${selected.id}/activities`);
       setActivities(refreshed.data ?? []);
+      const refreshedFollowUps = await api<{ data: LeadFollowUp[] }>('/follow-ups');
+      setLeadFollowUps((refreshedFollowUps.data ?? []).filter((f) => f.lead_id === selected.id).sort((a, b) => new Date(b.due_at).getTime() - new Date(a.due_at).getTime()));
     } catch (caught) {
       setDetailError(caught instanceof Error ? caught.message : 'Unable to save next action.');
     } finally {
@@ -996,42 +1063,42 @@ async function suggestRep() {
       </div>
 
         <div className="kpi-grid lead-kpi-grid">
-        <div className="kpi-card" data-tone="ink">
+           <div className="kpi-card" data-tone="ink" {...cardProps('all')}>
           <div className="kpi-icon">◧</div>
           <div>
             <span>Total Leads</span>
             <strong>{kpis.total}</strong>
           </div>
         </div>
-        <div className="kpi-card" data-tone="blue">
+        <div className="kpi-card" data-tone="blue" {...cardProps('new')}>
           <div className="kpi-icon">●</div>
           <div>
             <span>New</span>
             <strong>{kpis.new}</strong>
           </div>
         </div>
-        <div className="kpi-card" data-tone="amber">
+        <div className="kpi-card" data-tone="amber" {...cardProps('contacted')}>
           <div className="kpi-icon">◐</div>
           <div>
             <span>In Progress</span>
             <strong>{kpis.inProgress}</strong>
           </div>
         </div>
-        <div className="kpi-card" data-tone="green">
+        <div className="kpi-card" data-tone="green" {...cardProps('qualified')}>
           <div className="kpi-icon">◑</div>
           <div>
             <span>Qualified</span>
             <strong>{kpis.qualified}</strong>
           </div>
         </div>
-        <div className="kpi-card" data-tone="green">
+        <div className="kpi-card" data-tone="green" {...cardProps('converted')}>
           <div className="kpi-icon">✓</div>
           <div>
             <span>Converted</span>
             <strong>{kpis.converted}</strong>
           </div>
         </div>
-        <div className="kpi-card" data-tone="red">
+        <div className="kpi-card" data-tone="red" {...cardProps('due')}>
           <div className="kpi-icon">!</div>
           <div>
             <span>Follow-ups Due</span>
@@ -1182,7 +1249,13 @@ async function suggestRep() {
                       </select>
                     </td>
                     <td>
-                      {lead.next_action_due_at ? (
+                                               {lead.status === 'converted' ? (
+                        convertedFollowUpDate(lead) ? (
+                          <span>{new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(convertedFollowUpDate(lead) as string))}</span>
+                        ) : (
+                          '—'
+                        )
+                      ) : lead.next_action_due_at ? (
                         isOverdue(lead) ? (
                           <span className="text-warn followup-cell">
                             <strong>Overdue</strong>
@@ -1191,6 +1264,8 @@ async function suggestRep() {
                         ) : (
                           <span>{new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(lead.next_action_due_at))}</span>
                         )
+                                          ) : ['new', 'contacted', 'unqualified'].includes(lead.status) ? (
+                                       <button type="button" className="link-button text-warn" onClick={() => void openDetail(lead)}>+ Schedule</button>  
                       ) : (
                         '—'
                       )}
@@ -1352,7 +1427,13 @@ async function suggestRep() {
               <dd>{selected.score} / 100</dd>
                         <dt>Next follow-up</dt>
               <dd>
-                {selected.next_action_due_at ? (
+                                    {selected.status === 'converted' ? (
+                  convertedFollowUpDate(selected) ? (
+                    <span>{new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(convertedFollowUpDate(selected) as string))}</span>
+                  ) : (
+                    '—'
+                  )
+                ) : selected.next_action_due_at ? (
                   <span className={isOverdue(selected) ? 'text-warn' : undefined}>
                     {isOverdue(selected) ? 'Overdue: ' : ''}
                     {new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(selected.next_action_due_at))}
@@ -1443,6 +1524,18 @@ async function suggestRep() {
                 <input value={nextActionDraft} placeholder="e.g. Call to confirm budget" onChange={(e) => setNextActionDraft(e.target.value)} />
               </label>
               <label>
+                Type
+                      <select value={nextActionTypeDraft} onChange={(e) => setNextActionTypeDraft(e.target.value)}>
+                  <option value="">Select type</option>
+                  <option value="call">Call</option>
+                  <option value="visit">Visit</option>
+                  <option value="whatsapp">WhatsApp</option>
+                  <option value="email">Email</option>
+                  <option value="meeting">Meeting</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>
                 Due
                 <input type="datetime-local" value={nextActionDueDraft} onChange={(e) => setNextActionDueDraft(e.target.value)} />
               </label>
@@ -1450,6 +1543,26 @@ async function suggestRep() {
                 {savingNextAction ? 'Saving…' : 'Save'}
               </button>
             </div>
+
+                       <p className="eyebrow" style={{ marginTop: '1.25rem' }}>
+              FOLLOW-UP HISTORY
+            </p>
+            {leadFollowUps.length === 0 ? (
+              <p className="text-faint-inline">No follow-ups yet.</p>
+            ) : (
+              <ol className="lead-activity-timeline">
+                {leadFollowUps.map((f) => (
+                  <li key={f.id}>
+                    <span className="timeline-dot" />
+                    <div>
+                      <strong>{followUpTypeLabels[f.follow_up_type ?? ''] ?? 'Follow-up'} · {followUpStatusLabels[f.status] ?? f.status}</strong>
+                      {f.outcome && <p>{followUpOutcomeLabels[f.outcome] ?? f.outcome}{f.completion_note ? ` — ${f.completion_note}` : ''}</p>}
+                      <small>{dateLabel(f.due_at)}</small>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
 
             <p className="eyebrow" style={{ marginTop: '1.25rem' }}>
               ACTIVITY & NOTES
@@ -1714,6 +1827,18 @@ async function suggestRep() {
               <fieldset className="modal-fieldset">
                 <legend>Follow-up</legend>
                 <div className="fieldset-grid">
+                  <label>
+                    Follow-up type
+                                <select value={form.nextActionType} onChange={(e) => setForm({ ...form, nextActionType: e.target.value })}>
+                      <option value="">Select type</option>
+                      <option value="call">Call</option>
+                      <option value="visit">Visit</option>
+                      <option value="whatsapp">WhatsApp</option>
+                      <option value="email">Email</option>
+                      <option value="meeting">Meeting</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </label>
                   <label>
                     Next follow-up
                   <input type="datetime-local" value={form.nextFollowUp} onChange={(e) => setForm({ ...form, nextFollowUp: e.target.value })} />

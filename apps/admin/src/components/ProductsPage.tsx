@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
+import { kpiClick } from '../lib/kpiClick';
 import { loadNameList, brandListKey, categoryListKey, unitListKey } from './BrandsCategoriesPage';
 import './MasterDataPages.css';
 
@@ -22,6 +23,7 @@ type Product = {
  category?: string | null;
   selling_price: number;
   cost_price?: number | null;
+  unit?: string | null;
   stock_quantity?: number | null;
   status: 'active' | 'inactive';
   // Real, backend-persisted GST/tax rate for this product (products.tax_percent).
@@ -468,6 +470,13 @@ export function ProductsPage() {
       setSaving(false);
     }
   }
+  // KPI card clicks: clear everything, then set just the status / stock / expiry filter that reproduces the card's number.
+  function showProducts(next: { status?: Product['status']; stock?: StockState; expiry?: 'expiring' } = {}) {
+    clearFilters();
+    if (next.status) setFilterStatus(next.status);
+    if (next.stock) setFilterStock(next.stock);
+    if (next.expiry) setFilterExpiry(next.expiry);
+  }
   function clearFilters() {
     setSearch('');
     setFilterBrand('');
@@ -502,11 +511,11 @@ export function ProductsPage() {
         <button type="button" className="primary-action" onClick={openCreate}>+ Add Product</button>
       </div>
       <div className="kpi-grid product-kpi-grid">
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">▣</div><div><span>Total Products</span><strong>{kpis.total}</strong></div></div>
-        <div className="kpi-card" data-tone="green"><div className="kpi-icon kpi-icon-green">✓</div><div><span>Active Products</span><strong>{kpis.active}</strong></div></div>
-        <div className="kpi-card" data-tone="amber"><div className="kpi-icon kpi-icon-amber">⚠</div><div><span>Low Stock</span><strong>{kpis.lowStock}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon kpi-icon-red">⬤</div><div><span>Out of Stock</span><strong>{kpis.outOfStock}</strong></div></div>
-        {showBatchUi && <div className="kpi-card" data-tone="blue"><div className="kpi-icon kpi-icon-blue">◷</div><div><span>Expiring Soon</span><strong>{kpis.expiringSoon}</strong></div></div>}        <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">▤</div><div><span>Total Stock</span><strong>{kpis.totalStock.toLocaleString('en-IN')}</strong></div></div>
+        <div className="kpi-card" data-tone="ink" {...kpiClick(activeFilterCount === 0 && !search.trim(), () => showProducts())}><div className="kpi-icon kpi-icon-ink">▣</div><div><span>Total Products</span><strong>{kpis.total}</strong></div></div>
+        <div className="kpi-card" data-tone="green" {...kpiClick(filterStatus === 'active' && filterStock === 'all' && filterExpiry === 'all', () => showProducts({ status: 'active' }))}><div className="kpi-icon kpi-icon-green">✓</div><div><span>Active Products</span><strong>{kpis.active}</strong></div></div>
+        <div className="kpi-card" data-tone="amber" {...kpiClick(filterStock === 'low' && filterStatus === 'all' && filterExpiry === 'all', () => showProducts({ stock: 'low' }))}><div className="kpi-icon kpi-icon-amber">⚠</div><div><span>Low Stock</span><strong>{kpis.lowStock}</strong></div></div>
+        <div className="kpi-card" data-tone="red" {...kpiClick(filterStock === 'out' && filterStatus === 'all' && filterExpiry === 'all', () => showProducts({ stock: 'out' }))}><div className="kpi-icon kpi-icon-red">⬤</div><div><span>Out of Stock</span><strong>{kpis.outOfStock}</strong></div></div>
+        {showBatchUi && <div className="kpi-card" data-tone="blue" {...kpiClick(filterExpiry === 'expiring' && filterStatus === 'all' && filterStock === 'all', () => showProducts({ expiry: 'expiring' }))}><div className="kpi-icon kpi-icon-blue">◷</div><div><span>Expiring Soon</span><strong>{kpis.expiringSoon}</strong></div></div>}        <div className="kpi-card" data-tone="ink" {...kpiClick(false, () => showProducts())}><div className="kpi-icon kpi-icon-ink">▤</div><div><span>Total Stock</span><strong>{kpis.totalStock.toLocaleString('en-IN')}</strong></div></div>
       </div>
 
       <div className="master-toolbar">
@@ -705,10 +714,14 @@ export function ProductsPage() {
                     </label>
                   </>
                 )}
-<label>MRP (₹)<input min="0" type="number" step="0.01" value={form.mrp} onChange={(event) => { const mrp = event.target.value; setForm((current) => ({ ...current, mrp, sellingPrice: computeSellingPrice(mrp, current.discountPercent) || current.sellingPrice })); }} /></label>
-<label>Discount (%)<input min="0" max="100" type="number" step="0.01" value={form.discountPercent} onChange={(event) => { const discountPercent = event.target.value; setForm((current) => ({ ...current, discountPercent, sellingPrice: computeSellingPrice(current.mrp, discountPercent) || current.sellingPrice })); }} /></label>
-<label>Selling price (₹) — auto from MRP &amp; Discount<input required min="0" type="number" step="0.01" value={form.sellingPrice} readOnly disabled={Boolean(form.mrp)} onChange={(event) => setForm({ ...form, sellingPrice: event.target.value })} /></label>
-                 <label>Purchase price (₹)<input min="0" type="number" step="0.01" value={form.costPrice} onChange={(event) => setForm({ ...form, costPrice: event.target.value })} /></label>
+{!isTrading && (
+  <>
+    <label>MRP (₹)<input min="0" type="number" step="0.01" value={form.mrp} onChange={(event) => { const mrp = event.target.value; setForm((current) => ({ ...current, mrp, sellingPrice: computeSellingPrice(mrp, current.discountPercent) || current.sellingPrice })); }} /></label>
+    <label>Discount (%)<input min="0" max="100" type="number" step="0.01" value={form.discountPercent} onChange={(event) => { const discountPercent = event.target.value; setForm((current) => ({ ...current, discountPercent, sellingPrice: computeSellingPrice(current.mrp, discountPercent) || current.sellingPrice })); }} /></label>
+  </>
+)}
+<label>Purchase price (₹)<input min="0" type="number" step="0.01" value={form.costPrice} onChange={(event) => setForm({ ...form, costPrice: event.target.value })} /></label>
+<label>{isTrading ? 'Selling price (₹)' : 'Selling price (₹) — auto from MRP & Discount'}<input required min="0" type="number" step="0.01" value={form.sellingPrice} readOnly={!isTrading} disabled={!isTrading && Boolean(form.mrp)} onChange={(event) => setForm({ ...form, sellingPrice: event.target.value })} /></label>
                 <label>Tax / GST (%)<input min="0" max="100" type="number" step="0.01" value={form.taxPercent} onChange={(event) => setForm({ ...form, taxPercent: event.target.value })} /></label>
                 <label>Final price incl. GST (₹)<input readOnly disabled value={form.sellingPrice && form.taxPercent ? (Number(form.sellingPrice) + (Number(form.sellingPrice) * Number(form.taxPercent)) / 100).toFixed(2) : form.sellingPrice} /></label>
                 <label>Opening stock<input min="0" type="number" step="1" value={form.stockQuantity} onChange={(event) => setForm({ ...form, stockQuantity: event.target.value })} /></label>
@@ -759,8 +772,8 @@ export function ProductsPage() {
                 <dt>Unit / Pack size</dt><dd>{meta.unit}{meta.packSize ? ` · ${meta.packSize}` : ''}</dd>
              <dt>Selling price</dt><dd>{formatMoney(Number(viewing.selling_price))}</dd>
                 <dt>Purchase price</dt><dd>{viewing.cost_price == null ? 'Not recorded' : formatMoney(Number(viewing.cost_price))}</dd>
-                <dt>MRP</dt><dd>{meta.mrp ? formatMoney(Number(meta.mrp)) : 'Not recorded'}</dd>
-                         <dt>Discount / Tax</dt><dd>{meta.discountPercent || 0}% / {viewing.tax_percent || 0}%</dd>
+                {!isTrading && <><dt>MRP</dt><dd>{meta.mrp ? formatMoney(Number(meta.mrp)) : 'Not recorded'}</dd></>}
+                <dt>{isTrading ? 'Tax' : 'Discount / Tax'}</dt><dd>{isTrading ? `${viewing.tax_percent || 0}%` : `${meta.discountPercent || 0}% / ${viewing.tax_percent || 0}%`}</dd>
                 <dt>Price incl. GST</dt><dd>{formatMoney(Number(viewing.selling_price) + (Number(viewing.selling_price) * Number(viewing.tax_percent || 0)) / 100)}</dd>
                 <dt>Current stock</dt>
                 <dd>

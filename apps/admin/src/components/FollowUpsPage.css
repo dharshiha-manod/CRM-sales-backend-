@@ -1,0 +1,65 @@
+/* Follow-up details: reschedule history + reschedule form */
+.fu-section { margin: 0 1.6rem 1.4rem; }
+.fu-section-title {
+  display: flex; align-items: center; gap: .6rem;
+  margin: 0 0 .8rem;
+  font-size: .74rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.fu-count {
+  display: inline-grid; place-items: center;
+  min-width: 1.4rem; height: 1.4rem; padding: 0 .4rem;
+  border-radius: 999px;
+  background: var(--amber-soft); color: var(--amber-strong);
+  font-size: .72rem; font-weight: 700;
+}
+.fu-timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: .7rem; }
+.fu-timeline li {
+  padding: .8rem 1rem .8rem 1.1rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--amber);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.fu-change { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font-size: .9rem; font-weight: 600; color: var(--text); }
+.fu-old { color: var(--text-faint); text-decoration: line-through; font-weight: 500; }
+.fu-arrow { color: var(--text-faint); }
+.fu-note { margin: .45rem 0 0; font-size: .88rem; color: var(--text); }
+.fu-meta { margin: .35rem 0 0; font-size: .76rem; color: var(--text-faint); }
+.fu-empty { margin: 0; font-size: .88rem; color: var(--text-faint); }
+
+.fu-card {
+  margin: 0 1.6rem 1.4rem;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+  display: grid; gap: 1rem;
+}
+.fu-card label { display: grid; gap: .45rem; font-size: .86rem; font-weight: 600; color: var(--text); }
+.fu-card input, .fu-card textarea { width: 100%; box-sizing: border-box; }
+.fu-card textarea { resize: vertical; min-height: 84px; }
+.fu-hint { font-weight: 400; font-size: .78rem; color: var(--text-faint); }
+.fu-error { margin: 0; font-size: .85rem; color: var(--red); }
+.fu-card-actions { display: flex; justify-content: flex-end; gap: .6rem; }
+/* ADD these lines at the END of apps/admin/src/components/FollowUpsPage.css */
+.fu-type { display: inline-block; margin-right: .15rem; }
+.fu-chain { color: var(--text-faint); }
+.fu-outcome { display: inline-block; padding: .05rem .5rem; border-radius: 999px; background: var(--green-soft); color: var(--green); font-weight: 600; font-size: .74rem; }
+.master-modal-form select { width: 100%; box-sizing: border-box; }
+/* ── Follow-ups table: static layout, no sideways scrolling (same approach as the Clients table) ── */
+.fu-table-wrap { overflow-x: hidden; width: 100%; max-width: 100%; }
+.fu-table { table-layout: fixed; width: 100%; }
+.fu-table th, .fu-table td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.fu-table th:nth-child(1) { width: 29%; }
+.fu-table th:nth-child(2) { width: 11%; }
+.fu-table th:nth-child(3) { width: 12%; }
+.fu-table th:nth-child(4) { width: 16%; }
+.fu-table th:nth-child(5) { width: 9%; }
+.fu-table th:nth-child(6) { width: 9%; }
+.fu-table th:nth-child(7) { width: 14%; }
+.fu-table small { display: block; margin-top: .2rem; }
+.fu-note-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap !important; }
+.fu-due-overdue { color: var(--red); font-weight: 600; }
+.fu-due-today { color: var(--amber, #b45309); font-weight: 600; }
+.fu-table td.master-actions > * { margin: 0 .25rem .25rem 0; }

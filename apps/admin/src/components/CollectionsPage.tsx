@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useOrgSettings } from '../settings/useOrgSettings';
+import { kpiClick } from '../lib/kpiClick';
 import './MasterDataPages.css';
 import './CollectionsPage.css';
 
@@ -108,6 +109,8 @@ export function CollectionsPage() {
   const [search, setSearch] = useState('');
   const [repFilter, setRepFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  // Set by the Total Outstanding / Pending Collections cards: everything that is not fully paid.
+  const [unpaidOnly, setUnpaidOnly] = useState(false);
   const [dueBeforeFilter, setDueBeforeFilter] = useState('');
   const [paidSinceFilter, setPaidSinceFilter] = useState('');
   const [amountMin, setAmountMin] = useState('');
@@ -160,7 +163,7 @@ export function CollectionsPage() {
     }
   }
   useEffect(() => { void load(); }, []);
-  useEffect(() => { setPage(1); }, [search, repFilter, statusFilter, dueBeforeFilter, paidSinceFilter, amountMin, amountMax]);
+  useEffect(() => { setPage(1); }, [search, repFilter, statusFilter, unpaidOnly, dueBeforeFilter, paidSinceFilter, amountMin, amountMax]);
 
   // Every payment keyed by both order id and order number so it lines up
   // with an order regardless of which one the API happened to populate.
@@ -223,17 +226,25 @@ export function CollectionsPage() {
       (!search || text.includes(search.toLowerCase())) &&
       (!repFilter || r.repName === repFilter) &&
       (!statusFilter || r.status === statusFilter) &&
+      (!unpaidOnly || r.status !== 'paid') &&
       (!dueBeforeFilter || r.dueDate.slice(0, 10) <= dueBeforeFilter) &&
       (!paidSinceFilter || (r.lastPaymentDate ?? '').slice(0, 10) >= paidSinceFilter) &&
       (min === null || r.invoiceAmount >= min) &&
       (max === null || r.invoiceAmount <= max)
     );
-  }), [rows, search, repFilter, statusFilter, dueBeforeFilter, paidSinceFilter, amountMin, amountMax]);
+  }), [rows, search, repFilter, statusFilter, unpaidOnly, dueBeforeFilter, paidSinceFilter, amountMin, amountMax]);
 
   function clearFilters() {
-    setSearch(''); setRepFilter(''); setStatusFilter(''); setDueBeforeFilter(''); setPaidSinceFilter(''); setAmountMin(''); setAmountMax('');
+    setSearch(''); setRepFilter(''); setStatusFilter(''); setUnpaidOnly(false); setDueBeforeFilter(''); setPaidSinceFilter(''); setAmountMin(''); setAmountMax('');
   }
-  const filtersActive = !!(search || repFilter || statusFilter || dueBeforeFilter || paidSinceFilter || amountMin || amountMax);
+  const filtersActive = !!(search || repFilter || statusFilter || unpaidOnly || dueBeforeFilter || paidSinceFilter || amountMin || amountMax);
+  // KPI card clicks: clear everything, then set just the filter that reproduces the card's number.
+  const showCollections = (next: { status?: PaymentStatus; unpaid?: boolean; paidSince?: string }) => {
+    clearFilters();
+    if (next.status) setStatusFilter(next.status);
+    if (next.unpaid) setUnpaidOnly(true);
+    if (next.paidSince) setPaidSinceFilter(next.paidSince);
+  };
 
   const sorted = useMemo(() => {
     const list = [...filtered];
@@ -420,26 +431,26 @@ export function CollectionsPage() {
       {error && <p className="error-message">{error}</p>}
 
       <div className="kpi-grid collections-kpi-grid">
-        <div className="kpi-card" data-tone="ink">
+        <div className="kpi-card" data-tone="ink" {...kpiClick(unpaidOnly && !statusFilter && !paidSinceFilter, () => showCollections({ unpaid: true }))}>
           <div className="kpi-icon kpi-icon-ink">₹</div>
           <div><span>Total Outstanding</span><strong>{money(totalOutstanding)}</strong></div>
         </div>
-        <div className="kpi-card" data-tone="green">
+        <div className="kpi-card" data-tone="green" {...kpiClick(paidSinceFilter === `${thisMonthKey}-01`, () => showCollections({ paidSince: `${thisMonthKey}-01` }))}>
           <div className="kpi-icon kpi-icon-green">✓</div>
           <div>
             <span>Collected This Month</span><strong>{money(collectedThisMonth)}</strong>
 
           </div>
         </div>
-        <div className="kpi-card" data-tone="amber">
+        <div className="kpi-card" data-tone="amber" {...kpiClick(false, () => showCollections({ unpaid: true }))}>
           <div className="kpi-icon kpi-icon-amber">◔</div>
           <div><span>Pending Collections</span><strong>{pendingRecords.length}</strong></div>
         </div>
-        <div className="kpi-card" data-tone="red">
+        <div className="kpi-card" data-tone="red" {...kpiClick(statusFilter === 'overdue', () => showCollections({ status: 'overdue' }))}>
           <div className="kpi-icon kpi-icon-red">⚠</div>
           <div><span>Overdue Amount</span><strong>{money(overdueAmount)}</strong></div>
         </div>
-        <div className="kpi-card" data-tone="blue">
+        <div className="kpi-card" data-tone="blue" {...kpiClick(false, () => showCollections({}))}>
           <div className="kpi-icon kpi-icon-blue">%</div>
           <div>
             <span>Collection Rate</span><strong>{collectionRate}%</strong>

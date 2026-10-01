@@ -14,6 +14,8 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
         'content-type': 'application/json',
         authorization: `Bearer ${data.session.access_token}`,
         'x-organization-id': organizationId,
+        // The industry picked in the header switcher; the API limits every list to it (admins only).
+        ...(window.localStorage.getItem('fs-active-industry') ? { 'x-industry-code': window.localStorage.getItem('fs-active-industry') as string } : {}),
         ...options.headers,
       },
     });

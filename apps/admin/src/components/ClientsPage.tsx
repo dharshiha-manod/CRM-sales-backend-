@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustry } from '../industry/IndustryContext';
+import { kpiClick } from '../lib/kpiClick';
 import './MasterDataPages.css';
 
 const PENDING_REQUIREMENT_CLIENT_KEY = 'fs-pending-requirement-client';
@@ -67,10 +68,20 @@ export function ClientsPage() {
   const [allRequirements, setAllRequirements] = useState<TabRequirement[]>([]); const [allQuotations, setAllQuotations] = useState<TabQuotation[]>([]);
   const [allFollowUps, setAllFollowUps] = useState<TabFollowUp[]>([]);
   const [activeTab, setActiveTab] = useState<ClientTab>('overview'); const [tabData, setTabData] = useState<ClientTabData>(blankTabData); const [tabLoading, setTabLoading] = useState(false);
+  const [onlyOutstanding, setOnlyOutstanding] = useState(false);
   const clientTypes = useMemo(() => [...new Set(items.map((item) => item.client_type).filter(Boolean))].sort(), [items]);
   const activeIndustryType = useMemo(() => industryTypes.find((it) => it.code === activeIndustry.toUpperCase()), [industryTypes, activeIndustry]);
   const industryScoped = items.filter((item) => item.industry_type_id === activeIndustryType?.id);
-  const filtered = industryScoped.filter((item) => (!type || item.client_type === type) && (status === 'all' || item.status === status) && (!priority || item.priority === priority));
+  // How much each client still owes (orders minus collections). Used by the Outstanding card + its click filter.
+  const outstandingByClient = useMemo(() => {
+    const sales: Record<string, number> = {}; const collected: Record<string, number> = {};
+    allOrders.filter((o) => o.status !== 'cancelled').forEach((o) => { if (o.client_id) sales[o.client_id] = (sales[o.client_id] ?? 0) + (o.total_amount ?? 0); });
+    allCollections.forEach((c) => { if (c.client_id) collected[c.client_id] = (collected[c.client_id] ?? 0) + (c.amount ?? 0); });
+    const result: Record<string, number> = {};
+    industryScoped.forEach((item) => { result[item.id] = Math.max(0, (sales[item.id] ?? 0) - (collected[item.id] ?? 0)); });
+    return result;
+  }, [industryScoped, allOrders, allCollections]);
+  const filtered = industryScoped.filter((item) => (!type || item.client_type === type) && (status === 'all' || item.status === status) && (!priority || item.priority === priority) && (!onlyOutstanding || (outstandingByClient[item.id] ?? 0) > 0));
   const activeCount = industryScoped.filter((item) => item.status === 'active').length;
   const buyersCount = industryScoped.filter((item) => item.client_type?.toLowerCase() === 'buyer').length;
   const suppliersCount = industryScoped.filter((item) => item.client_type?.toLowerCase() === 'supplier').length;
@@ -88,12 +99,7 @@ const stageOf = (clientId: string): string => {
   if (allRequirements.some((r) => r.client_id === clientId)) return 'Requirement';
   return 'New';
 };
-  const totalOutstanding = useMemo(() => {
-    const sales: Record<string, number> = {}; const collected: Record<string, number> = {};
-    allOrders.filter((o) => o.status !== 'cancelled').forEach((o) => { if (o.client_id) sales[o.client_id] = (sales[o.client_id] ?? 0) + (o.total_amount ?? 0); });
-    allCollections.forEach((c) => { if (c.client_id) collected[c.client_id] = (collected[c.client_id] ?? 0) + (c.amount ?? 0); });
-    return industryScoped.reduce((sum, item) => sum + Math.max(0, (sales[item.id] ?? 0) - (collected[item.id] ?? 0)), 0);
-  }, [industryScoped, allOrders, allCollections]);
+  const totalOutstanding = useMemo(() => Object.values(outstandingByClient).reduce((sum, value) => sum + value, 0), [outstandingByClient]);
   const selectedIndustryCode = useMemo(() => industryTypes.find((it) => it.id === form.industryTypeId)?.code ?? null, [industryTypes, form.industryTypeId]);
   const industryFields = selectedIndustryCode ? INDUSTRY_FIELDS[selectedIndustryCode] ?? [] : [];
   const load = async () => { try { setMessage(''); const query = new URLSearchParams(search.trim() ? { search: search.trim() } : {}); setItems((await api<{ data: Client[] }>(`/clients?${query}`)).data ?? []); } catch (e) { setMessage((e as Error).message); } };
@@ -179,7 +185,10 @@ const stageOf = (clientId: string): string => {
       await load();
     } catch (e) { setMessage((e as Error).message); } finally { setSyncingAddress(false); }
   }
-  const clearFilters = () => { setType(''); setStatus('all'); setPriority(''); };
+  const clearFilters = () => { setType(''); setStatus('all'); setPriority(''); setOnlyOutstanding(false); };
+  // KPI card clicks: each one sets exactly the filter(s) that reproduce its number.
+  const typeValue = (name: string) => clientTypes.find((t) => t.toLowerCase() === name) ?? name;
+  const showOnly = (next: { type?: string; status?: 'all' | Client['status']; outstanding?: boolean }) => { setType(next.type ?? ''); setStatus(next.status ?? 'all'); setPriority(''); setOnlyOutstanding(next.outstanding ?? false); };
   function toggleMenu(event: React.MouseEvent<HTMLButtonElement>, clientId: string) {
     if (menuFor?.id === clientId) { setMenuFor(null); return; }
     const rect = event.currentTarget.getBoundingClientRect();
@@ -194,11 +203,11 @@ const stageOf = (clientId: string): string => {
       </div>
     </div>
     <div className="kpi-grid client-kpi-grid">
-      <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">◧</div><div><span>Total Clients</span><strong>{industryScoped.length}</strong></div></div>
-      <div className="kpi-card" data-tone="green"><div className="kpi-icon kpi-icon-green">✓</div><div><span>Active</span><strong>{activeCount}</strong></div></div>
-      <div className="kpi-card" data-tone="blue"><div className="kpi-icon kpi-icon-school">◐</div><div><span>Buyers</span><strong>{buyersCount}</strong></div></div>
-      <div className="kpi-card" data-tone="amber"><div className="kpi-icon kpi-icon-amber">◑</div><div><span>Suppliers</span><strong>{suppliersCount}</strong></div></div>
-      <div className="kpi-card" data-tone="red"><div className="kpi-icon kpi-icon-red">₹</div><div><span>Outstanding</span><strong>{money(totalOutstanding)}</strong></div></div>
+      <div className="kpi-card" data-tone="ink" {...kpiClick(!type && status === 'all' && !priority && !onlyOutstanding, () => showOnly({}))}><div className="kpi-icon kpi-icon-ink">◧</div><div><span>Total Clients</span><strong>{industryScoped.length}</strong></div></div>
+      <div className="kpi-card" data-tone="green" {...kpiClick(status === 'active' && !type && !onlyOutstanding, () => showOnly({ status: 'active' }))}><div className="kpi-icon kpi-icon-green">✓</div><div><span>Active</span><strong>{activeCount}</strong></div></div>
+      <div className="kpi-card" data-tone="blue" {...kpiClick(type.toLowerCase() === 'buyer' && status === 'all' && !onlyOutstanding, () => showOnly({ type: typeValue('buyer') }))}><div className="kpi-icon kpi-icon-school">◐</div><div><span>Buyers</span><strong>{buyersCount}</strong></div></div>
+      <div className="kpi-card" data-tone="amber" {...kpiClick(type.toLowerCase() === 'supplier' && status === 'all' && !onlyOutstanding, () => showOnly({ type: typeValue('supplier') }))}><div className="kpi-icon kpi-icon-amber">◑</div><div><span>Suppliers</span><strong>{suppliersCount}</strong></div></div>
+      <div className="kpi-card" data-tone="red" {...kpiClick(onlyOutstanding, () => showOnly({ outstanding: true }))}><div className="kpi-icon kpi-icon-red">₹</div><div><span>Outstanding</span><strong>{money(totalOutstanding)}</strong></div></div>
     </div>
 
     <div className="master-toolbar">

@@ -4,6 +4,7 @@ import { useIndustryScope } from '../industry/useIndustryScope';
 import { GenerateDocumentButton } from './GenerateDocumentButton';
 import { buildDraftFromQuotation } from '../lib/tradeDocumentHandoff';
 import { useCurrentMembership } from '../auth/useCurrentMembership';
+import { kpiClick } from '../lib/kpiClick';
 
 const QUOTATION_DOC_TYPES = ['Proforma Invoice', 'Commercial Invoice', 'Other'];
 import { QuotationPipelineStepper } from './QuotationPipelineStepper';
@@ -397,11 +398,11 @@ export function QuotationsPage() {
       </div>
 
 <div className="kpi-grid quote-kpi-grid">
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon">◧</div><div><span>Total Quotations</span><strong>{totalCount}</strong></div></div>
-        <div className="kpi-card" data-tone="blue"><div className="kpi-icon">●</div><div><span>Sent</span><strong>{sentCount}</strong></div></div>
-        <div className="kpi-card" data-tone="green"><div className="kpi-icon">✓</div><div><span>Accepted</span><strong>{acceptedCount}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon">⊘</div><div><span>Rejected</span><strong>{rejectedCount}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon">₹</div><div><span>Total Quoted Value</span><strong>{currency(totalQuotedValue)}</strong></div></div>
+        <div className="kpi-card" data-tone="ink" {...kpiClick(status === '', () => setStatus(''))}><div className="kpi-icon">◧</div><div><span>Total Quotations</span><strong>{totalCount}</strong></div></div>
+        <div className="kpi-card" data-tone="blue" {...kpiClick(status === 'sent', () => setStatus('sent'))}><div className="kpi-icon">●</div><div><span>Sent</span><strong>{sentCount}</strong></div></div>
+        <div className="kpi-card" data-tone="green" {...kpiClick(status === 'accepted', () => setStatus('accepted'))}><div className="kpi-icon">✓</div><div><span>Accepted</span><strong>{acceptedCount}</strong></div></div>
+        <div className="kpi-card" data-tone="red" {...kpiClick(status === 'rejected', () => setStatus('rejected'))}><div className="kpi-icon">⊘</div><div><span>Rejected</span><strong>{rejectedCount}</strong></div></div>
+        <div className="kpi-card" data-tone="red" {...kpiClick(false, () => setStatus(''))}><div className="kpi-icon">₹</div><div><span>Total Quoted Value</span><strong>{currency(totalQuotedValue)}</strong></div></div>
       </div>
 
       <div className="quotation-workflow-strip">

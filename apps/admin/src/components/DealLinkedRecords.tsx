@@ -47,6 +47,18 @@ export function DealLinkedRecords({ deal }: { deal: Record<string, unknown> }) {
           emptyLabel: 'No import/export transaction for this deal yet.',
         },
         {
+          // Customs records carry no deal_number of their own, so they are
+          // found through the Import/Export transaction or the Shipment they
+          // were raised from — both of which do carry this deal's number.
+          title: 'Customs', resource: '/trading/customs', matchField: 'deal_number', matchValue: dealNumber,
+          via: [
+            { resource: '/trading/import-export', sourceMatchField: 'deal_number', carryField: 'transaction_number', relatedField: 'transaction_number' },
+            { resource: '/trading/shipments', sourceMatchField: 'deal_number', carryField: 'shipment_number', relatedField: 'shipment_number' },
+          ],
+          hash: TRADING_HASH.customs, codeField: 'customs_reference', subField: 'clearance_status',
+          emptyLabel: 'No customs clearance recorded for this deal yet.',
+        },
+        {
           title: 'Trade documents', resource: '/trading/documents', matchField: 'deal_number', matchValue: dealNumber,
           hash: TRADING_HASH.tradeDocuments, codeField: 'document_number', subField: 'document_type',
           emptyLabel: 'No trade documents generated from this deal yet.',

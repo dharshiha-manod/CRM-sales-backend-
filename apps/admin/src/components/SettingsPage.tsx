@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import './SettingsPage.css';
 import { useIndustry } from '../industry/IndustryContext';
 import type { RoleView, SectionId, SettingsState } from '../settings/types';
-import { AUDIT_LOG, createInitialSettingsState, hydrateSettingsState } from '../settings/types';
+import { AUDIT_LOG, PER_INDUSTRY_SECTION_IDS, ORG_WIDE_SECTION_IDS, buildSettingsBlobForSave, createInitialSettingsState, hydrateSettingsForIndustry } from '../settings/types';
 import { EmptyGate } from '../settings/ui';
 import { OrganizationSection, IndustryConfigurationSection, LocalizationSection, WorkingHoursSection } from '../settings/GeneralSettings';
 import { RolesPermissionsSection, UserPreferencesSection } from '../settings/AccessSettings';
@@ -74,6 +74,20 @@ export function SettingsPage() {
   const [toast, setToast] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Settings are stored once per organization, with every industry's own values kept
+  // separately inside it. `settings` below is always the ACTIVE industry's view of them.
+  const [storedBlob, setStoredBlob] = useState<unknown>(null);
+  const [storedUpdatedAt, setStoredUpdatedAt] = useState<string | undefined>(undefined);
+  const lastIndustry = useRef(activeIndustry);
+
+  function applyStored(blob: unknown, updatedAt: string | undefined, industry: typeof activeIndustry) {
+    const hydrated = hydrateSettingsForIndustry(blob, industry);
+    if (updatedAt) hydrated.organization.lastUpdated = new Date(updatedAt).toLocaleString();
+    setStoredBlob(blob ?? {});
+    setStoredUpdatedAt(updatedAt);
+    setSettings(hydrated);
+    setSaved(hydrated);
+  }
 
   const visibleGroups = useMemo(
     () => NAV_GROUPS.map((group) => ({ ...group, items: group.items.filter((item) => item.roles.includes(roleView)) })).filter((group) => group.items.length > 0),
@@ -88,10 +102,9 @@ export function SettingsPage() {
       try {
         const response = await api<{ data: { settings?: unknown; updated_at?: string } | null }>('/organization-settings');
         if (!active) return;
-  const hydrated = hydrateSettingsState(response.data?.settings);
-        if (response.data?.updated_at) hydrated.organization.lastUpdated = new Date(response.data.updated_at).toLocaleString();
-        setSettings(hydrated);
-        setSaved(hydrated);
+        // lastIndustry always holds the CURRENT industry (it can change after mount for locked users
+        // while /auth/me resolves), so use it rather than the value captured when this effect ran.
+        applyStored(response.data?.settings, response.data?.updated_at, lastIndustry.current);
       } catch (caught) {
         if (active) setToast(caught instanceof Error ? `Unable to load settings: ${caught.message}` : 'Unable to load settings.');
       } finally {
@@ -99,7 +112,21 @@ export function SettingsPage() {
       }
     })();
     return () => { active = false; };
+    // Load once on mount; applyStored only uses state setters and a ref, so it is safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Switching industry (header switcher) shows that industry's own settings. Edits that were
+  // not saved belong to the industry being left, so they are dropped — and the admin is told.
+  useEffect(() => {
+    if (lastIndustry.current === activeIndustry) return;
+    lastIndustry.current = activeIndustry;
+    if (storedBlob === null) return;
+    const hadUnsavedChanges = settings !== saved;
+    applyStored(storedBlob, storedUpdatedAt, activeIndustry);
+    setToast(hadUnsavedChanges ? `Unsaved changes were discarded because you switched to ${config.label}.` : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndustry]);
 
   function update<K extends keyof SettingsState>(key: K, updater: (prev: SettingsState[K]) => SettingsState[K]) {
     setSettings((prev) => ({ ...prev, [key]: updater(prev[key]) }));
@@ -126,13 +153,12 @@ export function SettingsPage() {
     try {
       const response = await api<{ data: { settings?: unknown; updated_at?: string } }>('/organization-settings', {
         method: 'PUT',
-        body: JSON.stringify({ settings: next }),
+        // Only the active industry's changed sections are saved as ITS overrides; the server
+        // keeps every other industry's settings exactly as they were.
+        body: JSON.stringify({ settings: buildSettingsBlobForSave(storedBlob, next, saved, activeIndustry), industryKey: activeIndustry }),
       });
-const persisted = hydrateSettingsState(response.data.settings);
-      if (response.data.updated_at) persisted.organization.lastUpdated = new Date(response.data.updated_at).toLocaleString();
-      setSettings(persisted);
-        setSaved(persisted);
-      publishOrgSettings(persisted);
+      applyStored(response.data.settings, response.data.updated_at, activeIndustry);
+      publishOrgSettings(response.data.settings);
       setToast('✓ Settings saved successfully.');
       window.setTimeout(() => setToast(''), 3000);
     } catch (caught) {
@@ -151,6 +177,12 @@ const persisted = hydrateSettingsState(response.data.settings);
   const canSeeCurrent = currentItem ? currentItem.roles.includes(roleView) : false;
 
   const industryFor = (industry: typeof activeIndustry) => settings.industrySpecific[industry];
+
+  // Tells the admin whether what they are editing is this industry's own or shared by all.
+  const scopeIsPerIndustry = PER_INDUSTRY_SECTION_IDS.includes(activeSection);
+  const scopeLabel = scopeIsPerIndustry
+    ? `Applies to ${config.label} only`
+    : ORG_WIDE_SECTION_IDS.includes(activeSection) ? 'Applies to all industries' : '';
 
   function renderSection(): ReactNode {
     if (!canSeeCurrent) return <EmptyGate text="You don't have access to this setting. Contact an Admin if you need this changed." />;
@@ -243,6 +275,11 @@ const persisted = hydrateSettingsState(response.data.settings);
           <div>
             <p className="eyebrow">{currentItem ? NAV_GROUPS.find((g) => g.items.includes(currentItem))?.label.toUpperCase() : 'SETTINGS'}</p>
             <h2>{currentItem?.label ?? 'Settings'}</h2>
+            {currentItem && canSeeCurrent && scopeLabel && (
+              <span style={{ display: 'inline-block', marginTop: 4, padding: '2px 10px', borderRadius: 999, fontSize: '.72rem', fontWeight: 600, background: scopeIsPerIndustry ? '#eef2ff' : '#f1f5f9', color: scopeIsPerIndustry ? '#3730a3' : '#475569' }}>
+                {scopeLabel}
+              </span>
+            )}
           </div>
           <div className="settings-save-bar">
             {toast && <span className="settings-toast">{toast}</span>}
@@ -261,3 +298,4 @@ const persisted = hydrateSettingsState(response.data.settings);
     </div>
   );
 }
+    

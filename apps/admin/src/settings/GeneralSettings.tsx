@@ -4,8 +4,13 @@ import { Field, SubSection } from './ui';
 import { INDUSTRY_ORDER } from '../industry/IndustryContext';
 import { INDUSTRY_CONFIGS } from '../industry/mockData';
 import type { IndustryKey } from '../industry/types';
-
 const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+const CURRENCY_OPTIONS = [
+  'INR (₹)', 'USD ($)', 'EUR (€)', 'GBP (£)', 'AED (د.إ)', 'SAR (﷼)', 'QAR (﷼)', 'KWD (د.ك)',
+  'OMR (﷼)', 'BHD (.د.ب)', 'SGD (S$)', 'MYR (RM)', 'THB (฿)', 'HKD (HK$)', 'CNY (¥)', 'JPY (¥)',
+  'AUD (A$)', 'NZD (NZ$)', 'CAD (C$)', 'CHF (CHF)', 'ZAR (R)', 'LKR (Rs)', 'BDT (৳)', 'NPR (Rs)',
+];
 
 export function OrganizationSection({ value, onChange }: { value: OrganizationSettings; onChange: (next: OrganizationSettings) => void }) {
   return (
@@ -67,7 +72,11 @@ export function LocalizationSection({ value, onChange }: { value: LocalizationSe
   return (
     <SubSection title="Localization" description="Formatting used throughout the CRM for numbers, dates and currency.">
       <div className="settings-form-grid">
-        <Field label="Currency"><input value={value.currency} onChange={(e) => onChange({ ...value, currency: e.target.value })} /></Field>
+        <Field label="Currency">
+          <select value={value.currency} onChange={(e) => onChange({ ...value, currency: e.target.value })}>
+            {(CURRENCY_OPTIONS.includes(value.currency) ? CURRENCY_OPTIONS : [value.currency, ...CURRENCY_OPTIONS]).filter(Boolean).map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Field>
         <Field label="Time zone"><input value={value.timeZone} onChange={(e) => onChange({ ...value, timeZone: e.target.value })} /></Field>
         <Field label="Date format">
           <select value={value.dateFormat} onChange={(e) => onChange({ ...value, dateFormat: e.target.value })}>

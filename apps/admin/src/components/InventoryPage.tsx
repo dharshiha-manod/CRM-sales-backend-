@@ -3,6 +3,7 @@ import { useIndustry } from '../industry/IndustryContext';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { api } from '../lib/api';
 import { useOrgSettings } from '../settings/useOrgSettings';
+import { kpiClick } from '../lib/kpiClick';
 import type { IndustryKey } from '../industry/types';
 import './InventoryPage.css';
 
@@ -546,6 +547,13 @@ export function InventoryPage() {
   ].filter((t): t is { key: TabKey; label: string; visible: boolean } => t.visible);
   const activeTab = TABS.some((t) => t.key === tab) ? tab : 'overview';
 
+  // KPI card clicks: clear the other filters (the card numbers ignore them), apply the card's status, and jump to the Products tab where the list is.
+  const showStock = (next: 'all' | StockStatus) => {
+    setSearch(''); setSkuFilter(''); setCategoryFilter('all'); setBrandFilter('all'); setRepFilter('all'); setLocationFilter('all'); setExpiryFilter('all');
+    setStatusFilter(next);
+    setTab('products');
+  };
+
   /* ============================== RENDER ============================== */
   return (
     <section className="page-panel master-page inv-page">
@@ -578,11 +586,11 @@ export function InventoryPage() {
       </div>
         {/* KPIs */}
       <div className="kpi-grid product-kpi-grid">
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">▣</div><div><span>Total Products</span><strong>{kpis.totalProducts}</strong></div></div>
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">▤</div><div><span>Total Stock</span><strong>{kpis.totalStock.toLocaleString('en-IN')}</strong></div></div>
-        <div className="kpi-card" data-tone="amber"><div className="kpi-icon kpi-icon-amber">⚠</div><div><span>Low Stock</span><strong>{kpis.lowStock}</strong>  </div></div>
-        <div className="kpi-card" data-tone="amber"><div className="kpi-icon kpi-icon-amber">◷</div><div><span>Expiring Soon</span><strong>{kpis.expiringSoon}</strong> </div></div>
-<div className="kpi-card" data-tone="blue"><div className="kpi-icon kpi-icon-blue">₹</div><div><span>Stock Value (at cost)</span><strong>{kpis.costValue > 0 ? `₹${kpis.costValue.toLocaleString('en-IN')}` : '—'}</strong><small style={{ display: 'block', marginTop: 2, fontSize: 12, opacity: 0.7 }}>Sales value ₹{kpis.salesValue.toLocaleString('en-IN')}{kpis.missingCost > 0 ? ` · ${kpis.missingCost} without purchase price` : ''}</small></div></div>        <div className="kpi-card" data-tone="red"><div className="kpi-icon kpi-icon-red">⬤</div><div><span>Out of Stock</span><strong>{kpis.outOfStock}</strong></div></div>
+        <div className="kpi-card" data-tone="ink" {...kpiClick(statusFilter === 'all' && expiryFilter === 'all', () => showStock('all'))}><div className="kpi-icon kpi-icon-ink">▣</div><div><span>Total Products</span><strong>{kpis.totalProducts}</strong></div></div>
+        <div className="kpi-card" data-tone="ink" {...kpiClick(false, () => showStock('all'))}><div className="kpi-icon kpi-icon-ink">▤</div><div><span>Total Stock</span><strong>{kpis.totalStock.toLocaleString('en-IN')}</strong></div></div>
+        <div className="kpi-card" data-tone="amber" {...kpiClick(statusFilter === 'low_stock', () => showStock('low_stock'))}><div className="kpi-icon kpi-icon-amber">⚠</div><div><span>Low Stock</span><strong>{kpis.lowStock}</strong>  </div></div>
+        <div className="kpi-card" data-tone="amber" {...kpiClick(statusFilter === 'expiring_soon', () => showStock('expiring_soon'))}><div className="kpi-icon kpi-icon-amber">◷</div><div><span>Expiring Soon</span><strong>{kpis.expiringSoon}</strong> </div></div>
+<div className="kpi-card" data-tone="blue" {...kpiClick(false, () => showStock('all'))}><div className="kpi-icon kpi-icon-blue">₹</div><div><span>Stock Value (at cost)</span><strong>{kpis.costValue > 0 ? `₹${kpis.costValue.toLocaleString('en-IN')}` : '—'}</strong><small style={{ display: 'block', marginTop: 2, fontSize: 12, opacity: 0.7 }}>Sales value ₹{kpis.salesValue.toLocaleString('en-IN')}{kpis.missingCost > 0 ? ` · ${kpis.missingCost} without purchase price` : ''}</small></div></div>        <div className="kpi-card" data-tone="red"><div className="kpi-icon kpi-icon-red">⬤</div><div><span>Out of Stock</span><strong>{kpis.outOfStock}</strong></div></div>
       </div>
 
       {/* FILTERS */}

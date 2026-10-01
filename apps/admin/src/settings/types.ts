@@ -297,3 +297,95 @@ export function hydrateSettingsState(stored: unknown): SettingsState {
   merged.industrySpecific = { ...defaults.industrySpecific, ...(raw.industrySpecific as Partial<SettingsState['industrySpecific']> | undefined) };
   return merged;
 }
+
+// ---------------------------------------------------------------------------
+// Per-industry settings
+//
+// Settings are stored once per organization. The original top-level sections
+// (sales, order, visit, ...) are the ORG-WIDE BASE that every industry starts
+// from. Values an admin changes while an industry is active are saved under
+// `byIndustry[<industry>][<section>]` and apply to THAT industry only, so a
+// change made for Trading can never show up in FMCG, Pharma, etc. An industry
+// nobody has changed simply keeps seeing the base values.
+//
+// Org-wide sections — Organization, Localization, Working Hours, Roles &
+// Permissions, User Preferences, Calls & IVR, Data & Display — are the same
+// for every industry and stay at the top level.
+// ---------------------------------------------------------------------------
+export type SettingsBlob = Record<string, unknown>;
+
+/** Sections that each industry owns separately. */
+export const PER_INDUSTRY_KEYS: ReadonlyArray<keyof SettingsState> = [
+  'sales', 'visit', 'target', 'order', 'collection', 'followUp',
+  'gps', 'checkInOut', 'tracking',
+  'inventory', 'stockRules', 'expiryBatch',
+  'notifications',
+  'localization', 'workingHours', 'userPreferences', 'callsIvr', 'dataDisplay', 'permissionMatrix',
+];
+
+/** Settings-page sections that edit the keys above (used for the "applies to" label). */
+export const PER_INDUSTRY_SECTION_IDS: ReadonlyArray<SectionId> = [
+  'salesConfig', 'visitConfig', 'targetConfig', 'orderConfig', 'collectionConfig', 'followUpConfig',
+  'gps', 'checkInOut', 'trackingRules',
+  'inventoryConfig', 'stockRules', 'expiryBatch',
+  'notifications',
+  'localization', 'workingHours', 'userPreferences', 'callsIvr', 'dataDisplay', 'roles', 'industry',
+];
+
+/** Sections that are the same for every industry. */
+export const ORG_WIDE_SECTION_IDS: ReadonlyArray<SectionId> = [
+  'organization',
+];
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+
+/** The settings one industry sees: defaults < org-wide base < that industry's own overrides. */
+export function hydrateSettingsForIndustry(stored: unknown, industry: IndustryKey): SettingsState {
+  const hydrated = hydrateSettingsState(stored);
+  if (!isPlainRecord(stored) || !isPlainRecord(stored.byIndustry)) return hydrated;
+  const override = stored.byIndustry[industry];
+  if (!isPlainRecord(override)) return hydrated;
+
+  const current = hydrated as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...current };
+  for (const key of PER_INDUSTRY_KEYS) {
+    const saved = override[key];
+    const base = current[key];
+    if (Array.isArray(base)) {
+      if (Array.isArray(saved)) out[key] = saved;
+    } else if (isPlainRecord(base) && isPlainRecord(saved)) {
+      out[key] = { ...base, ...saved };
+    }
+  }
+  return out as unknown as SettingsState;
+}
+
+/**
+ * The object to PUT when saving while `industry` is active.
+ *  - Org-wide sections are written from the edited state.
+ *  - Per-industry sections are NOT written to the org-wide base; only the ones the
+ *    admin actually changed go into this industry's own override.
+ *  - Everything else already stored (other industries' overrides, unknown keys)
+ *    is carried through untouched.
+ */
+export function buildSettingsBlobForSave(stored: unknown, edited: SettingsState, original: SettingsState, industry: IndustryKey): SettingsBlob {
+  const raw: SettingsBlob = isPlainRecord(stored) ? stored : {};
+  const next: SettingsBlob = { ...raw };
+  const editedMap = edited as unknown as SettingsBlob;
+  const originalMap = original as unknown as SettingsBlob;
+  const perIndustry = new Set<string>(PER_INDUSTRY_KEYS as ReadonlyArray<string>);
+
+  for (const key of Object.keys(editedMap)) {
+    if (!perIndustry.has(key)) next[key] = editedMap[key];
+  }
+
+  const byIndustry: SettingsBlob = isPlainRecord(raw.byIndustry) ? { ...raw.byIndustry } : {};
+  const own: SettingsBlob = isPlainRecord(byIndustry[industry]) ? { ...(byIndustry[industry] as SettingsBlob) } : {};
+  for (const key of PER_INDUSTRY_KEYS as ReadonlyArray<string>) {
+    if (JSON.stringify(editedMap[key]) !== JSON.stringify(originalMap[key])) own[key] = editedMap[key];
+  }
+  byIndustry[industry] = own;
+  next.byIndustry = byIndustry;
+  return next;
+}

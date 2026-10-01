@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { supabase } from '../lib/supabase';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { kpiClick } from '../lib/kpiClick';
 import './MasterDataPages.css';
 
 
@@ -131,7 +132,7 @@ export function RequirementsPage() {
           title: current.title || `Requirement for ${pending.name}`,
           description: pending.description || current.description,
           items: pending.freeTextItem
-            ? [{ productId: '', freeTextItem: pending.freeTextItem, quantity: pending.quantity || '1', notes: '' }]
+          ? [{ mode: 'custom' as const, productId: '', freeTextItem: pending.freeTextItem, quantity: pending.quantity || '1', notes: '' }]
             : current.items,
         }));
       });
@@ -194,6 +195,8 @@ export function RequirementsPage() {
   const completedCount = scopedItems.filter((item) => item.status === 'converted').length;
   const droppedCount = scopedItems.filter((item) => item.status === 'dropped').length;
   const urgentCount = scopedItems.filter((item) => item.urgency === 'high').length;
+  // KPI card clicks: clear everything, then set just the status / urgency that reproduces the card's number.
+  const showReqs = (nextStatus: string, nextUrgency = '') => { clearFilters(); setSearch(''); setStatus(nextStatus); setUrgencyFilter(nextUrgency); };
   function clearFilters() {
     setStatus(''); setClientFilter(''); setRepFilter(''); setUrgencyFilter(''); setTargetDateFilter('');
   } 
@@ -328,12 +331,12 @@ export function RequirementsPage() {
       </div>
 
       <div className="kpi-grid lead-kpi-grid">
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon">◧</div><div><span>Total Requirements</span><strong>{totalCount}</strong></div></div>
-        <div className="kpi-card" data-tone="blue"><div className="kpi-icon">●</div><div><span>New</span><strong>{newCount}</strong></div></div>
-        <div className="kpi-card" data-tone="amber"><div className="kpi-icon">◐</div><div><span>Quoted</span><strong>{quotedCount}</strong></div></div>
-        <div className="kpi-card" data-tone="green"><div className="kpi-icon">✓</div><div><span>Completed</span><strong>{completedCount}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon">✕</div><div><span>Dropped</span><strong>{droppedCount}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon">!</div><div><span>Urgent</span><strong>{urgentCount}</strong></div></div>
+        <div className="kpi-card" data-tone="ink" {...kpiClick(!status && !urgencyFilter, () => showReqs(''))}><div className="kpi-icon">◧</div><div><span>Total Requirements</span><strong>{totalCount}</strong></div></div>
+        <div className="kpi-card" data-tone="blue" {...kpiClick(status === 'open' && !urgencyFilter, () => showReqs('open'))}><div className="kpi-icon">●</div><div><span>New</span><strong>{newCount}</strong></div></div>
+        <div className="kpi-card" data-tone="amber" {...kpiClick(status === 'quoted' && !urgencyFilter, () => showReqs('quoted'))}><div className="kpi-icon">◐</div><div><span>Quoted</span><strong>{quotedCount}</strong></div></div>
+        <div className="kpi-card" data-tone="green" {...kpiClick(status === 'converted' && !urgencyFilter, () => showReqs('converted'))}><div className="kpi-icon">✓</div><div><span>Completed</span><strong>{completedCount}</strong></div></div>
+        <div className="kpi-card" data-tone="red" {...kpiClick(status === 'dropped' && !urgencyFilter, () => showReqs('dropped'))}><div className="kpi-icon">✕</div><div><span>Dropped</span><strong>{droppedCount}</strong></div></div>
+        <div className="kpi-card" data-tone="red" {...kpiClick(urgencyFilter === 'high' && !status, () => showReqs('', 'high'))}><div className="kpi-icon">!</div><div><span>Urgent</span><strong>{urgentCount}</strong></div></div>
       </div>
 
         <div className="master-toolbar">

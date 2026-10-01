@@ -5,6 +5,7 @@ import { useIndustry, INDUSTRY_ORDER } from '../industry/IndustryContext';
 import { INDUSTRY_CONFIGS } from '../industry/mockData';
 import type { IndustryKey } from '../industry/types';
 import { hydrateSettingsState } from '../settings/types';
+import { kpiClick } from '../lib/kpiClick';
 import './MasterDataPages.css';
 import './NotificationsPage.css';
 /* ────────────────────────────── Types ────────────────────────────── */
@@ -482,6 +483,8 @@ function markRead(id: string, read = true) {
 
   const filtersActive = !!(search || quickFilter !== 'all' || moduleFilter || dateFilter !== 'all');
   function clearFilters() { setSearch(''); setQuickFilter('all'); setModuleFilter(''); setDateFilter('all'); }
+  // KPI card clicks: set exactly the filters that reproduce the card's number (and clear the rest).
+  const showNotifs = (nextQuick: QuickFilter, nextDate: 'all' | 'today' | 'week' = 'all') => { setSearch(''); setModuleFilter(''); setQuickFilter(nextQuick); setDateFilter(nextDate); };
 
   return (
     <section className="page-panel master-page notifications-page">
@@ -512,7 +515,7 @@ function markRead(id: string, read = true) {
       </div>
 
       <div className="kpi-grid notif-kpi-grid">
-        <div className="kpi-card">
+        <div className="kpi-card" {...kpiClick(quickFilter === 'unread' && dateFilter === 'all', () => showNotifs('unread'))}>
           <span className="kpi-icon kpi-icon-ink"><Icon name="bell" /></span>
           <div>
             <span>Unread</span>
@@ -520,7 +523,7 @@ function markRead(id: string, read = true) {
          
           </div>
         </div>
-        <div className="kpi-card">
+        <div className="kpi-card" {...kpiClick(dateFilter === 'today' && quickFilter === 'all', () => showNotifs('all', 'today'))}>
           <span className="kpi-icon kpi-icon-school"><Icon name="clock" /></span>
           <div>
             <span>Today</span>
@@ -528,7 +531,7 @@ function markRead(id: string, read = true) {
        
           </div>
         </div>
-        <div className="kpi-card">
+        <div className="kpi-card" {...kpiClick(quickFilter === 'important' && dateFilter === 'all', () => showNotifs('important'))}>
           <span className="kpi-icon kpi-icon-amber"><Icon name="target" /></span>
           <div>
             <span>Important</span>
@@ -536,7 +539,7 @@ function markRead(id: string, read = true) {
             
           </div>
         </div>
-        <div className="kpi-card">
+        <div className="kpi-card" {...kpiClick(quickFilter === 'action' && dateFilter === 'all', () => showNotifs('action'))}>
           <span className="kpi-icon kpi-icon-red"><Icon name="check" /></span>
           <div>
             <span>Action Required</span>

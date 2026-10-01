@@ -32,6 +32,15 @@ export interface LinkSpec {
   subField?: string;
   /** shown when nothing matches */
   emptyLabel?: string;
+  /**
+   * For modules that have no back-reference of their own (e.g. Customs has no
+   * deal_number): also match records through OTHER modules that do. Each entry
+   * reads `resource` rows whose `sourceMatchField` equals `matchValue`, collects
+   * their `carryField` values, and keeps related records whose `relatedField`
+   * is one of them. Direct matches on `matchField` still apply as well, and
+   * specs without `via` behave exactly as before.
+   */
+  via?: Array<{ resource: string; sourceMatchField: string; carryField: string; relatedField: string }>;
 }
 
 type Row = Record<string, unknown> & { id: string };
@@ -51,13 +60,33 @@ export function LinkedRecords({ links, heading }: { links: LinkSpec[]; heading?:
     }
     let cancelled = false;
     const query = activeIndustryTypeId ? `?industryTypeId=${activeIndustryTypeId}` : '';
+    const fetchRows = (resource: string) =>
+      api<{ data: Row[] }>(`${resource}${query}`)
+        .then((res) => res.data ?? [])
+        // One failing module shouldn't blank the whole panel.
+        .catch(() => [] as Row[]);
+
     Promise.all(
-      active.map((l) =>
-        api<{ data: Row[] }>(`${l.resource}${query}`)
-          .then((res) => (res.data ?? []).filter((r) => String(r[l.matchField] ?? '') === l.matchValue))
-          // One failing module shouldn't blank the whole panel.
-          .catch(() => [] as Row[]),
-      ),
+      active.map(async (l) => {
+        const related = await fetchRows(l.resource);
+        const direct = related.filter((r) => String(r[l.matchField] ?? '') === l.matchValue);
+        if (!l.via || l.via.length === 0) return direct;
+
+        const carriers = await Promise.all(
+          l.via.map(async (v) => {
+            const sourceRows = (await fetchRows(v.resource)).filter((r) => String(r[v.sourceMatchField] ?? '') === l.matchValue);
+            return { v, values: new Set(sourceRows.map((r) => String(r[v.carryField] ?? '')).filter(Boolean)) };
+          }),
+        );
+        const throughRows = related.filter((r) =>
+          carriers.some(({ v, values }) => {
+            const own = String(r[v.relatedField] ?? '');
+            return own !== '' && values.has(own);
+          }),
+        );
+        const seen = new Set<string>();
+        return [...direct, ...throughRows].filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
+      }),
     ).then((sets) => {
       if (cancelled) return;
       const out: Record<string, Row[]> = {};

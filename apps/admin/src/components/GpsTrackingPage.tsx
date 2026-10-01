@@ -4,6 +4,7 @@ import { MapContainer, Marker, TileLayer, Tooltip, useMap, useMapEvents } from '
 import { api } from '../lib/api';
 import { useIndustry } from '../industry/IndustryContext';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { kpiClick } from '../lib/kpiClick';
 import {
   DEFAULT_VERIFICATION_RADIUS_METERS,
   distanceMeters,
@@ -514,11 +515,11 @@ export function GpsTrackingPage() {
       {tab === 'dashboard' && (
         <section className="page-panel">
           <div className="kpi-grid lead-kpi-grid">
-            <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">♙</div><div><span>Active Sales Reps</span><strong>{activeSalesReps}</strong></div></div>
-            <div className="kpi-card" data-tone="blue"><div className="kpi-icon kpi-icon-blue">⦿</div><div><span>Live Field Visits</span><strong>{liveFieldVisits}</strong></div></div>
-            <div className="kpi-card" data-tone="green"><div className="kpi-icon kpi-icon-green">✓</div><div><span>Verified Visits Today</span><strong>{verification.verified}</strong></div></div>
-            <div className="kpi-card" data-tone="red"><div className="kpi-icon kpi-icon-red">⚠</div><div><span>Location Mismatches Today</span><strong>{verification.mismatch}</strong></div></div>
-            <div className="kpi-card" data-tone="amber"><div className="kpi-icon kpi-icon-amber">↗</div><div><span>Total Distance Today</span><strong>{totalDistanceKm.toFixed(1)} km</strong></div></div>
+            <div className="kpi-card" data-tone="ink" {...kpiClick(false, () => setTab('repList'))}><div className="kpi-icon kpi-icon-ink">♙</div><div><span>Active Sales Reps</span><strong>{activeSalesReps}</strong></div></div>
+            <div className="kpi-card" data-tone="blue" {...kpiClick(false, () => setTab('map'))}><div className="kpi-icon kpi-icon-blue">⦿</div><div><span>Live Field Visits</span><strong>{liveFieldVisits}</strong></div></div>
+            <div className="kpi-card" data-tone="green" {...kpiClick(false, () => setTab('trackingHistory'))}><div className="kpi-icon kpi-icon-green">✓</div><div><span>Verified Visits Today</span><strong>{verification.verified}</strong></div></div>
+            <div className="kpi-card" data-tone="red" {...kpiClick(false, () => setTab('exceptions'))}><div className="kpi-icon kpi-icon-red">⚠</div><div><span>Location Mismatches Today</span><strong>{verification.mismatch}</strong></div></div>
+            <div className="kpi-card" data-tone="amber" {...kpiClick(false, () => setTab('trackingHistory'))}><div className="kpi-icon kpi-icon-amber">↗</div><div><span>Total Distance Today</span><strong>{totalDistanceKm.toFixed(1)} km</strong></div></div>
           </div>
           {scopedReps.length === 0 && (
             <div className="empty-state empty-state-lg">

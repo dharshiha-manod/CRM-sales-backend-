@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { kpiClick, goToPage } from '../lib/kpiClick';
 import { accuracyLabel, accuracyLevel, distanceMeters, formatDistance } from '../gps/geo';
 import { DEFAULT_VERIFICATION_RADIUS_METERS } from '../gps/mockData';
 import './FieldActivityPage.css';
@@ -300,12 +301,12 @@ export function FieldActivityPage() {
 
       {mode === 'admin' && (
          <div className="kpi-grid lead-kpi-grid">
-          <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">▤</div><div><span>Total Representatives</span><strong>{repCount ?? 0}</strong></div></div>
-          <div className="kpi-card" data-tone="green"><div className="kpi-icon kpi-icon-green">✓</div><div><span>Active Representatives</span><strong>{activeRepCount ?? 0}</strong></div></div>
-          <div className="kpi-card" data-tone="blue"><div className="kpi-icon kpi-icon-blue">●</div><div><span>Today's Visits</span><strong>{todaysVisits.length}</strong></div></div>
-          <div className="kpi-card" data-tone="green"><div className="kpi-icon kpi-icon-green">✓</div><div><span>Completed Visits</span><strong>{completedVisitsToday.length}</strong></div></div>
-          <div className="kpi-card" data-tone="amber"><div className="kpi-icon kpi-icon-amber">◔</div><div><span>Pending Visits</span><strong>{pendingVisitsToday}</strong></div></div>
-          <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">📍</div><div><span>Check-ins Today</span><strong>{checkInsToday}</strong></div></div>
+          <div className="kpi-card" data-tone="ink" {...kpiClick(false, () => goToPage('representatives'))}><div className="kpi-icon kpi-icon-ink">▤</div><div><span>Total Representatives</span><strong>{repCount ?? 0}</strong></div></div>
+          <div className="kpi-card" data-tone="green" {...kpiClick(false, () => goToPage('representatives'))}><div className="kpi-icon kpi-icon-green">✓</div><div><span>Active Representatives</span><strong>{activeRepCount ?? 0}</strong></div></div>
+          <div className="kpi-card" data-tone="blue" {...kpiClick(false, () => goToPage('gpsTracking'))}><div className="kpi-icon kpi-icon-blue">●</div><div><span>Today's Visits</span><strong>{todaysVisits.length}</strong></div></div>
+          <div className="kpi-card" data-tone="green" {...kpiClick(false, () => goToPage('gpsTracking'))}><div className="kpi-icon kpi-icon-green">✓</div><div><span>Completed Visits</span><strong>{completedVisitsToday.length}</strong></div></div>
+          <div className="kpi-card" data-tone="amber" {...kpiClick(false, () => goToPage('gpsTracking'))}><div className="kpi-icon kpi-icon-amber">◔</div><div><span>Pending Visits</span><strong>{pendingVisitsToday}</strong></div></div>
+          <div className="kpi-card" data-tone="ink" {...kpiClick(false, () => goToPage('gpsTracking'))}><div className="kpi-icon kpi-icon-ink">📍</div><div><span>Check-ins Today</span><strong>{checkInsToday}</strong></div></div>
         </div>
       )}
     </section>
