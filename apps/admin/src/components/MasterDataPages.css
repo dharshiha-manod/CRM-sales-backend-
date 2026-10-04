@@ -2486,3 +2486,15 @@
 .kpi-card[data-clickable='true'] { cursor: pointer; }
 .kpi-card[data-clickable='true']:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
 .kpi-card[data-active='true'] { box-shadow: 0 0 0 2px var(--ink), 0 6px 18px rgba(16, 21, 31, .08); }
+/* Quotations page: all filters in one straight line */
+.master-search-oneline { flex-wrap: nowrap; gap: .5rem; }
+.master-search-oneline > * { min-width: 0; flex: 1 1 0; }
+.master-search-oneline > input:not([type='date']) { flex: 1.6 1 0; }
+.master-search-oneline select,
+.master-search-oneline input[type='date'] { min-width: 0; text-overflow: ellipsis; }
+.master-search-oneline .link-button { flex: none; white-space: nowrap; }
+@media (max-width: 1100px) {
+  .master-search-oneline { flex-wrap: wrap; }
+  
+  .master-search-oneline > * { flex: 1 1 160px; }
+}

@@ -307,17 +307,23 @@ export async function createLead(
       duplicateLeadCode: exactDuplicate.lead_code,
     });
   }
-
-  const { data, error } = await supabaseAdmin
-    .from('leads')
-    .insert({ ...toColumns(input), organization_id: organizationId, created_by: createdBy })
-    .select()
-    .single();
+  const autoCode = !input.leadCode;
+  let data: any = null;
+  let error: unknown = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const leadCode = input.leadCode ?? (await generateLeadCode(organizationId, input.industryTypeId));
+    ({ data, error } = await supabaseAdmin
+      .from('leads')
+      .insert({ ...toColumns({ ...input, leadCode }), organization_id: organizationId, created_by: createdBy })
+      .select()
+      .single());
+    if (error && autoCode && (error as { code?: string }).code === '23505') continue;
+    break;
+  }
   if (error) {
     if ((error as { code?: string }).code === '23505') throw new AppError(409, 'LEAD_CODE_TAKEN', 'A lead with this code already exists.');
     fail(error);
   }
-
   await supabaseAdmin.from('lead_activities').insert({
     organization_id: organizationId,
     lead_id: data.id,
@@ -581,13 +587,20 @@ export async function convertLeadToClient(
     throw new AppError(422, 'LEAD_NOT_CONVERTIBLE', 'A lost or unqualified lead cannot be converted. Reopen it first.');
   }
 
+  // The lead's "Customer type" (Retailer / Distributor / Wholesaler / Institution) becomes the
+  // client's "Outlet type", so nobody has to enter it a second time on the client page.
+  const OUTLET_TYPE_VALUES = ['wholesaler', 'retailer', 'distributor', 'super_stockist', 'institution', 'manufacturer', 'other'];
+  const leadCustomerType = String(parseLeadMeta(lead.notes).customerType ?? '').toLowerCase();
+  const outletType = OUTLET_TYPE_VALUES.includes(leadCustomerType) ? leadCustomerType : null;
+
   const { data: client, error: clientError } = await supabaseAdmin
     .from('clients')
     .insert({
       organization_id: organizationId,
       client_code: input.clientCode,
       client_name: lead.company_name,
-      client_type: input.clientType,
+        client_type: input.clientType,
+      outlet_type: outletType,
       industry_type_id: lead.industry_type_id,
       phone: lead.phone,
       email: lead.email,
@@ -697,20 +710,33 @@ function leadNotesText(notes?: string | null): string | null {
   return markerIndex === -1 ? notes : notes.slice(0, markerIndex).trimEnd();
 }
 /**
- * Preview only: the number the next new lead is expected to get (LD-YYMM-#####).
- * The database trigger still assigns the real code when the lead is saved.
+ * Lead codes are numbered separately for every industry:
+ *   LD-<INDUSTRY>-YYMM-#####   e.g. LD-TRADING-2610-00001, LD-FMCG-2610-00001
  */
-export async function previewNextLeadCode(organizationId: string) {
+export async function generateLeadCode(organizationId: string, industryTypeId: string) {
+  const { data: industry, error: industryError } = await supabaseAdmin
+    .from('industry_types')
+    .select('code')
+    .eq('id', industryTypeId)
+    .maybeSingle();
+  if (industryError) fail(industryError);
+  const industryCode = String(industry?.code ?? 'GEN').toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 12) || 'GEN';
   const now = new Date();
-  const prefix = `LD-${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, '0')}-`;
+  const prefix = `LD-${industryCode}-${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, '0')}-`;
   const { data, error } = await supabaseAdmin
     .from('leads')
     .select('lead_code')
     .eq('organization_id', organizationId)
+    .eq('industry_type_id', industryTypeId)
     .like('lead_code', `${prefix}%`)
     .order('lead_code', { ascending: false })
     .limit(1);
   if (error) fail(error);
   const last = Number(String(data?.[0]?.lead_code ?? '').slice(prefix.length));
   return `${prefix}${String((Number.isFinite(last) ? last : 0) + 1).padStart(5, '0')}`;
+}
+
+/** Preview only: the code the next new lead of this industry will get. */
+export async function previewNextLeadCode(organizationId: string, industryTypeId: string) {
+  return generateLeadCode(organizationId, industryTypeId);
 }

@@ -7,7 +7,7 @@ type Data = { totalClients: number; totalRepresentatives: number; activeRepresen
 type LiveVisit = { id: string; check_in_time: string; check_in_lat: number; check_in_lng: number; clients?: { client_code?: string; client_name?: string } | null; sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null; latest_ping?: { latitude: number; longitude: number } | null };
 type Lead = { id: string; company_name?: string; contact_name?: string | null; source?: string; status: 'new' | 'contacted' | 'qualified' | 'unqualified' | 'converted' | 'lost'; created_at?: string; next_action?: string | null; next_action_due_at?: string | null; industry_types?: { id: string } | null };
 type ClientRecord = { id: string; status: 'active' | 'inactive'; industry_type_id?: string | null };
-type FollowUpRecord = { id: string; due_at: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; title?: string; clients?: { client_code?: string; client_name?: string } | null };
+type FollowUpRecord = { id: string; lead_id?: string | null; due_at: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; title?: string; clients?: { client_code?: string; client_name?: string } | null };
 type OrderRecord = { id: string; order_number: string; total_amount: number; created_at: string; clients?: { client_code?: string } | null; sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null };
 type CollectionRecord = { amount: number; clients?: { client_code?: string } | null; sale_orders?: { order_number?: string } | null };
 type Call = { id: string; direction: string; phone_number: string; status: string; started_at?: string | null; clients?: { client_code?: string; client_name?: string | null } | null };
@@ -132,8 +132,9 @@ export function DashboardPage() {
         title: followUp.title ?? 'Follow-up',
         clientName: followUp.clients?.client_name,
       })),
-    ...extra.leads
-      .filter((lead) => Boolean(lead.next_action_due_at) && lead.status !== 'converted' && lead.status !== 'lost')
+      ...extra.leads
+      .filter((lead) => Boolean(lead.next_action_due_at) && lead.status !== 'converted' && lead.status !== 'lost'
+        && !extra.followUps.some((f) => f.lead_id === lead.id && f.status !== 'completed' && f.status !== 'cancelled'))
       .map((lead) => ({
         id: `lead-${lead.id}`,
         dueAt: lead.next_action_due_at!,

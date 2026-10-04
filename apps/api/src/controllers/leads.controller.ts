@@ -74,7 +74,7 @@ export const leads: Record<string, RequestHandler> = {
     const data = await leadService.convert(organizationId, id(req.params.id), req.auth!.sub!, leadConvertSchema.parse(req.body), scope(req), repId);
     res.status(201).json({ data });
   },
-  nextCode: async (req, res) => res.json({ data: { leadCode: await leadService.previewNextCode(org(req)) } }),
+  nextCode: async (req, res) => res.json({ data: { leadCode: await leadService.previewNextCode(org(req), uuid.parse(req.query.industryTypeId)) } }),
   checkDuplicates: async (req, res) => {
     const organizationId = org(req);
     const phone = typeof req.query.phone === 'string' ? req.query.phone : undefined;

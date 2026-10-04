@@ -679,7 +679,7 @@ function openCreate() {
     setDuplicateWarning(null);
      setConfirmDespiteDuplicate(false);
     setNextLeadCode('');
-    void api<{ data: { leadCode: string } }>('/leads/next-code').then((r) => setNextLeadCode(r.data.leadCode)).catch(() => setNextLeadCode(''));
+    void api<{ data: { leadCode: string } }>(`/leads/next-code?industryTypeId=${encodeURIComponent(activeIndustryTypeId ?? '')}`).then((r) => setNextLeadCode(r.data.leadCode)).catch(() => setNextLeadCode(''));
     setModalOpen(true);
   }
 
@@ -1200,7 +1200,7 @@ async function suggestRep() {
             <thead>
               <tr>
                           <th>Lead</th>
-                   {activeIndustry !== 'school' && activeIndustry !== 'trading' && <th>{fieldLabelText(shopTypeConfig, activeIndustry)}</th>}
+{activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && <th>{fieldLabelText(shopTypeConfig, activeIndustry)}</th>}
                 <th>Representative</th>
                 <th>Contact</th>
                 <th>Email</th>
@@ -1220,7 +1220,7 @@ async function suggestRep() {
                       <strong>{lead.company_name}</strong>
                       <small className="lead-code">{lead.lead_code}</small>
                     </td>
-                             {activeIndustry !== 'school' && activeIndustry !== 'trading' && <td>{optionLabel(shopTypeConfig, activeIndustry, meta.shopType)}</td>}
+{activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && <td>{optionLabel(shopTypeConfig, activeIndustry, meta.shopType)}</td>}
                     <td>{(() => { const repLabel = lead.sales_representatives?.user_profiles?.display_name ?? lead.sales_representatives?.employee_code; return repLabel ? <span className="lp-rep"><i>{repLabel.slice(0, 1).toUpperCase()}</i>{repLabel}</span> : <span className="lp-unassigned">Unassigned</span>; })()}</td>
                     <td>
                       {lead.contact_name && <span>{lead.contact_name}</span>}
@@ -1377,7 +1377,7 @@ async function suggestRep() {
                   <dd>{unpackFmcgMeta(selected.notes).meta.areaRoute || '—'}</dd>
                 </>
               )}
-              {activeIndustry !== 'school' && activeIndustry !== 'trading' && (
+                        {activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && (
                 <>
                   <dt>{fieldLabelText(shopTypeConfig, activeIndustry)}</dt>
                   <dd>{optionLabel(shopTypeConfig, activeIndustry, unpackFmcgMeta(selected.notes).meta.shopType)}</dd>
@@ -1697,7 +1697,7 @@ async function suggestRep() {
                       <input placeholder="e.g. Route 4 - MG Road belt" value={form.areaRoute} onChange={(e) => setForm({ ...form, areaRoute: e.target.value })} />
                     </label>
                   )}
-                 {activeIndustry !== 'school' && activeIndustry !== 'trading' && (
+                         {activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && (
                     <label>
                       {fieldLabelText(shopTypeConfig, activeIndustry)}
                       <LeadTypeComboBox

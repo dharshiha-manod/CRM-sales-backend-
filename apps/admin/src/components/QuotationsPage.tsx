@@ -405,13 +405,10 @@ export function QuotationsPage() {
         <div className="kpi-card" data-tone="red" {...kpiClick(false, () => setStatus(''))}><div className="kpi-icon">₹</div><div><span>Total Quoted Value</span><strong>{currency(totalQuotedValue)}</strong></div></div>
       </div>
 
-      <div className="quotation-workflow-strip">
-        <span>Workflow</span>
-        <strong>Requirement → Quotation → Order</strong>
-      </div>
+  
 
       <div className="master-toolbar">
-        <div className="master-search">
+                <div className="master-search master-search-oneline">
           <input value={search} placeholder="Search quotation or client" onChange={(e) => setSearch(e.target.value)} />
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">All statuses</option>

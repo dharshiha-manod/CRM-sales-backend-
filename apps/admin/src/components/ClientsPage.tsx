@@ -163,7 +163,7 @@ const stageOf = (clientId: string): string => {
 // NEW — only send industryTypeId on edit if it actually changed, so the
 // server doesn't needlessly re-run industry resolution/validation on every
 // unrelated field edit (this is what was tripping the 500).
-          const payload = { clientCode: form.clientCode, clientName: form.clientName, clientType: form.clientType, ...(editing && form.industryTypeId === (editing.industry_type_id ?? '') ? {} : { industryTypeId: form.industryTypeId || null }), outletType: form.outletType || null, gstin: gstinValue || null, pan: panValue || null, address: form.streetAddress.trim() || null, city: form.city.trim() || null, state: form.state.trim() || null, creditLimit: form.creditLimit ? Number(form.creditLimit) : null, creditDays: form.creditDays ? Number(form.creditDays) : null, industryDetails: Object.fromEntries(Object.entries(form.industryDetails).filter(([, v]) => v !== '')), priority: form.priority, status: form.status };
+          const payload = { clientCode: form.clientCode, clientName: form.clientName, clientType: selectedIndustryCode === 'FMCG' ? (OUTLET_TYPES.find(([value]) => value === form.outletType)?.[1] ?? 'Retailer') : form.clientType, ...(editing &&form.industryTypeId === (editing.industry_type_id ?? '') ? {} : { industryTypeId: form.industryTypeId || null }), outletType: form.outletType || null, gstin: gstinValue || null, pan: panValue || null, address: form.streetAddress.trim() || null, city: form.city.trim() || null, state: form.state.trim() || null, creditLimit: form.creditLimit ? Number(form.creditLimit) : null, creditDays: form.creditDays ? Number(form.creditDays) : null, industryDetails: Object.fromEntries(Object.entries(form.industryDetails).filter(([, v]) => v !== '')), priority: form.priority, status: form.status };
        await api(editing ? `/clients/${editing.id}` : '/clients', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });      setModal(false); setEditing(null); setMessage(editing ? 'Client updated successfully.' : 'Client created successfully.'); await load();
     } catch (e) {
       const err = e as Error & { details?: { fieldErrors?: Record<string, string[]> } };
@@ -332,8 +332,10 @@ const stageOf = (clientId: string): string => {
           )}
           <label>City<input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></label>
           <label>State<input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} /></label>
-          <label>Industry<select value={form.industryTypeId} onChange={(e) => setForm({ ...form, industryTypeId: e.target.value, industryDetails: {} })}><option value="">Not set</option>{industryTypes.map((it) => <option key={it.id} value={it.id}>{it.name}</option>)}</select></label>
-          <label>Client type<select value={form.clientType} onChange={(e) => setForm({ ...form, clientType: e.target.value })}>{[...new Set(['School', ...clientTypes])].map((value) => <option key={value}>{value}</option>)}</select></label>
+
+              {selectedIndustryCode !== 'FMCG' && (
+            <label>Client type<select value={form.clientType} onChange={(e) => setForm({ ...form, clientType: e.target.value })}>{[...new Set(['School', ...clientTypes])].map((value) => <option key={value}>{value}</option>)}</select></label>
+          )}
           <label>GSTIN<input value={form.gstin} maxLength={15} placeholder="22AAAAA0000A1Z5" onChange={(e) => setForm({ ...form, gstin: e.target.value.toUpperCase() })} />
             {form.gstin.trim() && !GSTIN_RE.test(form.gstin.trim()) && <small className="field-hint field-hint-error">Enter a full 15-character GSTIN, or clear this field.</small>}
           </label>
@@ -411,7 +413,7 @@ const stageOf = (clientId: string): string => {
                   <dl className="detail-dl">
                     <dt>Client code</dt><dd>{viewing.client_code}</dd>
                     <dt>Industry</dt><dd>{viewing.industry_types?.name ?? 'Not set'}</dd>
-                    <dt>Type</dt><dd>{viewing.client_type}</dd>
+                      {viewing.industry_types?.code !== 'FMCG' && (<><dt>Type</dt><dd>{viewing.client_type}</dd></>)}
                  {viewing.industry_types?.code !== 'TRADING' && (
                       <>
                         <dt>Outlet type</dt><dd>{OUTLET_TYPES.find(([value]) => value === viewing.outlet_type)?.[1] ?? 'Not set'}</dd>
