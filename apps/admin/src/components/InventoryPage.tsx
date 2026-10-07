@@ -12,8 +12,8 @@ import './InventoryPage.css';
  * reads. Inventory used to run entirely on local mock data with its own
  * fake stock numbers; it now derives its items from this instead, so a
  * product's stock_quantity here always matches what Products shows.
- * (No backend inventory/movements table exists yet — reserved/assigned/
- * movements below stay locally-tracked until that's built.)
+ * Assign / Return / Transfer / Add Stock / Adjust are saved in the
+ * inventory_movements table through /inventory/*, so they survive a refresh.
  */
 type ApiProduct = {
   id: string;
@@ -27,6 +27,17 @@ type ApiProduct = {
   status: 'active' | 'inactive';
   industry_type_id?: string | null;
 };
+
+// Minimal shape of an order from /orders — used only to work out how much each rep has really sold.
+type ServerMovement = {
+  id: string; product_id: string; representative_id: string | null;
+  movement_type: 'stock_in' | 'adjustment' | 'transfer' | 'assign' | 'return';
+  quantity: number; from_location?: string | null; to_location?: string | null;
+  batch?: string | null; mfg_date?: string | null; expiry_date?: string | null;
+  reference?: string | null; reason?: string | null; remarks?: string | null;
+  created_by_name?: string | null; created_at: string;
+};
+type ServerHolding = { product_id: string; representative_id: string; assigned: number; returned: number; sold: number; balance: number };
 
 /* ============================== TYPES ============================== */
 
@@ -57,7 +68,7 @@ interface InventoryItem {
   unitValue: number;
   costValue: number;
   barcode: string;
-  assignedRep?: string;
+  repNames?: string[];
   expiryWarnDays?: number;
   // industry-specific extras
   mrp?: number;
@@ -102,23 +113,19 @@ interface StockRequest {
   status: 'Pending' | 'Approved' | 'Rejected' | 'Fulfilled';
   requestedTo?: string;
   rep: string;
+  productId?: string;
+  repId?: string;
+  note?: string;
 }
 
 /* ============================== MOCK DATA ============================== */
 
-function daysFromNow(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
-}
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-let seq = 1000;
-function nextId(prefix: string) { seq += 1; return `${prefix}-${seq}`; }
 
 // Rep names now come from the real /sales-representatives API (see loadReps below).
 
@@ -175,51 +182,18 @@ function buildInventoryFromProducts(products: ApiProduct[], rules: { minStock: n
   });
 }
 
-function seedMovements(items: InventoryItem[]): MovementRecord[] {
-  const out: MovementRecord[] = [];
-  items.forEach((it) => {
-    out.push({ id: nextId('mv'), itemId: it.id, date: it.mfgDate, type: 'Stock Added', reference: `GRN-${it.sku}`, quantity: it.totalStock, from: 'Supplier', to: it.location, user: 'Admin' });
-    if (it.assigned > 0 && it.assignedRep) {
-      out.push({ id: nextId('mv'), itemId: it.id, date: daysFromNow(-10), type: 'Stock Assigned', reference: `ASN-${it.sku}`, quantity: it.assigned, from: it.location, to: it.assignedRep, user: 'Manager' });
-    }
-    if (it.reserved > 0) {
-      out.push({ id: nextId('mv'), itemId: it.id, date: daysFromNow(-3), type: 'Sale / Order', reference: `ORD-${it.sku}`, quantity: -it.reserved, from: it.location, to: 'Customer Order', user: it.assignedRep ?? 'System' });
-    }
-  });
-  return out;
-}
-
-function seedRepInventory(items: InventoryItem[]): RepInventory[] {
-  const map = new Map<string, RepInventory>();
-  items.forEach((it) => {
-    if (!it.assignedRep) return;
-    const key = `${it.assignedRep}|${it.industry}`;
-    const existing = map.get(key);
-    const sold = Math.round(it.assigned * 0.55);
-    const returned = Math.round(it.assigned * 0.08);
-    if (existing) {
-      existing.productsAssigned += 1;
-      existing.totalQty += it.assigned;
-      existing.sold += sold;
-      existing.returned += returned;
-    } else {
-      map.set(key, { rep: it.assignedRep, industry: it.industry, productsAssigned: 1, totalQty: it.assigned, sold, returned });
-    }
-  });
-  return Array.from(map.values());
-}
-
 /* ============================== HELPERS ============================== */
 
 function computeStatus(item: InventoryItem): StockStatus {
   const available = item.totalStock - item.reserved - item.assigned;
-  if (item.expiryDate) {
+  // Expiry only matters while there is stock to expire; an empty product shows as Out of Stock instead.
+  if (item.expiryDate && item.totalStock > 0) {
     const days = Math.ceil((new Date(item.expiryDate).getTime() - Date.now()) / 86400000);
     if (days < 0) return 'expired';
       if (days <= (item.expiryWarnDays ?? 30)) return 'expiring_soon';
   }
   if (available <= 0) return 'out_of_stock';
-  if (available < item.minStock) return 'low_stock';
+  if (available <= item.minStock) return 'low_stock'; // at or below the minimum level — same rule the Products page uses
   return 'in_stock';
 }
 
@@ -257,7 +231,7 @@ type ModalKind =
   | { kind: 'none' }
   | { kind: 'addStock' }
   | { kind: 'transfer'; item?: InventoryItem }
-  | { kind: 'assign'; item?: InventoryItem }
+  | { kind: 'assign'; item?: InventoryItem; request?: StockRequest }
   | { kind: 'adjust'; item: InventoryItem }
   | { kind: 'return' }
   | { kind: 'request' }
@@ -289,7 +263,8 @@ export function InventoryPage() {
   useEffect(() => { void loadProducts(); }, []);
 
   // Real sales representatives (same endpoint RepresentativesPage uses).
-  const [reps, setReps] = useState<string[]>([]);
+  const [repRecords, setRepRecords] = useState<{ id: string; name: string }[]>([]);
+  const reps = useMemo(() => Array.from(new Set(repRecords.map((r) => r.name))), [repRecords]);
 
   // Admins / managers a rep can send a stock request to.
   const [approvers, setApprovers] = useState<string[]>([]);
@@ -313,13 +288,13 @@ export function InventoryPage() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await api<{ data: { employee_code: string; status: string; user_profiles?: { display_name?: string | null } | null }[] }>('/sales-representatives');
-        const names = (res.data ?? [])
+        const res = await api<{ data: { id: string; employee_code: string; status: string; user_profiles?: { display_name?: string | null } | null }[] }>('/sales-representatives');
+        const list = (res.data ?? [])
           .filter((r) => r.status === 'active')
-          .map((r) => r.user_profiles?.display_name || r.employee_code);
-        if (!cancelled) setReps(Array.from(new Set(names)));
+          .map((r) => ({ id: r.id, name: r.user_profiles?.display_name || r.employee_code }));
+        if (!cancelled) setRepRecords(list);
       } catch {
-        if (!cancelled) setReps([]);
+        if (!cancelled) setRepRecords([]);
       }
     })();
     return () => { cancelled = true; };
@@ -344,17 +319,86 @@ export function InventoryPage() {
     [scopedProducts, activeIndustry, orgSettings.inventory.lowStockAlert, orgSettings.inventory.minStockThreshold, orgSettings.inventory.expiryAlert, orgSettings.inventory.expiryWarningDays],
   );
 
-  // Local-only overrides from the Add Stock / Transfer / Assign / Adjust
-  // modals below. There's no inventory table on the backend yet, so those
-  // actions can't persist server-side — they patch the real product's
-  // in-memory row here (on top of its real stock_quantity) so the screen
-  // still behaves, but a refresh reloads the true numbers from /products.
-  const [overrides, setOverrides] = useState<Record<string, Partial<InventoryItem>>>({});
+  // Everything below comes from the database (inventory_movements + real orders), computed once by the API.
+  const [overview, setOverview] = useState<{ movements: ServerMovement[]; holdings: ServerHolding[] }>({ movements: [], holdings: [] });
+  async function loadOverview() {
+    try {
+      const res = await api<{ data: { movements: ServerMovement[]; holdings: ServerHolding[] } }>('/inventory/overview');
+      setOverview({ movements: res.data?.movements ?? [], holdings: res.data?.holdings ?? [] });
+    } catch {
+      setOverview({ movements: [], holdings: [] }); // e.g. a role that cannot read inventory
+    }
+  }
+  useEffect(() => { void loadOverview(); }, []);
+
+  // Real batches (FMCG). Used so the batch & expiry shown here is the earliest-expiring batch that still has stock,
+  // not just whatever was typed on the last stock-in. Other industries have no batches endpoint, so this stays empty.
+  type ApiBatch = { product_id: string; batch_no: string; mfg_date: string | null; expiry_date: string | null; quantity: number };
+  const [batches, setBatches] = useState<ApiBatch[]>([]);
+  async function loadBatches() {
+    try {
+      const res = await api<{ data: ApiBatch[] }>('/fmcg/batches');
+      setBatches(res.data ?? []);
+    } catch {
+      setBatches([]);
+    }
+  }
+  useEffect(() => { void loadBatches(); }, [activeIndustry]);
+  type ApiStockRequest = {
+    id: string; product_id: string; representative_id: string; quantity: number; reason: string | null; required_date: string | null; remarks: string | null;
+    requested_to: string | null; status: 'pending' | 'approved' | 'rejected' | 'fulfilled'; decision_note: string | null;
+    products?: { product_name?: string } | null; sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null;
+  };
+  const STATUS_FROM_API: Record<ApiStockRequest['status'], StockRequest['status']> = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected', fulfilled: 'Fulfilled' };
+  async function loadRequests() {
+    try {
+      const res = await api<{ data: ApiStockRequest[] }>('/inventory/requests');
+      setRequests((res.data ?? []).map((r) => ({
+        id: r.id, productId: r.product_id, repId: r.representative_id, product: r.products?.product_name ?? 'Product', quantity: Number(r.quantity),
+        reason: r.reason ?? '', requiredDate: r.required_date ?? '', remarks: r.remarks ?? '', status: STATUS_FROM_API[r.status] ?? 'Pending',
+        requestedTo: r.requested_to ?? undefined, rep: r.sales_representatives?.user_profiles?.display_name ?? r.sales_representatives?.employee_code ?? 'Sales rep', note: r.decision_note ?? undefined,
+      })));
+    } catch {
+      setRequests([]); // e.g. a role that cannot read requests
+    }
+  }
+  useEffect(() => { void loadRequests(); }, []);
+  const repNameById = useMemo(() => new Map(repRecords.map((r) => [r.id, r.name])), [repRecords]);
+  const repIdByName = useMemo(() => new Map(repRecords.map((r) => [r.name, r.id])), [repRecords]);
+
   const allItems = useMemo(
-    () => productItems.map((it) => ({ ...it, ...overrides[it.id] })),
-    [productItems, overrides],
+    () => productItems.map((it) => {
+      const held = overview.holdings.filter((h) => h.product_id === it.id);
+      // Units a rep still carries (assigned - returned - sold). Sold units already left total stock when the order was saved.
+      const assigned = held.reduce((sum, h) => sum + h.balance, 0);
+      const repNames = held.filter((h) => h.balance > 0).map((h) => repNameById.get(h.representative_id)).filter((n): n is string => !!n);
+      const ms = overview.movements.filter((m) => m.product_id === it.id); // newest first
+      const lastIn = ms.find((m) => m.movement_type === 'stock_in' && (m.batch || m.expiry_date));
+      const lastLoc = ms.find((m) => (m.movement_type === 'stock_in' || m.movement_type === 'transfer') && m.to_location);
+      // Earliest-expiring batch that still has units (falls back to the last stock-in for products without batches).
+      const live = batches.filter((b) => b.product_id === it.id && Number(b.quantity) > 0);
+      const nearest = live.filter((b) => b.expiry_date).sort((a, b) => ((a.expiry_date as string) < (b.expiry_date as string) ? -1 : 1))[0] ?? live[0];
+      const batchLabel = nearest ? `${nearest.batch_no}${live.length > 1 ? ` (+${live.length - 1} more)` : ''}` : '';
+      return {
+        ...it, assigned, repNames,
+        batch: batchLabel || lastIn?.batch || it.batch,
+        mfgDate: nearest?.mfg_date || lastIn?.mfg_date || it.mfgDate,
+        expiryDate: nearest?.expiry_date || lastIn?.expiry_date || it.expiryDate,
+        location: lastLoc?.to_location || it.location,
+      };
+    }),
+    [productItems, overview, repNameById, batches],
   );
-  const [movements, setMovements] = useState<MovementRecord[]>([]);
+
+  const movements = useMemo<MovementRecord[]>(() => overview.movements.map((m) => {
+    const rep = m.representative_id ? repNameById.get(m.representative_id) ?? 'Sales rep' : '';
+    const base = { id: m.id, itemId: m.product_id, date: m.created_at.slice(0, 10), reference: m.reference || '—', quantity: Number(m.quantity), user: m.created_by_name || '—' };
+    if (m.movement_type === 'stock_in') return { ...base, type: 'Stock Added' as const, from: m.from_location || 'Supplier', to: m.to_location || '—' };
+    if (m.movement_type === 'adjustment') return { ...base, type: 'Stock Adjustment' as const, from: m.remarks || m.reason || '—', to: m.to_location || '—' };
+    if (m.movement_type === 'transfer') return { ...base, type: 'Stock Transfer' as const, from: m.from_location || '—', to: m.to_location || '—' };
+    if (m.movement_type === 'assign') return { ...base, type: 'Stock Assigned' as const, from: m.from_location || '—', to: rep };
+    return { ...base, type: 'Stock Returned' as const, from: rep, to: m.to_location || '—' };
+  }), [overview.movements, repNameById]);
   const [requests, setRequests] = useState<StockRequest[]>([]);
 
   // filters
@@ -409,14 +453,14 @@ export function InventoryPage() {
       if (categoryFilter !== 'all' && it.category !== categoryFilter) return false;
       if (brandFilter !== 'all' && it.brand !== brandFilter) return false;
       if (statusFilter !== 'all' && status !== statusFilter) return false;
-      if (repFilter !== 'all' && it.assignedRep !== repFilter) return false;
+      if (repFilter !== 'all' && !(it.repNames ?? []).includes(repFilter)) return false;
       if (locationFilter !== 'all' && it.location !== locationFilter) return false;
       if (expiryFilter !== 'all') {
         const d = expiryDays(it.expiryDate);
         if (expiryFilter === 'expired') { if (d === null || d >= 0) return false; }
         else { const window_ = Number(expiryFilter); if (d === null || d < 0 || d > window_) return false; }
       }
-      if (role === 'rep' && it.assignedRep !== reps[0]) return false; // rep sees only their own assigned stock (mock: first rep)
+      if (role === 'rep' && !(it.repNames ?? []).includes(reps[0])) return false; // rep sees only their own assigned stock (mock: first rep)
       return true;
     });
   }, [industryItems, search, skuFilter, categoryFilter, brandFilter, statusFilter, repFilter, locationFilter, expiryFilter, role, reps]);
@@ -433,7 +477,24 @@ export function InventoryPage() {
     return { totalProducts, totalStock, lowStock, expiringSoon, salesValue, costValue, missingCost, outOfStock };
   }, [industryItems]);
 
-  const repInventory = useMemo(() => seedRepInventory(industryItems), [industryItems]);
+  // Per rep: Total Qty = everything assigned; Sold = real orders placed after the assignment; Returned = handed back; Available = still with the rep.
+  const repInventory = useMemo(() => {
+    const map = new Map<string, RepInventory>();
+    const itemById = new Map(industryItems.map((i) => [i.id, i]));
+    overview.holdings.forEach((h) => {
+      const item = itemById.get(h.product_id);
+      const rep = repNameById.get(h.representative_id);
+      if (!item || !rep) return;
+      const key = `${rep}|${item.industry}`;
+      const row = map.get(key) ?? { rep, industry: item.industry, productsAssigned: 0, totalQty: 0, sold: 0, returned: 0 };
+      row.productsAssigned += 1;
+      row.totalQty += h.assigned;
+      row.sold += h.sold;
+      row.returned += h.returned;
+      map.set(key, row);
+    });
+    return Array.from(map.values());
+  }, [industryItems, overview.holdings, repNameById]);
 
   const lowStockList = useMemo(() => industryItems.filter((i) => computeStatus(i) === 'low_stock'), [industryItems]);
   const expiryAlerts = useMemo(
@@ -443,89 +504,109 @@ export function InventoryPage() {
 
   const itemMovements = (itemId: string) => movements.filter((m) => m.itemId === itemId).sort((a, b) => (a.date < b.date ? 1 : -1));
 
-  function recordMovement(m: Omit<MovementRecord, 'id'>) {
-    setMovements((prev) => [{ ...m, id: nextId('mv') }, ...prev]);
-  }
-
-  function updateItem(id: string, patch: Partial<InventoryItem>) {
-    setOverrides((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
-  }
-
   /* ---------- action handlers ---------- */
+  // Every stock action is saved by the API; the API also enforces the limits (available qty, rep's own balance, same location).
+  async function postMovement(body: Record<string, unknown>, okMessage: string) {
+    try {
+      await api('/inventory/movements', { method: 'POST', body: JSON.stringify(body) });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Unable to save this stock change.');
+      return;
+    }
+    await Promise.all([loadProducts(), loadOverview(), loadRequests(), loadBatches()]);
+    showToast(okMessage);
+    setModal({ kind: 'none' });
+  }
+  const refNo = (prefix: string, sku: string) => `${prefix}-${sku}-${Date.now().toString().slice(-4)}`;
+
   async function handleAddStock(data: { productId: string; batch: string; mfgDate: string; expiryDate: string; quantity: number; location: string; supplierRef: string; purchaseRef: string; remarks: string }) {
     const item = allItems.find((i) => i.id === data.productId);
     if (!item) return;
-    const newStock = item.totalStock + data.quantity;
-    try {
-      await api(`/products/${item.id}`, { method: 'PATCH', body: JSON.stringify({ stockQuantity: newStock }) });
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Unable to save the stock change.');
-      return;
-    }
-    await loadProducts();
-    updateItem(item.id, {
-      totalStock: newStock,
-      batch: data.batch || item.batch,
-      mfgDate: data.mfgDate || item.mfgDate,
-      expiryDate: data.expiryDate || item.expiryDate,
-      location: data.location || item.location,
-    });
-    recordMovement({ itemId: item.id, date: new Date().toISOString().slice(0, 10), type: 'Stock Added', reference: data.purchaseRef || `GRN-${item.sku}-${Date.now().toString().slice(-4)}`, quantity: data.quantity, from: data.supplierRef || 'Supplier', to: data.location || item.location, user: 'Admin' });
-    showToast('✓ Stock added successfully.');
-    setModal({ kind: 'none' });
+    await postMovement({
+      type: 'stock_in', productId: item.id, quantity: data.quantity, batch: data.batch, mfgDate: data.mfgDate, expiryDate: data.expiryDate,
+      fromLocation: data.supplierRef || 'Supplier', toLocation: data.location || item.location, reference: data.purchaseRef || refNo('GRN', item.sku), remarks: data.remarks,
+    }, '✓ Stock added successfully.');
   }
 
-  function handleTransfer(data: { productId: string; quantity: number; fromLocation: string; toLocation: string; reason: string; remarks: string }) {
+  async function handleTransfer(data: { productId: string; quantity: number; fromLocation: string; toLocation: string; reason: string; remarks: string }) {
     const item = allItems.find((i) => i.id === data.productId);
     if (!item) return;
-    updateItem(item.id, { location: data.toLocation });
-    recordMovement({ itemId: item.id, date: new Date().toISOString().slice(0, 10), type: 'Stock Transfer', reference: `TRF-${item.sku}-${Date.now().toString().slice(-4)}`, quantity: data.quantity, from: data.fromLocation, to: data.toLocation, user: 'Admin' });
-    showToast('✓ Stock transferred successfully.');
-    setModal({ kind: 'none' });
+    await postMovement({
+      type: 'transfer', productId: item.id, quantity: data.quantity, fromLocation: data.fromLocation || item.location, toLocation: data.toLocation,
+      reason: data.reason, remarks: data.remarks, reference: refNo('TRF', item.sku),
+    }, '✓ Stock transferred successfully.');
   }
 
-  function handleAssign(data: { productId: string; rep: string; quantity: number; remarks: string }) {
+  async function handleAssign(data: { productId: string; rep: string; quantity: number; remarks: string }, requestId?: string) {
     const item = allItems.find((i) => i.id === data.productId);
-    if (!item) return;
-    updateItem(item.id, { assigned: item.assigned + data.quantity, assignedRep: data.rep });
-    recordMovement({ itemId: item.id, date: new Date().toISOString().slice(0, 10), type: 'Stock Assigned', reference: `ASN-${item.sku}-${Date.now().toString().slice(-4)}`, quantity: data.quantity, from: item.location, to: data.rep, user: 'Manager' });
-    showToast('✓ Inventory assigned to Sales Rep.');
-    setModal({ kind: 'none' });
+    const representativeId = repIdByName.get(data.rep);
+    if (!item || !representativeId) { showToast('Select a valid sales representative.'); return; }
+    await postMovement({
+      type: 'assign', productId: item.id, quantity: data.quantity, representativeId, fromLocation: item.location, remarks: data.remarks, reference: refNo('ASN', item.sku), ...(requestId ? { requestId } : {}),
+    }, '✓ Inventory assigned to Sales Rep.');
   }
 
   async function handleAdjust(item: InventoryItem, delta: number, reason: string, remarks: string) {
-    const newStock = orgSettings.stockRules.negativeStockAllowed ? item.totalStock + delta : Math.max(0, item.totalStock + delta);
+    const allowNegative = Boolean(orgSettings.stockRules.negativeStockAllowed);
+    if (!allowNegative && item.totalStock + delta < 0) { showToast(`Stock cannot go below zero (current stock is ${item.totalStock}).`); return; }
+    await postMovement({
+      type: 'adjustment', productId: item.id, quantity: delta, allowNegative, reason, remarks, toLocation: item.location, reference: refNo('ADJ', item.sku),
+    }, '✓ Stock adjustment completed.');
+  }
+
+  async function handleReturn(data: { rep: string; productId: string; quantity: number; reason: string; remarks: string }) {
+    const item = allItems.find((i) => i.id === data.productId);
+    const representativeId = repIdByName.get(data.rep);
+    if (!item || !representativeId) { showToast('Select a valid sales representative.'); return; }
+    await postMovement({
+      type: 'return', productId: item.id, quantity: data.quantity, representativeId, toLocation: item.location, reason: data.reason, remarks: data.remarks, reference: refNo('RTN', item.sku),
+    }, '✓ Stock returned successfully.');
+  }
+
+  async function handleRequest(data: { product: string; quantity: number; reason: string; requiredDate: string; remarks: string; requestedTo: string }) {
+    const item = allItems.find((i) => i.name === data.product);
+    if (!item) { showToast('Select a valid product.'); return; }
     try {
-      await api(`/products/${item.id}`, { method: 'PATCH', body: JSON.stringify({ stockQuantity: newStock }) });
+      await api('/inventory/requests', { method: 'POST', body: JSON.stringify({ productId: item.id, quantity: data.quantity, reason: data.reason, requiredDate: data.requiredDate || null, remarks: data.remarks, requestedTo: data.requestedTo }) });
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Unable to save the stock adjustment.');
+      showToast(error instanceof Error ? error.message : 'Unable to submit this request.');
       return;
     }
-    await loadProducts();
-    updateItem(item.id, { totalStock: newStock });
-    recordMovement({ itemId: item.id, date: new Date().toISOString().slice(0, 10), type: 'Stock Adjustment', reference: `ADJ-${item.sku}-${reason.slice(0, 3).toUpperCase()}`, quantity: delta, from: remarks || reason, to: item.location, user: 'Admin' });
-    showToast('✓ Stock adjustment completed.');
-    setModal({ kind: 'none' });
-  }
-
-  function handleReturn(data: { rep: string; productId: string; quantity: number; reason: string; remarks: string }) {
-    const item = allItems.find((i) => i.id === data.productId);
-    if (!item) return;
-    updateItem(item.id, { assigned: Math.max(0, item.assigned - data.quantity), totalStock: item.totalStock });
-    recordMovement({ itemId: item.id, date: new Date().toISOString().slice(0, 10), type: 'Stock Returned', reference: `RTN-${item.sku}-${Date.now().toString().slice(-4)}`, quantity: data.quantity, from: data.rep, to: item.location, user: data.rep });
-    showToast('✓ Stock returned successfully.');
-    setModal({ kind: 'none' });
-  }
-
-  function handleRequest(data: { product: string; quantity: number; reason: string; requiredDate: string; remarks: string; requestedTo: string }) {
-    setRequests((prev) => [{ id: nextId('req'), ...data, status: 'Pending', rep: reps[0] ?? 'Sales rep' }, ...prev]);
+    await loadRequests();
     showToast('✓ Stock request submitted.');
     setModal({ kind: 'none' });
   }
 
-  function handleRequestDecision(id: string, status: StockRequest['status']) {
-    setRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status } : r)));
-    showToast(status === 'Approved' ? '✓ Request approved.' : status === 'Rejected' ? 'Request rejected.' : '✓ Request fulfilled.');
+  async function handleRequestDecision(id: string, status: 'Approved' | 'Rejected') {
+    try {
+      await api(`/inventory/requests/${id}/decision`, { method: 'POST', body: JSON.stringify({ status: status === 'Approved' ? 'approved' : 'rejected' }) });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Unable to update this request.');
+      return;
+    }
+    await loadRequests();
+    showToast(status === 'Approved' ? '✓ Request approved. Use "Assign Stock" to give the stock.' : 'Request rejected.');
+  }
+
+  // Opens the Assign form already filled with the rep, product and quantity from an approved request.
+  function assignFromRequest(r: StockRequest) {
+    const item = industryItems.find((i) => i.id === r.productId);
+    setModal({ kind: 'assign', item, request: r });
+  }
+
+  // Downloads exactly the rows currently shown (after filters) as a CSV file that opens in Excel.
+  function exportCsv() {
+    const cell = (v: string | number | null | undefined) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const header = ['Product', 'SKU', 'Category', 'Brand', 'Batch', 'Expiry', 'Total Qty', 'Reserved', 'Assigned', 'Available', 'Status', 'Location'];
+    const rows = filtered.map((it) => [it.name, it.sku, it.category, it.brand, it.batch, it.expiryDate ?? '', it.totalStock, it.reserved, it.assigned, availableQty(it), STATUS_LABEL[computeStatus(it)], it.location]);
+    const csv = [header, ...rows].map((r) => r.map(cell).join(',')).join('\r\n');
+    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `inventory-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`✓ Exported ${rows.length} item(s).`);
   }
 
   const isAdmin = role === 'admin';
@@ -565,6 +646,7 @@ export function InventoryPage() {
             <div className="inv-header">
         <div>
           <h1>Inventory</h1>
+       
         </div>
         <div className="inv-header-actions">
           <label className="inv-role-switch">
@@ -580,8 +662,11 @@ export function InventoryPage() {
           <button onClick={() => setModal({ kind: 'scan' })}>Scan Product</button>
           {role === 'rep' && <button onClick={() => setModal({ kind: 'request' })}>Request Stock</button>}
           {role === 'rep' && <button onClick={() => setModal({ kind: 'return' })}>Return Stock</button>}
-          <button onClick={() => showToast('✓ Inventory exported.')}>Export</button>
-          <button onClick={() => showToast('Inventory refreshed.')}>Refresh</button>
+          <button className="inv-icon-btn" onClick={exportCsv}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>
+            Export
+          </button>
+          <button onClick={() => { void loadProducts(); void loadOverview(); showToast('Inventory refreshed.'); }}>Refresh</button>
         </div>
       </div>
         {/* KPIs */}
@@ -759,7 +844,7 @@ export function InventoryPage() {
           <div className="inv-compact-head"><h3>Sales Representative Inventory</h3>{isAdmin && <button className="active" onClick={() => setModal({ kind: 'assign' })}>Assign Inventory</button>}</div>
           <div className="inv-table-wrap">
             <table className="inv-table">
-              <thead><tr><th>Sales Rep</th><th>Industry</th><th>Products Assigned</th><th>Total Qty</th><th>Sold</th><th>Returned</th><th>Available</th></tr></thead>
+              <thead><tr><th>Sales Rep</th><th>Industry</th><th>Products Assigned</th><th>Total Qty</th><th>Sold (from orders)</th><th>Returned</th><th>Available</th></tr></thead>
               <tbody>
                 {repInventory.map((r) => (
                   <tr key={r.rep} className="inv-clickable-row" onClick={() => setSelectedRep(r.rep)}>
@@ -800,7 +885,7 @@ export function InventoryPage() {
                         <button onClick={() => handleRequestDecision(r.id, 'Approved')}>Approve</button>
                         <button onClick={() => handleRequestDecision(r.id, 'Rejected')}>Reject</button>
                       </>}
-                      {r.status === 'Approved' && <button onClick={() => handleRequestDecision(r.id, 'Fulfilled')}>Mark Fulfilled</button>}
+                      {r.status === 'Approved' && <button onClick={() => assignFromRequest(r)}>Assign Stock</button>}
                     </td>
                   )}
                 </tr>
@@ -827,7 +912,12 @@ export function InventoryPage() {
       {selectedRep && (
         <RepDetailPanel
           rep={selectedRep}
-          items={industryItems.filter((i) => i.assignedRep === selectedRep)}
+          items={industryItems
+            .filter((i) => (i.repNames ?? []).includes(selectedRep))
+            .map((i) => {
+              const h = overview.holdings.find((x) => x.product_id === i.id && x.representative_id === repIdByName.get(selectedRep));
+              return { ...i, assigned: h ? h.balance : 0 };
+            })}
           onClose={() => setSelectedRep(null)}
         />
       )}
@@ -840,7 +930,7 @@ export function InventoryPage() {
         <TransferModal items={industryItems} presetItem={modal.item} locations={locations} onCancel={() => setModal({ kind: 'none' })} onSubmit={handleTransfer} />
       )}
       {modal.kind === 'assign' && (
-        <AssignModal items={industryItems} reps={reps} presetItem={modal.item} onCancel={() => setModal({ kind: 'none' })} onSubmit={handleAssign} />
+        <AssignModal items={industryItems} reps={reps} presetItem={modal.item} presetRep={modal.request?.rep} presetQty={modal.request?.quantity} onCancel={() => setModal({ kind: 'none' })} onSubmit={(d) => handleAssign(d, modal.request?.id)} />
       )}
       {modal.kind === 'adjust' && (
         <AdjustModal item={modal.item} onCancel={() => setModal({ kind: 'none' })} onSubmit={handleAdjust} />
@@ -1167,13 +1257,13 @@ function TransferModal({ items, presetItem, locations, onCancel, onSubmit }: {
   );
 }
 
-function AssignModal({ items, reps, presetItem, onCancel, onSubmit }: {
-  items: InventoryItem[]; reps: string[]; presetItem?: InventoryItem; onCancel: () => void;
+function AssignModal({ items, reps, presetItem, presetRep, presetQty, onCancel, onSubmit }: {
+  items: InventoryItem[]; reps: string[]; presetItem?: InventoryItem; presetRep?: string; presetQty?: number; onCancel: () => void;
   onSubmit: (d: { productId: string; rep: string; quantity: number; remarks: string }) => void;
 }) {
   const [productId, setProductId] = useState(presetItem?.id ?? items[0]?.id ?? '');
-  const [rep, setRep] = useState(reps[0] ?? '');
-  const [quantity, setQuantity] = useState(0);
+  const [rep, setRep] = useState(presetRep && reps.includes(presetRep) ? presetRep : reps[0] ?? '');
+  const [quantity, setQuantity] = useState(presetQty ?? 0);
   const [remarks, setRemarks] = useState('');
   const item = items.find((i) => i.id === productId);
   return (
@@ -1324,4 +1414,4 @@ function BatchDetailModal({ item, onClose }: { item: InventoryItem; onClose: () 
       </div>
     </ModalShell>
   );
-}    
+}

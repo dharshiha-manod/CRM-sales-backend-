@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { FmcgExportPanel } from './FmcgExportPanel';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { GenerateDocumentButton } from './GenerateDocumentButton';
 import { buildDraftFromOrder } from '../lib/tradeDocumentHandoff';
 import { kpiClick } from '../lib/kpiClick';
+import { lineDiscountView } from '../lib/productDiscount';
 import './MasterDataPages.css';
 
 const ORDER_DOC_TYPES = ['Commercial Invoice', 'Packing List', 'Delivery Note', 'Bill of Lading', 'Other'];
@@ -13,19 +15,28 @@ type OrderItem = {
   unit_price: number;
   discount_amount: number;
   subtotal: number;
-  products?: { product_code?: string; product_name?: string } | null;
+  free_quantity?: number | null;
+  products?: { id?: string; product_code?: string; product_name?: string; mrp?: number | null; discount_percent?: number | null } | null;
 };
 type Order = {
   id: string;
   order_number: string;
   status: string;
   total_amount: number;
+  /** Approved returns / damage credited against this order (order currency). */
+  returns_credit?: number | null;
+  currency_code?: string | null;
+  base_total?: number | null;
   discount_amount: number;
   created_at: string;
   notes?: string | null;
   visit_id?: string | null;
   quotation_id?: string | null; // not populated by every API response — rendered/matched only if present
-  clients?: { client_code?: string; client_name?: string; industry_types?: { name?: string } | null } | null;
+  clients?: { client_code?: string; client_name?: string; country_code?: string | null; industry_types?: { name?: string } | null } | null;
+  incoterm?: string | null;
+  port_of_loading?: string | null;
+  port_of_discharge?: string | null;
+  export_docs?: Record<string, boolean> | null;
   sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null;
   sale_order_items?: OrderItem[];
 };
@@ -55,6 +66,7 @@ type QuotationItemRef = {
 };
 type ReadyQuotation = {
   id: string;
+  currency_code?: string | null;
   quotation_number: string;
   status: 'sent' | 'accepted' | 'rejected' | 'expired' | 'converted';
   // An accepted quotation is converted automatically on approval. The API
@@ -82,8 +94,8 @@ function sourceBadgeLabel(order: Order): string {
   return orderSource(order) === 'quotation' ? 'From Quotation' : 'Manual';
 }
 
-const currency = (value: number) =>
-  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(Number(value || 0));
+const currency = (value: number, code = 'INR') =>
+  new Intl.NumberFormat(code === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: code, maximumFractionDigits: 2 }).format(Number(value || 0));
 const dateLabel = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 const dateOnly = (value: string) => value?.slice(0, 10) ?? '';
 
@@ -164,6 +176,7 @@ export function OrdersPage() {
   const [dateTo, setDateTo] = useState('');
 
   const [selected, setSelected] = useState<Order | null>(null);
+  const selCur = (v: number) => currency(v, selected?.currency_code ?? 'INR');
   const [orderMeta, setOrderMeta] = useState<OrderMeta>(blankOrderMeta);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentForm, setPaymentForm] = useState<PaymentForm>(emptyPaymentForm);
@@ -238,7 +251,7 @@ export function OrdersPage() {
   function paymentStatus(order: Order): { label: string; tone: 'good' | 'warn' | 'bad' } {
     const paid = collected[order.order_number] ?? 0;
     if (paid <= 0) return { label: 'Outstanding — payment reminder due', tone: 'bad' };
-    if (paid < Number(order.total_amount)) return { label: `Partially paid (${currency(paid)} of ${currency(order.total_amount)})`, tone: 'warn' };
+    if (paid < Number(order.total_amount) - Number(order.returns_credit ?? 0) - 0.005) return { label: `Partially paid (${currency(paid, order.currency_code ?? 'INR')} of ${currency(Number(order.total_amount) - Number(order.returns_credit ?? 0), order.currency_code ?? 'INR')})`, tone: 'warn' };
     return { label: 'Paid', tone: 'good' };
   }
   function paymentFilterValue(order: Order): 'paid' | 'partial' | 'outstanding' {
@@ -342,7 +355,8 @@ export function OrdersPage() {
           items: validLines.map((line) => ({
             productId: line.productId,
             quantity: Number(line.quantity),
-            discountPercent: Number(line.discountPercent || 0),
+                      discountPercent: Number(line.discountPercent || 0),
+            freeQuantity: Number(line.freeQuantity || 0),
           })),
           notes: notesWithFreeQty || null,
         }),
@@ -401,8 +415,8 @@ export function OrdersPage() {
     const amount = Number(paymentForm.amount);
     if (!amount || amount <= 0) return setPaymentError('Enter an amount greater than zero.');
     const alreadyPaid = collected[order.order_number] ?? 0;
-    const balance = Number(order.total_amount) - alreadyPaid;
-    if (amount > balance + 0.01) return setPaymentError(`Amount exceeds the outstanding balance of ${currency(balance)}.`);
+    const balance = Number(order.total_amount) - Number(order.returns_credit ?? 0) - alreadyPaid;
+    if (amount > balance + 0.01) return setPaymentError(`Amount exceeds the outstanding balance of ${currency(balance, order.currency_code ?? 'INR')}.`);
     setPaymentSaving(true);
     try {
       await api('/collections', {
@@ -502,7 +516,7 @@ export function OrdersPage() {
   const completedCount = scopedItems.filter((o) => o.status === 'completed').length;
   const cancelledCount = scopedItems.filter((o) => o.status === 'cancelled').length;
   const totalSalesValue = useMemo(
-    () => scopedItems.filter((o) => o.status !== 'cancelled').reduce((sum, o) => sum + Number(o.total_amount || 0), 0),
+    () => scopedItems.filter((o) => o.status !== 'cancelled').reduce((sum, o) => sum + Number(o.base_total ?? o.total_amount ?? 0), 0),
     [scopedItems],
   );
 
@@ -542,9 +556,8 @@ export function OrdersPage() {
       </div>  
            {scopedReadyQuotations.length > 0 && (
         <div className="ready-for-order-section">
-          <div className="ready-for-order-heading">
+                   <div className="ready-for-order-heading">
             <h3>Ready for Sales Order</h3>
-            <p>Accepted quotations eligible to become sales orders. Review and confirm — no re-entry needed.</p>
           </div>
           <div className="ready-order-grid">
             {scopedReadyQuotations.map((q) => {
@@ -565,7 +578,7 @@ export function OrdersPage() {
                     ))}
                     {(!q.quotation_items || q.quotation_items.length === 0) && <li className="text-faint-inline">No line items recorded.</li>}
                   </ul>
-                  <div className="ready-order-value">{currency(q.total_amount)}</div>
+                  <div className="ready-order-value">{currency(q.total_amount, q.currency_code ?? 'INR')}</div>
                   <button type="button" className="primary-action" onClick={() => openReview(q)}>Create Sales Order</button>
                 </div>
               );
@@ -640,7 +653,7 @@ export function OrdersPage() {
                         <td>{order.clients?.industry_types?.name ?? '—'}</td>
                         <td>{order.sales_representatives?.user_profiles?.display_name ?? order.sales_representatives?.employee_code ?? '—'}</td>
                         <td>{itemCount} {itemCount === 1 ? 'Item' : 'Items'}</td>
-                        <td>{currency(order.total_amount)}</td>
+                        <td>{currency(order.total_amount, order.currency_code ?? 'INR')}{order.currency_code && order.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(order.base_total ?? 0))}</small>}{Number(order.returns_credit ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Returns credit − {currency(Number(order.returns_credit), order.currency_code ?? 'INR')}</small>}</td>
                         <td><span className={`status-badge status-${ps.tone === 'good' ? 'paid' : ps.tone === 'warn' ? 'quoted' : 'overdue'}`}>{ps.tone === 'good' ? 'Paid' : ps.tone === 'warn' ? 'Partial' : 'Outstanding'}</span></td>
                         <td><span className={`status-badge status-${order.status}`}>{order.status}</span></td>
                         <td>{dateLabel(order.created_at)}</td>
@@ -671,7 +684,7 @@ export function OrdersPage() {
         const notesText = cleanNotes(selected.notes);
         const ps = paymentStatus(selected);
         const alreadyPaid = collected[selected.order_number] ?? 0;
-        const balance = Number(selected.total_amount) - alreadyPaid;
+        const balance = Number(selected.total_amount) - Number(selected.returns_credit ?? 0) - alreadyPaid;
         const relatedVisit = selected.visit_id ? visitMap.get(selected.visit_id) : undefined;
         const quoteRef = /QT-[A-Za-z0-9-]+/.exec(selected.notes ?? '')?.[0];
         const canCancel = selected.status !== 'cancelled' && selected.status !== 'completed';
@@ -732,16 +745,22 @@ export function OrdersPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {selected.sale_order_items?.map((line, index) => (
+                    {selected.sale_order_items?.map((line, index) => {
+                      const shown = lineDiscountView(line.products?.id, Number(line.quantity), Number(line.unit_price), Number(line.discount_amount), 0, line.products);
+                      return (
                       <tr key={index}>
                         <td>{line.products?.product_name ?? line.products?.product_code ?? 'Product'}</td>
                         <td>{line.quantity}</td>
-                        <td>{line.products?.product_code ? (freeQty[line.products.product_code] ?? '—') : '—'}</td>
-                        <td>{currency(line.unit_price)}</td>
-                        <td>{currency(line.discount_amount)}</td>
+                        <td>{Number(line.free_quantity) > 0 ? line.free_quantity : (line.products?.product_code ? (freeQty[line.products.product_code] ?? '—') : '—')}</td>
+                        <td>{selCur(shown.unitPrice)}</td>
+                        <td>
+                          {selCur(shown.discountAmount)}
+                          {shown.discountPercent > 0 && <small> ({shown.discountPercent}%)</small>}
+                        </td>
                         <td><strong>{currency(line.subtotal)}</strong></td>
                       </tr>
-                    ))}
+                      );
+                    })}
                     {(!selected.sale_order_items || selected.sale_order_items.length === 0) && (
                       <tr><td colSpan={6} className="empty-row">No line items recorded.</td></tr>
                     )}
@@ -750,10 +769,15 @@ export function OrdersPage() {
               </div>
 
               <div className="qd-totals">
-                <div><span>Order total</span><strong>{currency(selected.total_amount)}</strong></div>
-                <div><span>Collected</span><strong>{currency(alreadyPaid)}</strong></div>
-                <div className="qd-grand"><span>Balance due</span><strong>{currency(Math.max(balance, 0))}</strong></div>
+                <div><span>Order total</span><strong>{selCur(selected.total_amount)}</strong></div>
+                {Number(selected.returns_credit ?? 0) > 0 && <div><span>Returns credit</span><strong>− {selCur(Number(selected.returns_credit))}</strong></div>}
+                <div><span>Collected</span><strong>{selCur(alreadyPaid)}</strong></div>
+                <div className="qd-grand"><span>Balance due</span><strong>{selCur(Math.max(balance, 0))}</strong></div>
               </div>
+
+              {selected.clients?.country_code && selected.clients.country_code.toUpperCase() !== 'IN' && (
+                <FmcgExportPanel key={selected.id} order={selected} onSaved={(saved) => { setSelected((s) => (s ? { ...s, ...saved } : s)); void load(); }} />
+              )}
 
               <div className="qd-panel">
                 <div className="qd-panel-head">
@@ -1013,8 +1037,8 @@ export function OrdersPage() {
                       <tr key={index}>
                         <td>{line.products?.product_name ?? line.products?.product_code ?? 'Product'}</td>
                         <td>{line.quantity}</td>
-                        <td>{currency(line.unit_price)}</td>
-                        <td><strong>{currency(line.subtotal)}</strong></td>
+                        <td>{currency(line.unit_price, q.currency_code ?? 'INR')}</td>
+                        <td><strong>{currency(line.subtotal, q.currency_code ?? 'INR')}</strong></td>
                       </tr>
                     ))}
                     {(!q.quotation_items || q.quotation_items.length === 0) && (
@@ -1025,10 +1049,10 @@ export function OrdersPage() {
               </div>
 
               <div className="qd-totals">
-                <div><span>Subtotal</span><strong>{currency(subtotal)}</strong></div>
-                <div><span>Discount</span><strong>{currency(q.discount_amount)}</strong></div>
-                <div><span>Tax</span><strong>{currency(q.tax_amount)}</strong></div>
-                <div className="qd-grand"><span>Order total</span><strong>{currency(q.total_amount)}</strong></div>
+                <div><span>Subtotal</span><strong>{currency(subtotal, q.currency_code ?? 'INR')}</strong></div>
+                <div><span>Discount</span><strong>{currency(q.discount_amount, q.currency_code ?? 'INR')}</strong></div>
+                <div><span>Tax</span><strong>{currency(q.tax_amount, q.currency_code ?? 'INR')}</strong></div>
+                <div className="qd-grand"><span>Order total</span><strong>{currency(q.total_amount, q.currency_code ?? 'INR')}</strong></div>
               </div>
 
               {q.notes && (
@@ -1051,4 +1075,4 @@ export function OrdersPage() {
       })()}
     </section>
   );
-} 
+}

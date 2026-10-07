@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { collectionsInInr, ordersInInr } from '../lib/inr';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import './DashboardPage.css';
 type RecentVisit = { id: string; status: string; check_in_time: string; outcome?: string | null; clients?: { client_code?: string; client_name?: string } | null; sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null };
@@ -74,8 +75,8 @@ export function DashboardPage() {
       api<{ data: Lead[] }>(`/leads${industryQuery}`).catch(() => ({ data: [] })),
       api<{ data: ClientRecord[] }>(`/clients${industryQuery}`).catch(() => ({ data: [] })),
       api<{ data: FollowUpRecord[] }>(`/follow-ups${industryQuery}`).catch(() => ({ data: [] })),
-      api<{ data: OrderRecord[] }>(`/orders${industryQuery}`).catch(() => ({ data: [] })),
-      api<{ data: CollectionRecord[] }>(`/collections${industryQuery}`).catch(() => ({ data: [] })),
+      api<{ data: OrderRecord[] }>(`/orders${industryQuery}`).then(ordersInInr).catch(() => ({ data: [] })),
+      api<{ data: CollectionRecord[] }>(`/collections${industryQuery}`).then(collectionsInInr).catch(() => ({ data: [] })),
       api<{ data: Call[] }>(`/telephony/calls${industryQuery}`).catch(() => ({ data: [] })),
       api<{ data: TradingDeal[] }>(`/trading/deals${industryQuery}`).catch(() => ({ data: [] })),
     ]).then(([dashboard, activity, leads, clients, followUps, orders, collections, calls, tradingDeals]) => {

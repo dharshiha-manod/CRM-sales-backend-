@@ -5,12 +5,14 @@ import { GenerateDocumentButton } from './GenerateDocumentButton';
 import { buildDraftFromQuotation } from '../lib/tradeDocumentHandoff';
 import { useCurrentMembership } from '../auth/useCurrentMembership';
 import { kpiClick } from '../lib/kpiClick';
+import { lineDiscountView } from '../lib/productDiscount';
 
 const QUOTATION_DOC_TYPES = ['Proforma Invoice', 'Commercial Invoice', 'Other'];
 import { QuotationPipelineStepper } from './QuotationPipelineStepper';
 import './MasterDataPages.css';
 
 type QuotationItem = {
+  product_id?: string | null;
   quantity: number;
   unit_price: number;
   discount_percent: number;
@@ -18,7 +20,7 @@ type QuotationItem = {
   subtotal: number;
   tax_percent?: number;
   tax_amount?: number;
-  products?: { product_code?: string; product_name?: string } | null;
+  products?: { product_code?: string; product_name?: string; mrp?: number | null; discount_percent?: number | null } | null;
 };
 type Quotation = {
   id: string;
@@ -28,6 +30,9 @@ type Quotation = {
   discount_amount: number;
   tax_amount: number;
   total_amount: number;
+  currency_code?: string | null;
+  exchange_rate?: number | null;
+  base_total?: number | null;
   notes?: string | null;
   decision_source?: 'manual_rep' | 'client_portal' | null;
   rejection_reason?: string | null;
@@ -148,8 +153,8 @@ function RequirementLookup({
   );
 }
 
-const currency = (value: number) =>
-  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(Number(value || 0));
+const currency = (value: number, code = 'INR') =>
+  new Intl.NumberFormat(code === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: code, maximumFractionDigits: 2 }).format(Number(value || 0));
 const dateLabel = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 
 export function QuotationsPage() {
@@ -158,6 +163,7 @@ export function QuotationsPage() {
   const { clientMatchesActiveIndustry, activeIndustry } = useIndustryScope();
   const [items, setItems] = useState<Quotation[]>([]);
   const [selected, setSelected] = useState<Quotation | null>(null);
+  const selCur = (v: number) => currency(v, selected?.currency_code ?? 'INR');
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [clientFilter, setClientFilter] = useState('');
@@ -379,7 +385,7 @@ export function QuotationsPage() {
   const sentCount = scopedItems.filter((q) => q.status === 'sent').length;
   const acceptedCount = scopedItems.filter((q) => q.status === 'accepted').length;
   const rejectedCount = scopedItems.filter((q) => q.status === 'rejected').length;
-  const totalQuotedValue = useMemo(() => scopedItems.reduce((sum, q) => sum + Number(q.total_amount || 0), 0), [scopedItems]);
+  const totalQuotedValue = useMemo(() => scopedItems.reduce((sum, q) => sum + Number(q.base_total ?? q.total_amount ?? 0), 0), [scopedItems]);
   function clearFilters() {
     setStatus(''); setClientFilter(''); setRepFilter(''); setDateFrom(''); setDateTo('');
   }
@@ -464,7 +470,7 @@ export function QuotationsPage() {
                   </td>
                   <td>{quote.sales_representatives?.user_profiles?.display_name ?? quote.sales_representatives?.employee_code ?? '—'}</td>
                   <td>{dateLabel(quote.created_at)}</td>
-                  <td>{currency(quote.total_amount)}</td>
+                  <td>{currency(quote.total_amount, quote.currency_code ?? 'INR')}{quote.currency_code && quote.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(quote.base_total ?? 0))}</small>}</td>
                                              <td>
                     <span className={`status-badge status-${quote.status}`}>{quote.status}</span>
                     {quote.decision_source && <small> {quote.decision_source === 'client_portal' ? 'via client portal' : 'by rep'}</small>}
@@ -554,39 +560,42 @@ export function QuotationsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {selected.quotation_items?.map((line, index) => (
+                  {selected.quotation_items?.map((line, index) => {
+                    const shown = lineDiscountView(line.product_id, Number(line.quantity), Number(line.unit_price), Number(line.discount_amount), Number(line.discount_percent), line.products);
+                    return (
                     <tr key={index}>
                       <td>{line.products?.product_name ?? 'Product'}</td>
                       <td>{line.quantity}</td>
-                      <td>{currency(line.unit_price)}</td>
+                      <td>{selCur(shown.unitPrice)}</td>
                       <td>
-                        {currency(line.discount_amount)}
-                        <small>{line.discount_percent}%</small>
+                        {selCur(shown.discountAmount)}
+                        <small>{shown.discountPercent}%</small>
                       </td>
                       <td>
-                        {currency(line.tax_amount ?? 0)}
+                        {selCur(line.tax_amount ?? 0)}
                         <small>{line.tax_percent ?? 0}%</small>
                       </td>
                       <td>
-                        <strong>{currency(line.subtotal)}</strong>
+                        <strong>{selCur(line.subtotal)}</strong>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
                 <div className="qd-totals">
               <div>
                 <span>Subtotal (after discount)</span>
-                <strong>{currency((selected.quotation_items ?? []).reduce((sum, line) => sum + Number(line.subtotal || 0), 0))}</strong>
+                <strong>{selCur((selected.quotation_items ?? []).reduce((sum, line) => sum + Number(line.subtotal || 0), 0))}</strong>
               </div>
               <div>
                 <span>Tax</span>
-                <strong>{currency(selected.tax_amount)}</strong>
+                <strong>{selCur(selected.tax_amount)}</strong>
               </div>
               <div className="qd-grand">
                 <span>Quotation total</span>
-                <strong>{currency(selected.total_amount)}</strong>
+                <strong>{selCur(selected.total_amount)}</strong>
               </div>
             </div>
             {selected.notes && (

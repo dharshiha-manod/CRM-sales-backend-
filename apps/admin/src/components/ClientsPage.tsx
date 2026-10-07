@@ -1,7 +1,9 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { collectionsInInr, ordersInInr } from '../lib/inr';
 import { useIndustry } from '../industry/IndustryContext';
 import { kpiClick } from '../lib/kpiClick';
+import { FmcgMarketFields } from './FmcgMarketFields';
 import './MasterDataPages.css';
 
 const PENDING_REQUIREMENT_CLIENT_KEY = 'fs-pending-requirement-client';
@@ -11,7 +13,7 @@ type IndustryField = { key: string; label: string; type: 'text' | 'number' | 'se
 const INDUSTRY_FIELDS: Record<string, IndustryField[]> = {
   FMCG: [
     { key: 'fssaiNumber', label: 'FSSAI license number', type: 'text', hint: '14 digits' },
-    { key: 'outletCategory', label: 'Outlet category', type: 'select', options: ['General trade', 'Modern trade', 'HoReCa', 'Institutional'] }
+    { key: 'outletCategory', label: 'Trade channel', type: 'select', options: ['General trade', 'Modern trade', 'HoReCa', 'Institutional'] }
   ],
   SCHOOL: [
     { key: 'boardAffiliation', label: 'Board affiliation', type: 'select', required: true, options: ['CBSE', 'ICSE', 'State Board', 'IB', 'Other'] },
@@ -35,9 +37,8 @@ const OUTLET_TYPES = [['wholesaler', 'Wholesaler'], ['retailer', 'Retailer'], ['
 type IndustryType = { id: string; code: string; name: string; status: string };
 type Contact = { id: string; name: string; designation?: string | null; is_primary: boolean; email?: string | null; phone?: string | null };
 type Assignment = { id: string; status: string; sales_representatives?: { employee_code: string; user_profiles?: { display_name?: string | null } | null } | null };
-type Client = { id: string; client_name: string; client_code: string; status: 'active' | 'inactive'; priority: 'low' | 'normal' | 'high' | 'critical'; current_stage?: string | null; created_at?: string | null; address?: string | null; city?: string | null; state?: string | null; latitude?: number | null; longitude?: number | null; gstin?: string | null; pan?: string | null; outlet_type?: string | null; credit_limit?: number | null; credit_days?: number | null; industry_type_id?: string | null; industry_details?: Record<string, unknown> | null; industry_types?: { id: string; code: string; name: string } | null; client_contacts?: Contact[]; sales_representative_client_assignments?: Assignment[]; client_type: string };
-type ClientForm = { clientCode: string; clientName: string; clientType: string; industryTypeId: string; outletType: string; gstin: string; pan: string; creditLimit: string; creditDays: string; streetAddress: string; city: string; state: string; industryDetails: Record<string, string>; priority: Client['priority']; status: Client['status'] };
-const blank: ClientForm = { clientCode: '', clientName: '', clientType: 'School', industryTypeId: '', outletType: '', gstin: '', pan: '', creditLimit: '', creditDays: '', streetAddress: '', city: '', state: '', industryDetails: {}, priority: 'normal', status: 'active' };
+type Client = { id: string; client_name: string; client_code: string; status: 'active' | 'inactive'; priority: 'low' | 'normal' | 'high' | 'critical'; current_stage?: string | null; created_at?: string | null; address?: string | null; city?: string | null; state?: string | null; latitude?: number | null; longitude?: number | null; gstin?: string | null; pan?: string | null; outlet_type?: string | null; credit_limit?: number | null; credit_days?: number | null; industry_type_id?: string | null; country_code?: string | null; currency_code?: string | null; industry_details?: Record<string, unknown> | null; industry_types?: { id: string; code: string; name: string } | null; client_contacts?: Contact[]; sales_representative_client_assignments?: Assignment[]; client_type: string };type ClientForm = { clientCode: string; clientName: string; clientType: string; industryTypeId: string; outletType: string; gstin: string; pan: string; creditLimit: string; creditDays: string; streetAddress: string; city: string; state: string; countryCode: string; currencyCode: string; industryDetails: Record<string, string>; priority: Client['priority']; status: Client['status'] };
+const blank: ClientForm = { clientCode: '', clientName: '', clientType: 'School', industryTypeId: '', outletType: '', gstin: '', pan: '', creditLimit: '', creditDays: '', streetAddress: '', city: '', state: '', countryCode: '', currencyCode: '', industryDetails: {}, priority: 'normal', status: 'active' };
 const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
 
 type TabOrder = { id: string; order_number: string; status: string; total_amount: number; created_at: string; client_id?: string };
@@ -63,6 +64,7 @@ export function ClientsPage() {
   const { activeIndustry, config } = useIndustry();
 
   const [items, setItems] = useState<Client[]>([]); const [industryTypes, setIndustryTypes] = useState<IndustryType[]>([]); const [form, setForm] = useState<ClientForm>(blank); const [search, setSearch] = useState(''); const [type, setType] = useState(''); const [priority, setPriority] = useState<'' | Client['priority']>(''); const [status, setStatus] = useState<'all' | Client['status']>('all'); const [editing, setEditing] = useState<Client | null>(null); const [viewing, setViewing] = useState<Client | null>(null); const [modal, setModal] = useState(false); const [message, setMessage] = useState(''); const [saving, setSaving] = useState(false); const [syncingAddress, setSyncingAddress] = useState(false); const [leadAddressOutOfSync, setLeadAddressOutOfSync] = useState(false);
+  const [market, setMarket] = useState<'all' | 'local' | 'international'>('all');
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
   const [allOrders, setAllOrders] = useState<TabOrder[]>([]); const [allCollections, setAllCollections] = useState<TabCollection[]>([]);
   const [allRequirements, setAllRequirements] = useState<TabRequirement[]>([]); const [allQuotations, setAllQuotations] = useState<TabQuotation[]>([]);
@@ -70,7 +72,7 @@ export function ClientsPage() {
   const [activeTab, setActiveTab] = useState<ClientTab>('overview'); const [tabData, setTabData] = useState<ClientTabData>(blankTabData); const [tabLoading, setTabLoading] = useState(false);
   const [onlyOutstanding, setOnlyOutstanding] = useState(false);
   const clientTypes = useMemo(() => [...new Set(items.map((item) => item.client_type).filter(Boolean))].sort(), [items]);
-  const activeIndustryType = useMemo(() => industryTypes.find((it) => it.code === activeIndustry.toUpperCase()), [industryTypes, activeIndustry]);
+  const activeIndustryType = useMemo(() => industryTypes.find((it) => it.code.toUpperCase() === activeIndustry.toUpperCase()), [industryTypes, activeIndustry]);
   const industryScoped = items.filter((item) => item.industry_type_id === activeIndustryType?.id);
   // How much each client still owes (orders minus collections). Used by the Outstanding card + its click filter.
   const outstandingByClient = useMemo(() => {
@@ -81,7 +83,9 @@ export function ClientsPage() {
     industryScoped.forEach((item) => { result[item.id] = Math.max(0, (sales[item.id] ?? 0) - (collected[item.id] ?? 0)); });
     return result;
   }, [industryScoped, allOrders, allCollections]);
-  const filtered = industryScoped.filter((item) => (!type || item.client_type === type) && (status === 'all' || item.status === status) && (!priority || item.priority === priority) && (!onlyOutstanding || (outstandingByClient[item.id] ?? 0) > 0));
+  const isFmcgView = activeIndustryType?.code?.toLowerCase() === 'fmcg';
+  const marketOf = (item: Client) => ((item.country_code ?? '').toUpperCase() && (item.country_code ?? '').toUpperCase() !== 'IN' ? 'international' : 'local');
+  const filtered = industryScoped.filter((item) => (!type || item.client_type === type) && (!isFmcgView || market === 'all' || marketOf(item) === market) && (status === 'all' || item.status === status) && (!priority || item.priority === priority) && (!onlyOutstanding || (outstandingByClient[item.id] ?? 0) > 0));
   const activeCount = industryScoped.filter((item) => item.status === 'active').length;
   const buyersCount = industryScoped.filter((item) => item.client_type?.toLowerCase() === 'buyer').length;
   const suppliersCount = industryScoped.filter((item) => item.client_type?.toLowerCase() === 'supplier').length;
@@ -100,15 +104,15 @@ const stageOf = (clientId: string): string => {
   return 'New';
 };
   const totalOutstanding = useMemo(() => Object.values(outstandingByClient).reduce((sum, value) => sum + value, 0), [outstandingByClient]);
-  const selectedIndustryCode = useMemo(() => industryTypes.find((it) => it.id === form.industryTypeId)?.code ?? null, [industryTypes, form.industryTypeId]);
+  const selectedIndustryCode = useMemo(() => industryTypes.find((it) => it.id === form.industryTypeId)?.code?.toUpperCase() ?? null, [industryTypes, form.industryTypeId]);
   const industryFields = selectedIndustryCode ? INDUSTRY_FIELDS[selectedIndustryCode] ?? [] : [];
   const load = async () => { try { setMessage(''); const query = new URLSearchParams(search.trim() ? { search: search.trim() } : {}); setItems((await api<{ data: Client[] }>(`/clients?${query}`)).data ?? []); } catch (e) { setMessage((e as Error).message); } };
   const loadIndustryTypes = async () => { try { setIndustryTypes((await api<{ data: IndustryType[] }>('/industry-types?status=active')).data ?? []); } catch { /* non-fatal */ } };
   const loadFinancials = async () => {
     try {
       const [orders, collections, requirements, quotations, followUps] = await Promise.all([
-        api<{ data: TabOrder[] }>('/orders').catch(() => ({ data: [] })),
-        api<{ data: TabCollection[] }>('/collections').catch(() => ({ data: [] })),
+        api<{ data: TabOrder[] }>('/orders').then(ordersInInr).catch(() => ({ data: [] })),
+        api<{ data: TabCollection[] }>('/collections').then(collectionsInInr).catch(() => ({ data: [] })),
         api<{ data: TabRequirement[] }>('/requirements').catch(() => ({ data: [] })),
         api<{ data: TabQuotation[] }>('/quotations').catch(() => ({ data: [] })),
         api<{ data: TabFollowUp[] }>('/follow-ups').catch(() => ({ data: [] })),
@@ -119,16 +123,15 @@ const stageOf = (clientId: string): string => {
     } catch { /* non-fatal */ }
   };
   useEffect(() => { void load(); void loadIndustryTypes(); void loadFinancials(); }, []);
-   const openEdit = async (item: Client) => { setEditing(item); setForm({ clientCode: item.client_code, clientName: item.client_name, clientType: item.client_type, industryTypeId: item.industry_type_id ?? '', outletType: item.outlet_type ?? '', gstin: item.gstin ?? '', pan: item.pan ?? '', creditLimit: item.credit_limit != null ? String(item.credit_limit) : '', creditDays: item.credit_days != null ? String(item.credit_days) : '', streetAddress: item.address ?? '', city: item.city ?? '', state: item.state ?? '', industryDetails: Object.fromEntries(Object.entries(item.industry_details ?? {}).map(([k, v]) => [k, String(v)])), priority: item.priority, status: item.status }); setLeadAddressOutOfSync(false); setMessage(''); setModal(true); try { const status = await api<{ data: { differs: boolean } }>(`/clients/${item.id}/address-sync-status`); setLeadAddressOutOfSync(status.data.differs); } catch { /* The edit form remains usable if sync-status lookup is unavailable. */ } };
-  const view = async (id: string) => {
+   const openEdit = async (item: Client) => { setEditing(item); setForm({ clientCode: item.client_code, clientName: item.client_name, clientType: item.client_type, industryTypeId: item.industry_type_id ?? '', outletType: item.outlet_type ?? '', gstin: item.gstin ?? '', pan: item.pan ?? '', creditLimit: item.credit_limit != null ? String(item.credit_limit) : '', creditDays: item.credit_days != null ? String(item.credit_days) : '', streetAddress: item.address ?? '', city: item.city ?? '', state: item.state ?? '', countryCode: item.country_code ?? '', currencyCode: item.currency_code ?? '', industryDetails: Object.fromEntries(Object.entries(item.industry_details ?? {}).map(([k, v]) => [k, String(v)])), priority: item.priority, status: item.status }); setLeadAddressOutOfSync(false); setMessage(''); setModal(true); try { const status = await api<{ data: { differs: boolean } }>(`/clients/${item.id}/address-sync-status`); setLeadAddressOutOfSync(status.data.differs); } catch { /* The edit form remains usable if sync-status lookup is unavailable. */ } };  const view = async (id: string) => {
     try {
       setViewing((await api<{ data: Client }>(`/clients/${id}`)).data);
       setActiveTab('overview');
       setTabLoading(true);
       const [orders, visits, collections, followUps, requirements, quotations] = await Promise.all([
-        api<{ data: TabOrder[] }>('/orders').catch(() => ({ data: [] })),
+        api<{ data: TabOrder[] }>('/orders').then(ordersInInr).catch(() => ({ data: [] })),
         api<{ data: TabVisit[] }>('/field-visits').catch(() => ({ data: [] })),
-        api<{ data: TabCollection[] }>('/collections').catch(() => ({ data: [] })),
+        api<{ data: TabCollection[] }>('/collections').then(collectionsInInr).catch(() => ({ data: [] })),
         api<{ data: TabFollowUp[] }>('/follow-ups').catch(() => ({ data: [] })),
         api<{ data: TabRequirement[] }>('/requirements').catch(() => ({ data: [] })),
         api<{ data: TabQuotation[] }>('/quotations').catch(() => ({ data: [] })),
@@ -163,7 +166,7 @@ const stageOf = (clientId: string): string => {
 // NEW — only send industryTypeId on edit if it actually changed, so the
 // server doesn't needlessly re-run industry resolution/validation on every
 // unrelated field edit (this is what was tripping the 500).
-          const payload = { clientCode: form.clientCode, clientName: form.clientName, clientType: selectedIndustryCode === 'FMCG' ? (OUTLET_TYPES.find(([value]) => value === form.outletType)?.[1] ?? 'Retailer') : form.clientType, ...(editing &&form.industryTypeId === (editing.industry_type_id ?? '') ? {} : { industryTypeId: form.industryTypeId || null }), outletType: form.outletType || null, gstin: gstinValue || null, pan: panValue || null, address: form.streetAddress.trim() || null, city: form.city.trim() || null, state: form.state.trim() || null, creditLimit: form.creditLimit ? Number(form.creditLimit) : null, creditDays: form.creditDays ? Number(form.creditDays) : null, industryDetails: Object.fromEntries(Object.entries(form.industryDetails).filter(([, v]) => v !== '')), priority: form.priority, status: form.status };
+          const payload = { clientCode: form.clientCode, clientName: form.clientName, clientType: selectedIndustryCode === 'FMCG' ? (OUTLET_TYPES.find(([value]) => value === form.outletType)?.[1] ?? 'Retailer') : form.clientType, ...(editing &&form.industryTypeId === (editing.industry_type_id ?? '') ? {} : { industryTypeId: form.industryTypeId || null }), outletType: form.outletType || null, gstin: gstinValue || null, pan: panValue || null, address: form.streetAddress.trim() || null, city: form.city.trim() || null, state: form.state.trim() || null, creditLimit: form.creditLimit ? Number(form.creditLimit) : null, creditDays: form.creditDays ? Number(form.creditDays) : null, ...(selectedIndustryCode === 'FMCG' ? { countryCode: form.countryCode || null, currencyCode: form.currencyCode || null } : {}), industryDetails: Object.fromEntries(Object.entries(form.industryDetails).filter(([, v]) => v !== '')), priority: form.priority, status: form.status };
        await api(editing ? `/clients/${editing.id}` : '/clients', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });      setModal(false); setEditing(null); setMessage(editing ? 'Client updated successfully.' : 'Client created successfully.'); await load();
     } catch (e) {
       const err = e as Error & { details?: { fieldErrors?: Record<string, string[]> } };
@@ -225,6 +228,11 @@ const stageOf = (clientId: string): string => {
         <select value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
           <option value="all">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option>
         </select>
+        {isFmcgView && (
+          <select value={market} onChange={(e) => setMarket(e.target.value as typeof market)}>
+            <option value="all">Local + International</option><option value="local">Local (India)</option><option value="international">International</option>
+          </select>
+        )}
         <button type="button" className="link-button" onClick={clearFilters} disabled={!type && status === 'all' && !priority}>Clear filters</button>
       </div>
     </div>
@@ -239,7 +247,7 @@ const stageOf = (clientId: string): string => {
             <tr key={item.id}>
               <td><strong>{item.client_name}</strong><br /><small className="lead-code">{item.client_code}</small></td>
               <td>{item.industry_types?.name ?? <span className="empty-row">Not set</span>}</td>
-              <td>{item.client_type}</td>
+              <td>{item.client_type}{isFmcgView && <><br /><span className={`status-badge ${marketOf(item) === 'international' ? 'status-pending' : 'status-completed'}`}>{marketOf(item) === 'international' ? `International${item.country_code ? ` · ${item.country_code}` : ''}` : 'Local'}</span></>}</td>
               <td><span className={`status-badge stage-${stageOf(item.id).toLowerCase()}`}>{stageOf(item.id)}</span></td>
               <td>{item.client_contacts?.find((c) => c.is_primary)?.email || item.client_contacts?.[0]?.email || <small className="lead-code">No email</small>}<br /><small className="lead-code">{item.client_contacts?.find((c) => c.is_primary)?.phone || item.client_contacts?.[0]?.phone || '—'}</small></td>
               <td>{item.created_at ? new Intl.DateTimeFormat(undefined, { dateStyle: 'short' }).format(new Date(item.created_at)) : '—'}</td>
@@ -355,6 +363,13 @@ const stageOf = (clientId: string): string => {
   {selectedIndustryCode !== 'TRADING' && (
               <label>Outlet type<select value={form.outletType} onChange={(e) => setForm({ ...form, outletType: e.target.value })}><option value="">Not set</option>{OUTLET_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             )}
+                   {selectedIndustryCode === 'FMCG' && (
+              <FmcgMarketFields
+                countryCode={form.countryCode}
+                currencyCode={form.currencyCode}
+                onChange={(countryCode, currencyCode) => setForm((f) => ({ ...f, countryCode, currencyCode }))}
+              />
+            )}
             {industryFields.map((field) => (
               <label key={field.key}>
                 {field.label}{field.required ? ' *' : ''}
@@ -413,8 +428,8 @@ const stageOf = (clientId: string): string => {
                   <dl className="detail-dl">
                     <dt>Client code</dt><dd>{viewing.client_code}</dd>
                     <dt>Industry</dt><dd>{viewing.industry_types?.name ?? 'Not set'}</dd>
-                      {viewing.industry_types?.code !== 'FMCG' && (<><dt>Type</dt><dd>{viewing.client_type}</dd></>)}
-                 {viewing.industry_types?.code !== 'TRADING' && (
+                      {viewing.industry_types?.code?.toUpperCase() !== 'FMCG' && (<><dt>Type</dt><dd>{viewing.client_type}</dd></>)}
+               {viewing.industry_types?.code?.toUpperCase() !== 'TRADING' && (
                       <>
                         <dt>Outlet type</dt><dd>{OUTLET_TYPES.find(([value]) => value === viewing.outlet_type)?.[1] ?? 'Not set'}</dd>
                       </>
@@ -422,12 +437,13 @@ const stageOf = (clientId: string): string => {
                     <dt>GSTIN</dt><dd>{viewing.gstin || 'Not recorded'}</dd>
                     <dt>PAN</dt><dd>{viewing.pan || 'Not recorded'}</dd>
                     <dt>Credit terms</dt><dd>{viewing.credit_limit != null ? `${money(viewing.credit_limit)} limit · ${viewing.credit_days ?? 0} days` : 'Not set'}</dd>
+                    <dt>Credit available</dt><dd>{viewing.credit_limit != null ? `${money(Math.max(0, viewing.credit_limit - outstanding))} left of ${money(viewing.credit_limit)}${outstanding > viewing.credit_limit ? ' — over limit, new orders are blocked' : ''}` : 'No limit set'}</dd>
                     <dt>Priority</dt><dd>{viewing.priority}</dd>
                     <dt>Current stage</dt><dd><span className={`status-badge stage-${stageOf(viewing.id).toLowerCase()}`}>{stageOf(viewing.id)}</span></dd>
                     <dt>Status</dt><dd><span className={`status-badge ${viewing.status}`}>{viewing.status}</span></dd>
                     <dt>Location</dt><dd>{viewing.address || viewing.city || 'Not recorded'}</dd>
                     <dt>GPS</dt><dd>{viewing.latitude != null ? `${viewing.latitude}, ${viewing.longitude}` : 'Not recorded'}</dd>
-                    {viewing.industry_types && (INDUSTRY_FIELDS[viewing.industry_types.code] ?? []).map((field) => <div key={field.key} style={{ display: 'contents' }}><dt>{field.label}</dt><dd>{String(viewing.industry_details?.[field.key] ?? 'Not recorded')}</dd></div>)}
+                    {viewing.industry_types && (INDUSTRY_FIELDS[viewing.industry_types.code.toUpperCase()] ?? []).map((field) => <div key={field.key} style={{ display: 'contents' }}><dt>{field.label}</dt><dd>{String(viewing.industry_details?.[field.key] ?? 'Not recorded')}</dd></div>)}
                     <dt>Contacts</dt><dd>{viewing.client_contacts?.map((contact) => `${contact.name}${contact.is_primary ? ' (primary)' : ''}`).join(', ') || 'None'}</dd>
                     <dt>Email</dt><dd>{viewing.client_contacts?.find((c) => c.is_primary)?.email || viewing.client_contacts?.[0]?.email || '—'}</dd>
                     <dt>Phone</dt><dd>{viewing.client_contacts?.find((c) => c.is_primary)?.phone || viewing.client_contacts?.[0]?.phone || '—'}</dd>

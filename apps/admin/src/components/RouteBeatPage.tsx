@@ -1,5 +1,8 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { kpiClick } from '../lib/kpiClick';
+import { useIndustryScope } from '../industry/useIndustryScope';
+import { KpiDetailModal } from './KpiDetailModal';
 import './MasterDataPages.css';
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
@@ -8,7 +11,7 @@ const dayLabels: Record<Day, string> = { mon: 'Mon', tue: 'Tue', wed: 'Wed', thu
 const dayByJsIndex: Day[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const todayKey: Day = dayByJsIndex[new Date().getDay()];
 
-type Client = { id: string; client_code: string; client_name: string; city?: string | null; status: string };
+type Client = { id: string; client_code: string; client_name: string; city?: string | null; status: string; industry_type_id?: string | null };
 type Representative = { id: string; employee_code: string; status: string; user_profiles?: { display_name?: string | null } | null };
 type Visit = { id: string; status: string; check_in_time: string; client_id?: string | null };
 
@@ -16,35 +19,10 @@ type Beat = { id: string; name: string; area: string; repId: string; days: Day[]
 type BeatForm = { name: string; area: string; repId: string; days: Day[]; status: Beat['status'] };
 const blankForm: BeatForm = { name: '', area: '', repId: '', days: [], status: 'active' };
 
-// Beats / routes and their outlet assignments have no backend table yet — persisted
-// client-side in localStorage, same approach used for order meta and rep targets
-// elsewhere in this app. Client, representative and visit data below are all real,
-// live records pulled from the existing API.
-const STORAGE_KEY = 'fs-route-beats';
-type StoredState = { beats: Beat[]; assignments: Record<string, string[]> };
-const blankStored: StoredState = { beats: [], assignments: {} };
-function loadStored(): StoredState {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw ? { ...blankStored, ...JSON.parse(raw) } : blankStored;
-  } catch {
-    return blankStored;
-  }
-}
-function saveStored(state: StoredState) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    /* best-effort */
-  }
-}
-function newId(): string {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `beat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  }
-}
+// Beats are saved in the database (route_beats) and shared by every admin; the assigned rep sees them too.
+type BeatRow = { id: string; name: string; area: string | null; representative_id: string | null; days: string[]; status: 'active' | 'inactive'; client_ids: string[] };
+const toServerDays = (days: Day[]) => days.map((d) => dayLabels[d]);
+const fromServerDays = (days: string[]) => days.map((d) => d.toLowerCase()).filter((d): d is Day => (DAYS as readonly string[]).includes(d));
 function isToday(iso: string): boolean {
   const d = new Date(iso);
   const now = new Date();
@@ -64,7 +42,8 @@ function initials(name: string): string {
 }
 
 export function RouteBeatPage() {
-  const [clients, setClients] = useState<Client[]>([]);
+  const { matchesActiveIndustry } = useIndustryScope();
+  const [allClients, setClients] = useState<Client[]>([]);
   const [reps, setReps] = useState<Representative[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,6 +64,7 @@ export function RouteBeatPage() {
   const [managing, setManaging] = useState<Beat | null>(null);
   const [clientSearch, setClientSearch] = useState('');
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
+  const [kpiView, setKpiView] = useState<null | 'outlets' | 'covered' | 'checkins'>(null);
 
   async function load() {
     setLoading(true);
@@ -104,17 +84,27 @@ export function RouteBeatPage() {
       setLoading(false);
     }
   }
+  async function loadBeats() {
+    try {
+      const res = await api<{ data: BeatRow[] }>('/fmcg/beats');
+      const rows = res.data ?? [];
+      setBeats(rows.map((r) => ({ id: r.id, name: r.name, area: r.area ?? '', repId: r.representative_id ?? '', days: fromServerDays(r.days ?? []), status: r.status })));
+      setAssignments(Object.fromEntries(rows.map((r) => [r.id, r.client_ids ?? []])));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to load routes.');
+    }
+  }
   useEffect(() => {
     void load();
-    const stored = loadStored();
-    setBeats(stored.beats);
-    setAssignments(stored.assignments);
+    void loadBeats();
   }, []);
 
-  function persist(nextBeats: Beat[], nextAssignments: Record<string, string[]>) {
-    setBeats(nextBeats);
-    setAssignments(nextAssignments);
-    saveStored({ beats: nextBeats, assignments: nextAssignments });
+  /** Creates (no id) or updates one beat on the server, then reloads so every admin sees the same thing. */
+  async function pushBeat(beat: Omit<Beat, 'id'> & { id?: string }, clientIds: string[]) {
+    const body = JSON.stringify({ name: beat.name, area: beat.area || null, representativeId: beat.repId || null, days: toServerDays(beat.days), status: beat.status, clientIds });
+    if (beat.id) await api(`/fmcg/beats/${beat.id}`, { method: 'PUT', body });
+    else await api('/fmcg/beats', { method: 'POST', body });
+    await loadBeats();
   }
 
   const repName = (id: string) => {
@@ -159,7 +149,7 @@ export function RouteBeatPage() {
     setForm((f) => ({ ...f, days: f.days.includes(day) ? f.days.filter((d) => d !== day) : [...f.days, day] }));
   }
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     if (!form.name.trim()) {
       setMessage('Enter a beat / route name.');
@@ -167,36 +157,30 @@ export function RouteBeatPage() {
     }
     setSaving(true);
     try {
+      const next = { name: form.name.trim(), area: form.area.trim(), repId: form.repId, days: form.days, status: form.status };
       if (editing) {
-        const next = beats.map((b) =>
-          b.id === editing.id ? { ...b, name: form.name.trim(), area: form.area.trim(), repId: form.repId, days: form.days, status: form.status } : b
-        );
-        persist(next, assignments);
+        await pushBeat({ ...next, id: editing.id }, assignments[editing.id] ?? []);
         setMessage('Beat updated successfully.');
       } else {
-        const id = newId();
-        const next = [...beats, { id, name: form.name.trim(), area: form.area.trim(), repId: form.repId, days: form.days, status: form.status }];
-        persist(next, { ...assignments, [id]: [] });
+        await pushBeat(next, []);
         setMessage('Beat created successfully.');
       }
       setModal(false);
       setEditing(null);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : 'Unable to save the beat.');
     } finally {
       setSaving(false);
     }
   }
 
-  function toggleStatus(beat: Beat) {
-    const next = beats.map((b) => (b.id === beat.id ? { ...b, status: (b.status === 'active' ? 'inactive' : 'active') as Beat['status'] } : b));
-    persist(next, assignments);
+  async function toggleStatus(beat: Beat) {
+    try { await pushBeat({ ...beat, status: beat.status === 'active' ? 'inactive' : 'active' }, assignments[beat.id] ?? []); } catch (caught) { setError(caught instanceof Error ? caught.message : 'Unable to update the beat.'); }
   }
 
-  function removeBeat(beat: Beat) {
+  async function removeBeat(beat: Beat) {
     if (!window.confirm(`Remove "${beat.name}"? This cannot be undone.`)) return;
-    const next = beats.filter((b) => b.id !== beat.id);
-    const restAssignments = { ...assignments };
-    delete restAssignments[beat.id];
-    persist(next, restAssignments);
+    try { await api(`/fmcg/beats/${beat.id}`, { method: 'DELETE' }); await loadBeats(); } catch (caught) { setError(caught instanceof Error ? caught.message : 'Unable to remove the beat.'); }
   }
   function openManage(beat: Beat) {
     setManaging(beat);
@@ -210,12 +194,14 @@ export function RouteBeatPage() {
     const rect = event.currentTarget.getBoundingClientRect();
     setMenuFor({ id: beatId, top: rect.bottom + 6, left: Math.max(8, rect.right - 168) });
   }
-  function toggleClientAssignment(clientId: string) {
+  async function toggleClientAssignment(clientId: string) {
     if (!managing) return;
     const current = assignments[managing.id] ?? [];
     const next = current.includes(clientId) ? current.filter((id) => id !== clientId) : [...current, clientId];
-    persist(beats, { ...assignments, [managing.id]: next });
+    setAssignments((a) => ({ ...a, [managing.id]: next })); // show the tick immediately
+    try { await pushBeat(managing, next); } catch (caught) { setError(caught instanceof Error ? caught.message : 'Unable to update outlets.'); await loadBeats(); }
   }
+  const clients = allClients.filter((c) => matchesActiveIndustry(c.industry_type_id));
   const manageableClients = clients.filter(
     (c) => !clientSearch || `${c.client_name} ${c.client_code} ${c.city ?? ''}`.toLowerCase().includes(clientSearch.toLowerCase())
   );
@@ -225,6 +211,14 @@ export function RouteBeatPage() {
   const totalDoneToday = beats.filter((b) => b.days.includes(todayKey)).reduce((sum, b) => sum + coverage(b).done, 0);
   const totalPlannedToday = beats.filter((b) => b.days.includes(todayKey)).reduce((sum, b) => sum + coverage(b).assigned, 0);
   const coveragePct = totalPlannedToday > 0 ? Math.round((totalDoneToday / totalPlannedToday) * 100) : 0;
+
+  // Rows behind the KPI cards (shown when a card is clicked).
+  const clientById = new Map(clients.map((c) => [c.id, c]));
+  const visitedTodayIds = new Set(visits.filter((v) => v.client_id && isToday(v.check_in_time)).map((v) => v.client_id as string));
+  const assignedOutletRows = beats.flatMap((b) => (assignments[b.id] ?? []).map((clientId) => ({ beat: b, clientId, client: clientById.get(clientId) })));
+  const plannedTodayRows = assignedOutletRows.filter((r) => r.beat.days.includes(todayKey));
+  const todayVisits = visits.filter((v) => v.client_id && isToday(v.check_in_time));
+  const timeLabel = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   return (
     <section className="page-panel master-page route-beat-page">
@@ -237,7 +231,7 @@ export function RouteBeatPage() {
       </div>
 
       <div className="kpi-grid">
-        <div className="kpi-card" data-tone="ink">
+      <div className="kpi-card" data-tone="ink" {...kpiClick(dayFilter === 'all' && statusFilter === 'all' && !search.trim(), () => { setDayFilter('all'); setStatusFilter('all'); setSearch(''); })}>
           <div className="kpi-icon">⌖</div>
           <div>
             <span>Beats / routes</span>
@@ -245,15 +239,14 @@ export function RouteBeatPage() {
             <small>{activeBeats} active</small>
           </div>
         </div>
-        <div className="kpi-card" data-tone="amber">
-          <div className="kpi-icon">▤</div>
+<div className="kpi-card" data-tone="amber" {...kpiClick(kpiView === 'outlets', () => setKpiView('outlets'))}>          <div className="kpi-icon">▤</div>
           <div>
             <span>Outlets assigned</span>
             <strong>{totalAssigned}</strong>
             <small>{clients.length} active outlets total</small>
           </div>
         </div>
-        <div className="kpi-card" data-tone="green">
+      <div className="kpi-card" data-tone="green" {...kpiClick(kpiView === 'covered', () => setKpiView('covered'))}>
           <div className="kpi-icon">✓</div>
           <div>
             <span>Covered today ({dayLabels[todayKey]})</span>
@@ -263,7 +256,7 @@ export function RouteBeatPage() {
             <div className="kpi-progress"><div className="kpi-progress-fill" style={{ width: `${coveragePct}%` }} /></div>
           </div>
         </div>
-        <div className="kpi-card" data-tone="blue">
+      <div className="kpi-card" data-tone="blue" {...kpiClick(kpiView === 'checkins', () => setKpiView('checkins'))}>
           <div className="kpi-icon">◎</div>
           <div>
             <span>Check-ins today</span>
@@ -592,6 +585,55 @@ export function RouteBeatPage() {
             </div>
           </div>
         </div>
+      )}
+   
+      {kpiView === 'outlets' && (
+        <KpiDetailModal
+          eyebrow="OUTLETS ASSIGNED"
+          title="Outlets assigned to beats"
+          subtitle={`${assignedOutletRows.length} outlet assignment(s) across ${beats.length} beat(s)`}
+          columns={['Outlet', 'Code', 'City', 'Beat / route', 'Representative']}
+          rows={assignedOutletRows.map((r) => ({ id: `${r.beat.id}-${r.clientId}`, cells: [r.client?.client_name ?? '—', r.client?.client_code ?? '—', r.client?.city || '—', r.beat.name, repName(r.beat.repId)] }))}
+          emptyText="No outlets are assigned to any beat yet."
+          onClose={() => setKpiView(null)}
+        />
+      )}
+
+      {kpiView === 'covered' && (
+        <KpiDetailModal
+          eyebrow={`COVERED TODAY (${dayLabels[todayKey].toUpperCase()})`}
+          title="Today's planned outlets"
+          subtitle={`${totalDoneToday} of ${totalPlannedToday} planned outlets visited today`}
+          columns={['Outlet', 'Beat / route', 'Representative', 'Status']}
+          rows={plannedTodayRows.map((r) => ({
+            id: `${r.beat.id}-${r.clientId}`,
+            cells: [
+              r.client?.client_name ?? '—',
+              r.beat.name,
+              repName(r.beat.repId),
+              visitedTodayIds.has(r.clientId)
+                ? <span className="status-badge status-completed">Visited</span>
+                : <span className="status-badge status-pending">Pending</span>,
+            ],
+          }))}
+          emptyText={`No beats are planned for ${dayLabels[todayKey]} yet.`}
+          onClose={() => setKpiView(null)}
+        />
+      )}
+
+      {kpiView === 'checkins' && (
+        <KpiDetailModal
+          eyebrow="CHECK-INS TODAY"
+          title="Today's outlet check-ins"
+          subtitle={`${todayVisits.length} check-in(s) recorded today`}
+          columns={['Outlet', 'Code', 'Time', 'Status']}
+          rows={todayVisits.map((v) => ({
+            id: v.id,
+            cells: [clientById.get(v.client_id as string)?.client_name ?? '—', clientById.get(v.client_id as string)?.client_code ?? '—', timeLabel(v.check_in_time), v.status.replaceAll('_', ' ')],
+          }))}
+          emptyText="No check-ins recorded today."
+          onClose={() => setKpiView(null)}
+        />
       )}
     </section>
   );

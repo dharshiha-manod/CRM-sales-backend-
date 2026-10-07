@@ -27,8 +27,10 @@ type OrderRef = {
   order_number: string;
   status: string;
   total_amount: number;
+  currency_code?: string | null;
+  exchange_rate?: number | null;
   created_at: string;
-  clients?: { client_code?: string; client_name?: string } | null;
+  clients?: { client_code?: string; client_name?: string; credit_days?: number | null } | null;
   sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null;
 };
 
@@ -46,7 +48,7 @@ type CollectionApiRecord = {
   notes?: string | null;
   created_at?: string | null;
   order_id?: string | null;
-  sale_orders?: { id?: string; order_number?: string } | null;
+  sale_orders?: { id?: string; order_number?: string; currency_code?: string | null; exchange_rate?: number | null } | null;
 };
 
 type PaymentStatus = 'pending' | 'partially_paid' | 'paid' | 'overdue';
@@ -60,7 +62,7 @@ const STATUS_CLASS: Record<PaymentStatus, string> = { pending: 'status-pending',
 // CREDIT_DAYS removed — now sourced live from Settings → Collection
 // Configuration → "Overdue Threshold (Days)" via useOrgSettings(), below.
 
-const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Number(value || 0));
+const money = (value: number, code = 'INR') => new Intl.NumberFormat(code === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: code, maximumFractionDigits: code === 'INR' ? 0 : 2 }).format(Number(value || 0));
 const dateLabel = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value));
 const monthLabel = (value: string) => new Intl.DateTimeFormat(undefined, { month: 'short', year: '2-digit' }).format(new Date(`${value}-01T00:00:00`));
 const todayIso = () => new Date().toISOString().slice(0, 10);
@@ -77,8 +79,11 @@ type CollectionRow = {
   clientName: string;
   repName: string;
   invoiceAmount: number;
+  returnsCredit: number;
   paidAmount: number;
   balance: number;
+  currency: string;
+  rate: number;
   status: PaymentStatus;
   orderDate: string;
   dueDate: string;
@@ -190,10 +195,13 @@ export function CollectionsPage() {
       .filter((order) => clientMatchesActiveIndustry(order.clients?.client_code))
       .map((order) => {
         const pays = paymentsByOrder.get(order.id) ?? paymentsByOrder.get(order.order_number) ?? [];
-        const invoiceAmount = Number(order.total_amount || 0);
+        // Approved returns / damage are credit notes, so the amount still to be collected is the order total minus them.
+        const returnsCredit = Number((order as { returns_credit?: number | null }).returns_credit ?? 0);
+        const invoiceAmount = Number(order.total_amount || 0) - returnsCredit;
         const paidAmount = pays.reduce((sum, p) => sum + Number(p.amount || 0), 0);
         const balance = Math.max(0, invoiceAmount - paidAmount);
-             const dueDate = addDays(order.created_at, orgSettings.collection.overdueThresholdDays);
+             // Each client's own Credit days decides when their order is due; the Settings value is only the fallback for clients without one.
+             const dueDate = addDays(order.created_at, order.clients?.credit_days ?? orgSettings.collection.overdueThresholdDays);
         const lastPaymentDate = pays.length
           ? [...pays].sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? '')).at(-1)!.created_at ?? null
           : null;
@@ -204,9 +212,12 @@ export function CollectionsPage() {
           clientCode: order.clients?.client_code,
           clientName: order.clients?.client_name ?? order.clients?.client_code ?? 'Unknown client',
           repName: order.sales_representatives?.user_profiles?.display_name ?? order.sales_representatives?.employee_code ?? 'Unassigned',
-          invoiceAmount,
+                  invoiceAmount,
+          returnsCredit,
           paidAmount,
           balance,
+          currency: order.currency_code ?? 'INR',
+          rate: Number(order.exchange_rate ?? 1) || 1,
           status: computeStatus(balance, paidAmount, dueDate),
           orderDate: order.created_at,
           dueDate,
@@ -274,7 +285,7 @@ export function CollectionsPage() {
   const sortIndicator = (field: SortField) => (sort.field !== field ? '' : sort.dir === 'asc' ? ' ▲' : ' ▼');
 
   // ── KPIs (full industry-scoped ledger, independent of the table's own filters) ──
-  const totalOutstanding = useMemo(() => rows.reduce((sum, r) => sum + r.balance, 0), [rows]);
+  const totalOutstanding = useMemo(() => rows.reduce((sum, r) => sum + r.balance * r.rate, 0), [rows]);
   const thisMonthKey = todayIso().slice(0, 7);
   const lastMonthKey = (() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7); })();
   const scopedPayments = useMemo(() => {
@@ -282,15 +293,15 @@ export function CollectionsPage() {
     const orderNumbers = new Set(rows.map((r) => r.orderNumber));
     return payments.filter((p) => (p.order_id && orderIds.has(p.order_id)) || (p.sale_orders?.order_number && orderNumbers.has(p.sale_orders.order_number)));
   }, [payments, rows]);
-  const collectedInMonth = (key: string) => scopedPayments.filter((p) => monthKey(p.created_at ?? '') === key).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const collectedInMonth = (key: string) => scopedPayments.filter((p) => monthKey(p.created_at ?? '') === key).reduce((sum, p) => sum + Number(p.amount || 0) * (Number(p.sale_orders?.exchange_rate ?? 1) || 1), 0);
   const collectedThisMonth = useMemo(() => collectedInMonth(thisMonthKey), [scopedPayments]); // eslint-disable-line react-hooks/exhaustive-deps
   const collectedLastMonth = useMemo(() => collectedInMonth(lastMonthKey), [scopedPayments]); // eslint-disable-line react-hooks/exhaustive-deps
   const monthTrendPct = collectedLastMonth > 0 ? Math.round(((collectedThisMonth - collectedLastMonth) / collectedLastMonth) * 100) : (collectedThisMonth > 0 ? 100 : 0);
   const pendingRecords = useMemo(() => rows.filter((r) => r.status !== 'paid'), [rows]);
   const overdueRecords = useMemo(() => rows.filter((r) => r.status === 'overdue'), [rows]);
-  const overdueAmount = useMemo(() => overdueRecords.reduce((sum, r) => sum + r.balance, 0), [overdueRecords]);
-  const totalDue = useMemo(() => rows.reduce((sum, r) => sum + r.invoiceAmount, 0), [rows]);
-  const totalCollected = useMemo(() => rows.reduce((sum, r) => sum + r.paidAmount, 0), [rows]);
+  const overdueAmount = useMemo(() => overdueRecords.reduce((sum, r) => sum + r.balance * r.rate, 0), [overdueRecords]);
+  const totalDue = useMemo(() => rows.reduce((sum, r) => sum + r.invoiceAmount * r.rate, 0), [rows]);
+  const totalCollected = useMemo(() => rows.reduce((sum, r) => sum + r.paidAmount * r.rate, 0), [rows]);
   const collectionRate = totalDue > 0 ? Math.round((totalCollected / totalDue) * 100) : 0;
 
   // ── Charts ──
@@ -349,7 +360,7 @@ export function CollectionsPage() {
     if (!activeRow) { setPayError('Select a client and order to record this collection against.'); return; }
     const amount = Number(payAmount);
     if (!amount || amount <= 0) { setPayError('Enter a collection amount greater than zero.'); return; }
-    if (amount > activeRow.balance + 0.5) { setPayError(`Amount exceeds the outstanding balance of ${money(activeRow.balance)}.`); return; }
+    if (amount > activeRow.balance + 0.5) { setPayError(`Amount exceeds the outstanding balance of ${money(activeRow.balance, activeRow.currency)}.`); return; }
     setSaving(true);
     try {
       await api('/collections', {
@@ -362,7 +373,7 @@ export function CollectionsPage() {
           notes: payNotes.trim() || null,
         }),
       });
-      pushToast(`Collection of ${money(amount)} recorded for ${activeRow.clientName}.`);
+      pushToast(`Collection of ${money(amount, activeRow.currency)} recorded for ${activeRow.clientName}.`);
       setPayModal(false);
       await load();
     } catch (caught) {
@@ -515,9 +526,9 @@ export function CollectionsPage() {
                   <td><strong>{row.clientName}</strong></td>
                   <td>{row.orderNumber}</td>
                   <td>{row.repName}</td>
-                  <td className="num">{money(row.invoiceAmount)}</td>
-                  <td className="num">{money(row.paidAmount)}</td>
-                  <td className={`num ${row.balance > 0 ? 'num-due' : ''}`}>{money(row.balance)}</td>
+             <td className="num">{money(row.invoiceAmount, row.currency)}{row.returnsCredit > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>after {money(row.returnsCredit, row.currency)} returns credit</small>}</td>
+                  <td className="num">{money(row.paidAmount, row.currency)}</td>
+                  <td className={`num ${row.balance > 0 ? 'num-due' : ''}`}>{money(row.balance, row.currency)}</td>
                   <td><span className={`status-badge ${STATUS_CLASS[row.status]}`}>{STATUS_LABEL[row.status]}</span></td>
                   <td>{row.lastPaymentDate ? dateLabel(row.lastPaymentDate) : '—'}</td>
                   <td className="master-actions">
@@ -627,7 +638,7 @@ export function CollectionsPage() {
                   <tr key={row.orderId} className="row-overdue">
                     <td>{row.clientName}</td>
                     <td>{row.orderNumber}</td>
-                    <td>{money(row.balance)}</td>
+                    <td>{money(row.balance, row.currency)}</td>
                     <td>{row.repName}</td>
                     <td><span className={`status-badge ${followedUp.has(row.orderId) ? 'status-paid-c' : 'status-pending'}`}>{followedUp.has(row.orderId) ? 'Follow-up created' : 'Not started'}</span></td>
                     <td><button type="button" className="quiet-button" disabled={followedUp.has(row.orderId)} onClick={() => setFollowUpConfirm(row)}>{followedUp.has(row.orderId) ? 'Follow-up sent' : 'Create Follow-up'}</button></td>
@@ -652,9 +663,10 @@ export function CollectionsPage() {
               <dt>Collection ID</dt><dd>{selected.collectionId}</dd>
               <dt>Order ID</dt><dd>{selected.orderNumber} · placed {dateLabel(selected.orderDate)}</dd>
               <dt>Representative</dt><dd>{selected.repName}</dd>
-              <dt>Invoice amount</dt><dd>{money(selected.invoiceAmount)}</dd>
-              <dt>Paid amount</dt><dd>{money(selected.paidAmount)}</dd>
-              <dt>Balance</dt><dd>{money(selected.balance)}</dd>
+                         {selected.returnsCredit > 0 && <><dt>Order value</dt><dd>{money(selected.invoiceAmount + selected.returnsCredit, selected.currency)}</dd><dt>Returns credit</dt><dd>− {money(selected.returnsCredit, selected.currency)}</dd></>}
+              <dt>Invoice amount</dt><dd>{money(selected.invoiceAmount, selected.currency)}</dd>
+              <dt>Paid amount</dt><dd>{money(selected.paidAmount, selected.currency)}</dd>
+              <dt>Balance</dt><dd>{money(selected.balance, selected.currency)}</dd>
               <dt>Payment status</dt><dd><span className={`status-badge ${STATUS_CLASS[selected.status]}`}>{STATUS_LABEL[selected.status]}</span></dd>
             </dl>
             <p className="ledger-heading">Payment timeline</p>
@@ -664,7 +676,7 @@ export function CollectionsPage() {
                 <li key={p.id ?? i}>
                   <span className="timeline-dot" />
                   <div>
-                    <strong>Payment {i + 1} — {money(Number(p.amount || 0))}</strong>
+                    <strong>Payment {i + 1} — {money(Number(p.amount || 0), selected.currency)}</strong>
                     <p>{p.created_at ? dateLabel(p.created_at) : '—'} · {p.mode ? MODE_LABEL[p.mode as PaymentMode] ?? p.mode : '—'}{p.reference_no ? ` · Ref ${p.reference_no}` : ''}</p>
                   </div>
                 </li>
@@ -709,16 +721,20 @@ export function CollectionsPage() {
                 Order
                 <select required value={payOrderId} disabled={payLocked || !payClientCode} onChange={(e) => setPayOrderId(e.target.value)}>
                   <option value="">Select an outstanding order</option>
-                  {eligibleOrdersForClient.map((r) => <option key={r.orderId} value={r.orderId}>{r.orderNumber} ({money(r.balance)} due)</option>)}
+                  {eligibleOrdersForClient.map((r) => <option key={r.orderId} value={r.orderId}>{r.orderNumber} ({money(r.balance, r.currency)} due)</option>)}
                 </select>
                 {payClientCode && eligibleOrdersForClient.length === 0 && <small className="text-faint-inline">No outstanding orders for this client.</small>}
               </label>
 
               {activeRow && <>
                 <label>Representative<input value={activeRow.repName} disabled /></label>
-                <label>Invoice amount<input value={money(activeRow.invoiceAmount)} disabled /></label>
-                <label>Already paid<input value={money(activeRow.paidAmount)} disabled /></label>
-                <label>Outstanding balance<input value={money(activeRow.balance)} disabled /></label>
+                            {activeRow.returnsCredit > 0 && <>
+                  <label>Order value<input value={money(activeRow.invoiceAmount + activeRow.returnsCredit, activeRow.currency)} disabled /></label>
+                  <label>Returns credit<input value={`− ${money(activeRow.returnsCredit, activeRow.currency)}`} disabled /></label>
+                </>}
+                <label>Invoice amount<input value={money(activeRow.invoiceAmount, activeRow.currency)} disabled /></label>
+                <label>Already paid<input value={money(activeRow.paidAmount, activeRow.currency)} disabled /></label>
+                <label>Outstanding balance<input value={money(activeRow.balance, activeRow.currency)} disabled /></label>
                 <label>Collection amount<input type="number" min="0.01" step="0.01" required value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder={String(activeRow.balance)} /></label>
                 <label>Payment mode
                   <select value={payMode} onChange={(e) => setPayMode(e.target.value as PaymentMode)}>
@@ -746,7 +762,7 @@ export function CollectionsPage() {
               <div><p className="eyebrow">FOLLOW-UP</p><h3>Create follow-up?</h3></div>
               <button type="button" className="icon-action" aria-label="Close" onClick={() => setFollowUpConfirm(null)}>×</button>
             </div>
-            <p className="confirm-body">This creates a follow-up task in the Follow-ups module for <strong>{followUpConfirm.clientName}</strong> ({money(followUpConfirm.balance)} outstanding on order {followUpConfirm.orderNumber}).</p>
+            <p className="confirm-body">This creates a follow-up task in the Follow-ups module for <strong>{followUpConfirm.clientName}</strong> ({money(followUpConfirm.balance, followUpConfirm.currency)} outstanding on order {followUpConfirm.orderNumber}).</p>
           
             <div className="modal-actions">
               <button type="button" className="quiet-button" onClick={() => setFollowUpConfirm(null)} disabled={followUpSaving}>Cancel</button>

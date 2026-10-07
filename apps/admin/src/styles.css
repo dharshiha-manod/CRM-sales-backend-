@@ -75,6 +75,22 @@ html, body, #root { min-height: 100%; overflow-x: hidden; max-width: 100vw; }
 .breadcrumb, .eyebrow { margin: 0; color: var(--text-faint); font-size: .68rem; font-weight: 700; letter-spacing: .07em; font-family: var(--font-sans); text-transform: uppercase; }
 .account { display: flex; align-items: center; gap: .8rem; font-size: .78rem; color: var(--text-muted); font-family: var(--font-mono); }
 .active-industry-badge { padding: 6px 16px; border-radius: 999px; font-size: .95rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #fff; background: var(--amber); }
+.active-industry-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 0;
+  border: none;
+  cursor: pointer;
+  padding: 6px 38px 6px 16px;
+  color: #fff;
+  background-color: var(--amber);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+}
+.active-industry-switch:hover { filter: brightness(1.06); }
+.active-industry-switch:focus { outline: none; box-shadow: 0 0 0 3px rgba(198, 121, 31, .25); }
+.active-industry-switch option { color: #1b2230; background: #fff; text-transform: none; font-weight: 500; }
 .content { max-width: 1600px; margin: 0 auto; padding: 1.6rem 1.8rem 2rem; }
 .content > section { margin-bottom: 1.25rem; }
 .toolbar, .form-grid { display: flex; gap: .6rem; flex-wrap: wrap; margin: 1rem 0; }

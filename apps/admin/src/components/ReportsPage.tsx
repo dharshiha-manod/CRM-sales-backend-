@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { collectionsInInr, ordersInInr } from '../lib/inr';
 import { useIndustry } from '../industry/IndustryContext';
 import { REPORT_TERMS } from '../industry/reportConfig';
 import { kpiClick, goToPage } from '../lib/kpiClick';
@@ -324,8 +325,8 @@ export function ReportsPage() {
         api<{ data: IndustryTypeOption[] }>('/industry-types?status=active').catch(() => ({ data: [] })),
         api<{ data: Lead[] }>('/leads').catch(() => ({ data: [] })),
         api<{ data: Quotation[] }>('/quotations').catch(() => ({ data: [] })),
-        api<{ data: Order[] }>('/orders').catch(() => ({ data: [] })),
-        api<{ data: CollectionRecord[] }>('/collections').catch(() => ({ data: [] })),
+        api<{ data: Order[] }>('/orders').then(ordersInInr).catch(() => ({ data: [] })),
+        api<{ data: CollectionRecord[] }>('/collections').then(collectionsInInr).catch(() => ({ data: [] })),
         api<{ data: FollowUpRecord[] }>('/follow-ups').catch(() => ({ data: [] })),
         api<{ data: Visit[] }>('/field-visits').catch(() => ({ data: [] })),
       ]);
@@ -346,7 +347,7 @@ export function ReportsPage() {
   // ── Industry scoping — the single source of truth is useIndustry(); everything
   // below just filters the already-fetched data down to that industry's clients. ──
   const activeIndustryType = useMemo(
-    () => raw.industryTypes.find((it) => it.code === activeIndustry.toUpperCase()),
+    () => raw.industryTypes.find((it) => it.code.toUpperCase() === activeIndustry.toUpperCase()),
     [raw.industryTypes, activeIndustry],
   );
   const industryClients = useMemo(
@@ -368,7 +369,6 @@ export function ReportsPage() {
   const industryFollowUps = useMemo(() => raw.followUps.filter((f) => belongsToIndustry(f.clients)), [raw.followUps, industryClientCodes, industryClientNames]);
   const industryVisits = useMemo(() => raw.visits.filter((v) => belongsToIndustry(v.clients)), [raw.visits, industryClientCodes, industryClientNames]);
   const industryLeads = useMemo(() => raw.leads.filter((l) => l.industry_types?.code === activeIndustry.toUpperCase()), [raw.leads, activeIndustry]);
-
   // Whether this industry has ANY recorded activity at all, in any time range.
   // This — not the date-range filter — decides whether we show real numbers
   // or the demo dataset. Real data always wins the moment it exists.
@@ -916,4 +916,4 @@ function hasLoadedOnce(raw: Raw): boolean {
   // is always an array (possibly empty). We just need loading===false upstream;
   // this guards against showing the demo banner during the very first paint.
   return Array.isArray(raw.industryTypes);
-} 
+}

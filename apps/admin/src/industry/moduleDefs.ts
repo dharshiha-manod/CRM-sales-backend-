@@ -12,7 +12,8 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'scheme-discount', label: 'Scheme / Discount Management', icon: '％' },
     { id: 'distributor', label: 'Distributor Management', icon: '▤' },
     { id: 'sales-return-damage', label: 'Sales Return & Damage Management', icon: '↩' },
-    { id: 'batch-expiry', label: 'Batch & Expiry Management', icon: '⏱' },
+     { id: 'batch-expiry', label: 'Batch & Expiry Management', icon: '⏱' },
+    { id: 'currency-rates', label: 'Currency Rates', icon: '¤' },
   ],
   trading: [
     { id: 'deal', label: 'Deal Management', icon: '◆' },

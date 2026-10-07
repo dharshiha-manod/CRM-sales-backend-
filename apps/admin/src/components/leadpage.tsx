@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
+import { FmcgMarketFields } from './FmcgMarketFields';
 import type { IndustryKey } from '../industry/types';
 import { LeadPipelineStepper } from './LeadPipelineStepper';
 import { loadNameList, saveNameList } from './BrandsCategoriesPage';
@@ -44,6 +45,8 @@ type Lead = {
   phone?: string | null;
   email?: string | null;
   street_address?: string | null;
+  country_code?: string | null;
+  currency_code?: string | null;
   city?: string | null;
   state?: string | null;
   source: string;
@@ -72,6 +75,8 @@ type LeadForm = {
   streetAddress: string;
   city: string;
   state: string;
+  countryCode: string;
+  currencyCode: string;
   source: string;
   priority: string;
   status: string;
@@ -97,6 +102,8 @@ const blankForm: LeadForm = {
   streetAddress: '',
   city: '',
   state: '',
+  countryCode: '',
+  currencyCode: '',
   source: 'other',
   priority: 'normal',
   status: 'new',
@@ -512,6 +519,9 @@ const [callError, setCallError] = useState<string | null>(null);
     clientCode: string;
     quotationNumber?: string;
     awaitingProduct: boolean;
+    requirementCreated: boolean;
+    /** Latest automation note from the lead's activity log when the chain stopped early. */
+    stoppedReason?: string;
   }>>({});
 
   const [nextActionDraft, setNextActionDraft] = useState('');
@@ -699,6 +709,8 @@ function openCreate() {
       streetAddress: lead.street_address ?? '',
       city: lead.city ?? '',
       state: lead.state ?? '',
+      countryCode: lead.country_code ?? '',
+      currencyCode: lead.currency_code ?? '',
         source: lead.source ?? 'other',
       priority: lead.priority ?? 'normal',
       status: lead.status ?? 'new',
@@ -804,6 +816,7 @@ function openCreate() {
         streetAddress: form.streetAddress.trim() || null,
         city: form.city.trim() || null,
         state: form.state.trim() || null,
+        ...(String(activeIndustry).toLowerCase() === 'fmcg' ? { countryCode: form.countryCode || null, currencyCode: form.currencyCode || null } : {}),
                source: form.source,
         priority: form.priority,
         notes: packFmcgMeta(form.notes.trim(), { 
@@ -904,18 +917,26 @@ async function changeStatus(newStatus: Lead['status']) {
 
       if (newStatus === 'qualified' && response.data.converted_client_id) {
         const generatedCode = `CLI-${response.data.lead_code.replace(/^LD-/, '')}`;
+        const clientId = response.data.converted_client_id;
+        // Report what the server really created — never assume the whole chain ran.
         let quotationNumber: string | undefined;
+        let requirementCreated = false;
         try {
-          const quotesRes = await api<{ data: Array<{ quotation_number: string; requirement_id: string | null }> }>(
-            `/quotations?clientId=${response.data.converted_client_id}`,
-          );
+          const [reqRes, quotesRes] = await Promise.all([
+            api<{ data: Array<{ id: string }> }>(`/requirements?clientId=${clientId}`),
+            api<{ data: Array<{ quotation_number: string; requirement_id: string | null }> }>(`/quotations?clientId=${clientId}`),
+          ]);
+          requirementCreated = (reqRes.data ?? []).length > 0;
           quotationNumber = quotesRes.data?.[0]?.quotation_number;
         } catch {
-          // Cosmetic only — banner just won't show a quotation number.
+          // Cosmetic only — banner falls back to the activity note below.
         }
+        const stoppedReason = requirementCreated && quotationNumber
+          ? undefined
+          : (refreshed.data ?? []).find((a) => a.activity_type === 'note_added' && /^(Auto-|Requirement and Quotation|Could not assign)/.test(a.note ?? ''))?.note ?? undefined;
         setAutoConverted((current) => ({
           ...current,
-          [response.data.id]: { clientCode: generatedCode, quotationNumber, awaitingProduct: !quotationNumber },
+          [response.data.id]: { clientCode: generatedCode, quotationNumber, awaitingProduct: requirementCreated && !quotationNumber, requirementCreated, stoppedReason },
         }));
       }
     } catch (caught) {
@@ -1227,7 +1248,7 @@ async function suggestRep() {
                       {lead.phone && <small>{lead.phone}</small>}
                     </td>
                     <td>{lead.email ? <span className="lp-email" title={lead.email}>{lead.email}</span> : <span className="lp-muted">No email</span>}</td>
-                    <td className="lp-num">{meta.expectedOrderValue && Number.isFinite(Number(meta.expectedOrderValue)) ? new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Number(meta.expectedOrderValue)) : '—'}</td>
+                    <td className="lp-num">{meta.expectedOrderValue && Number.isFinite(Number(meta.expectedOrderValue)) ? new Intl.NumberFormat(!lead.currency_code || lead.currency_code === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: lead.currency_code || 'INR', maximumFractionDigits: 0 }).format(Number(meta.expectedOrderValue)) : '—'}</td>
                     <td>
                       <span className={`status-badge status-${lead.priority} lp-pill`}>{priorityLabels[lead.priority] ?? lead.priority}</span>
                     </td>
@@ -1384,7 +1405,7 @@ async function suggestRep() {
                 </>
               )}
               <dt>Expected value</dt>
-              <dd>{unpackFmcgMeta(selected.notes).meta.expectedOrderValue ? `₹${unpackFmcgMeta(selected.notes).meta.expectedOrderValue}` : '—'}</dd>
+              <dd>{unpackFmcgMeta(selected.notes).meta.expectedOrderValue ? `${selected.currency_code && selected.currency_code !== 'INR' ? selected.currency_code + ' ' : '₹'}${unpackFmcgMeta(selected.notes).meta.expectedOrderValue}` : '—'}</dd>
               <dt>Contact</dt>
               <dd>{selected.contact_name ?? '—'}</dd>
            <dt>Phone</dt>
@@ -1488,7 +1509,7 @@ async function suggestRep() {
               </div>
             )}
 
-        {selected.status === 'qualified' && autoConverted[selected.id] && (
+        {selected.converted_client_id && autoConverted[selected.id] && (
               <div
                 style={{
                   marginTop: '1rem',
@@ -1502,16 +1523,22 @@ async function suggestRep() {
                 <p style={{ margin: '.35rem 0 0' }}>
                   Client: <strong>{selected.company_name}</strong> ({autoConverted[selected.id].clientCode})
                 </p>
-                <p style={{ margin: '.25rem 0 0' }}>Requirement created automatically from this lead.</p>
+                {autoConverted[selected.id].requirementCreated ? (
+                  <p style={{ margin: '.25rem 0 0' }}>Requirement created automatically from this lead.</p>
+                ) : (
+                  <p style={{ margin: '.25rem 0 0', color: '#b45309' }}>
+                    Requirement not created yet. {autoConverted[selected.id].stoppedReason ?? 'Assign a sales representative to this lead and it will be created automatically.'}
+                  </p>
+                )}
                 {autoConverted[selected.id].quotationNumber ? (
                   <p style={{ margin: '.25rem 0 0' }}>
                     Quotation <strong>{autoConverted[selected.id].quotationNumber}</strong> generated — ready to send.
                   </p>
-                ) : (
+                ) : autoConverted[selected.id].requirementCreated ? (
                   <p style={{ margin: '.25rem 0 0' }}>
-                    Quotation not generated yet — the interested product didn't match your catalog. Open Requirements and pick the exact product to price it.
+                    Quotation not generated yet — the interested product didn't match an active product of this industry. Open Requirements and pick the exact product to price it.
                   </p>
-                )}
+                ) : null}
               </div>
             )}
 
@@ -1740,6 +1767,13 @@ async function suggestRep() {
                     State
                     <input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
                   </label>
+                  {String(activeIndustry).toLowerCase() === 'fmcg' && (
+                    <FmcgMarketFields
+                      countryCode={form.countryCode}
+                      currencyCode={form.currencyCode}
+                      onChange={(countryCode, currencyCode) => setForm((f) => ({ ...f, countryCode, currencyCode }))}
+                    />
+                  )}
                 </div>
               </fieldset>
               <fieldset className="modal-fieldset">
@@ -1771,7 +1805,7 @@ async function suggestRep() {
                     </select>
                   </label>
                   <label>
-                    Expected order value (₹)
+                    Expected order value ({String(activeIndustry).toLowerCase() === 'fmcg' && form.currencyCode && form.currencyCode !== 'INR' ? form.currencyCode : '₹'})
                     <input type="number" min="0" value={form.expectedOrderValue} onChange={(e) => setForm({ ...form, expectedOrderValue: e.target.value })} />
                   </label>
                             <label>
@@ -1864,4 +1898,4 @@ async function suggestRep() {
       )}
     </section>
   );
-}
+} 

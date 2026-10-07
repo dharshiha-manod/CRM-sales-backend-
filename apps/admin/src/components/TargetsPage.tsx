@@ -191,7 +191,8 @@ if (statusFilter && computeStatus(t, orgSettings.target) !== statusFilter) retur
     const remaining = Math.max(0, totalTarget - achieved);
     const pct = totalTarget > 0 ? Math.round((achieved / totalTarget) * 100) : 0;
    const atRisk = filtered.filter((t) => computeStatus(t, orgSettings.target) === 'at_risk').length;
-return { totalTarget, achieved, remaining, pct, atRisk };
+const metDone = filtered.filter((t) => { const st = computeStatus(t, orgSettings.target); return st === 'achieved' || st === 'exceeded'; }).length;
+return { totalTarget, achieved, remaining, pct, atRisk, count: filtered.length, metDone, open: filtered.length - metDone };
 }, [filtered, orgSettings.target]);
   const metricTypes = useMemo(() => [...new Set(filtered.map((target) => target.target_type))], [filtered]);
   const oneMetricType = metricTypes.length === 1 ? metricTypes[0] : null;
@@ -262,10 +263,10 @@ const alerts = useMemo(() => filtered.filter((t) => computeStatus(t, orgSettings
       </div>
 
       <div className="kpi-grid" style={{ '--kpi-count': 4 } as React.CSSProperties}>
-        <div className="kpi-card" data-tone="ink" {...kpiClick(!statusFilter && !progressFilter, () => showTargets(''))}><div className="kpi-icon">▦</div><div><span>Total Target · {kpiLabel}</span><strong>{formatKpi(kpi.totalTarget)}</strong></div></div>
-        <div className="kpi-card" data-tone="green" {...kpiClick(progressFilter === 'met', () => showTargets('met'))}><div className="kpi-icon">✓</div><div><span>Achieved · {kpiLabel}</span><strong>{formatKpi(kpi.achieved)}</strong></div></div>
-        <div className="kpi-card" data-tone="amber" {...kpiClick(progressFilter === 'open', () => showTargets('open'))}><div className="kpi-icon">◔</div><div><span>Remaining · {kpiLabel}</span><strong>{formatKpi(kpi.remaining)}</strong></div></div>
-        <div className="kpi-card" data-tone="red" {...kpiClick(false, () => showTargets(''))}><div className="kpi-icon">%</div><div><span>Achievement %</span><strong>{oneMetricType ? `${kpi.pct}%` : '—'}</strong></div></div>
+        <div className="kpi-card" data-tone="ink" {...kpiClick(!statusFilter && !progressFilter, () => showTargets(''))}><div className="kpi-icon">▦</div><div><span>{oneMetricType ? `Total Target · ${kpiLabel}` : 'Targets'}</span><strong>{oneMetricType ? formatKpi(kpi.totalTarget) : kpi.count}</strong></div></div>
+        <div className="kpi-card" data-tone="green" {...kpiClick(progressFilter === 'met', () => showTargets('met'))}><div className="kpi-icon">✓</div><div><span>{oneMetricType ? `Achieved · ${kpiLabel}` : 'Achieved targets'}</span><strong>{oneMetricType ? formatKpi(kpi.achieved) : kpi.metDone}</strong></div></div>
+        <div className="kpi-card" data-tone="amber" {...kpiClick(progressFilter === 'open', () => showTargets('open'))}><div className="kpi-icon">◔</div><div><span>{oneMetricType ? `Remaining · ${kpiLabel}` : 'Still open'}</span><strong>{oneMetricType ? formatKpi(kpi.remaining) : kpi.open}</strong></div></div>
+        <div className="kpi-card" data-tone="red" {...kpiClick(false, () => showTargets(''))}><div className="kpi-icon">{oneMetricType ? '%' : '⚠'}</div><div><span>{oneMetricType ? 'Achievement %' : 'At risk'}</span><strong>{oneMetricType ? `${kpi.pct}%` : kpi.atRisk}</strong></div></div>
       </div>
 
       <div className="master-toolbar">

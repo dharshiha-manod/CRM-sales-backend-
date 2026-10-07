@@ -6,7 +6,7 @@ import './MasterDataPages.css';
 import './RepresentativesPage.css';
 
 type Representative = { id: string; employee_code: string; user_id: string; designation?: string | null; phone?: string | null; email?: string | null; status: 'active' | 'inactive'; user_profiles?: { display_name?: string | null } | null };
-type OrganizationUser = { user_id: string; email?: string | null; status: string; user_profiles?: { display_name?: string | null } | null; roles?: { code?: string | null; name?: string | null } | null };
+type OrganizationUser = { user_id: string; email?: string | null; status: string; industry_type_id?: string | null; user_profiles?: { display_name?: string | null } | null; roles?: { code?: string | null; name?: string | null } | null };
 type RepresentativeForm = { userId: string; employeeCode: string; designation: string; status: 'active' | 'inactive' };
 const blank: RepresentativeForm = { userId: '', employeeCode: '', designation: '', status: 'active' };
 
@@ -40,7 +40,7 @@ type RepSummary = { clientCount: number; visitsToday: number; ordersToday: numbe
 const blankSummary: RepSummary = { clientCount: 0, visitsToday: 0, ordersToday: 0, collectionsToday: 0 };
 
 export function RepresentativesPage() {
-  const { activeIndustry, activeIndustryTypeId, clientMatchesActiveIndustry } = useIndustryScope();
+  const { activeIndustry, activeIndustryTypeId, clientMatchesActiveIndustry, matchesActiveIndustry } = useIndustryScope();
   const [items, setItems] = useState<Representative[]>([]);
   const [users, setUsers] = useState<OrganizationUser[]>([]);
   const [form, setForm] = useState<RepresentativeForm>(blank);
@@ -74,7 +74,8 @@ export function RepresentativesPage() {
   const [allCollections, setAllCollections] = useState<RepCollection[]>([]);
 
   const designations = useMemo(() => [...new Set(items.map((item) => item.designation).filter((item): item is string => Boolean(item)))].sort(), [items]);
-  const availableUsers = users.filter((user) => user.status === 'active' && user.roles?.code === 'sales_representative' && !items.some((representative) => representative.user_id === user.user_id));
+  // Only users that belong to the ACTIVE Industry Type can be added as a representative here.
+  const availableUsers = users.filter((user) => user.status === 'active' && user.roles?.code === 'sales_representative' && matchesActiveIndustry(user.industry_type_id) && !items.some((representative) => representative.user_id === user.user_id));
 
   const scopedClients = useMemo(() => allClients.filter((c) => clientMatchesActiveIndustry(c.client_code)), [allClients, clientMatchesActiveIndustry]);
 
@@ -445,7 +446,7 @@ export function RepresentativesPage() {
                     <option value="">Select a user</option>
                     {availableUsers.map((user) => <option key={user.user_id} value={user.user_id}>{user.user_profiles?.display_name ?? user.email ?? user.user_id}{user.email ? ` — ${user.email}` : ''}</option>)}
                   </select>
-                  <small>{availableUsers.length ? 'Only active users with the Sales Representative role are shown.' : 'Create a user with Sales Representative role first, under User management.'}</small>
+                  <small>{availableUsers.length ? 'Only active Sales Representative users of this Industry Type are shown.' : 'No Sales Representative users in this Industry Type yet. Create one first under User management.'}</small>
                 </label>
               )}
                 <label>Employee code<input required readOnly value={form.employeeCode} title="Auto-generated from existing employee codes" /></label>

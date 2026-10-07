@@ -33,6 +33,9 @@ type Product = {
   origin_country?: string | null;
   supplier_name?: string | null;
   currency?: string | null;
+  // Saved in the database so every device sees the same MRP / discount.
+  mrp?: number | null;
+  discount_percent?: number | null;
   // Resolved server-side from the product_industry_types join table (see
   // products.repository.ts) — not a real column on the products row itself.
   industry_type_id?: string | null;
@@ -238,8 +241,19 @@ export function ProductsPage() {
     setLoading(true);
     setMessage('');
     try {
-      setItems((await api<{ data: Product[] }>('/products')).data ?? []);
-      setFmcgMetaMap(loadAllFmcgMeta());
+      const products = (await api<{ data: Product[] }>('/products')).data ?? [];
+      setItems(products);
+      const metaMap = loadAllFmcgMeta();
+      for (const p of products) {
+        if (p.mrp != null) {
+          // MRP / discount come from the database first, so every device shows the same values.
+          metaMap[p.id] = { ...(metaMap[p.id] ?? blankFmcgMeta), mrp: String(p.mrp), discountPercent: p.discount_percent ? String(p.discount_percent) : '' };
+        } else if (metaMap[p.id] && Number(metaMap[p.id].mrp) > 0) {
+          // One-time copy: older product whose MRP/discount only lived in this browser -> save to the database.
+          void api(`/products/${p.id}`, { method: 'PATCH', body: JSON.stringify({ mrp: Number(metaMap[p.id].mrp), discountPercent: Number(metaMap[p.id].discountPercent || 0) }) }).catch(() => undefined);
+        }
+      }
+      setFmcgMetaMap(metaMap);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to load products.');
     } finally {
@@ -365,6 +379,7 @@ export function ProductsPage() {
       industryTypeId: product.industry_type_id ?? activeIndustryTypeId ?? '',
          ...loadFmcgMeta(product.id),
       trackBatch: tracksBatch(loadFmcgMeta(product.id)),
+      ...(product.mrp != null ? { mrp: String(product.mrp), discountPercent: product.discount_percent ? String(product.discount_percent) : '' } : {}),
       unit: product.unit ?? 'pcs',
         taxPercent: product.tax_percent == null ? '' : String(product.tax_percent),
       hsnCode: product.hsn_code ?? '',
@@ -418,6 +433,8 @@ export function ProductsPage() {
       originCountry: form.originCountry || null,
       supplierName: form.supplierName || null,
       currency: form.currency || null,
+      mrp: form.mrp === '' ? null : Number(form.mrp),
+      discountPercent: form.discountPercent === '' ? null : Number(form.discountPercent),
       industryTypeIds: [form.industryTypeId || activeIndustryTypeId || ''].filter(Boolean),
     };
     try {

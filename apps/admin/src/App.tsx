@@ -27,6 +27,7 @@ import { AcademicYearTermPage } from './components/AcademicYearTermPage';
 import { SpecificPricingDiscountPage } from './components/SpecificPricingDiscountPage'; 
 import { SalesReturnDamagePage } from './components/SalesReturnDamagePage';
 import { BatchExpiryPage } from './components/BatchExpiryPage';
+import { FmcgCurrencyRatesPage } from './components/FmcgCurrencyRatesPage';
 import { DesignPatternPage } from './components/DesignPatternPage';
 import { ColourSizePage } from './components/ColourSizePage';
 import { FabricRollPage } from './components/FabricRollPage';
@@ -124,7 +125,8 @@ const { isGlobal } = useCurrentMembership();
   content['industry:fmcg:scheme-discount'] = <SchemeDiscountPage />;
    content['industry:fmcg:distributor'] = <DistributorPage />;
   content['industry:fmcg:sales-return-damage'] = <SalesReturnDamagePage />;
-  content['industry:fmcg:batch-expiry'] = <BatchExpiryPage />;
+   content['industry:fmcg:batch-expiry'] = <BatchExpiryPage />;
+  content['industry:fmcg:currency-rates'] = <FmcgCurrencyRatesPage />;
 content['industry:school:school-management'] = <SchoolManagementPage />;
     content['industry:school:school-sales-collection'] = <SchoolSalesCollectionPage />;
   content['industry:school:academic-year-term'] = <AcademicYearTermPage />;
@@ -195,26 +197,30 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
                   <p className="nav-label">PRODUCT &amp; INVENTORY</p>{item('products', 'Products', '▣')}{item('brandsCategories', 'Brands & Categories', '◆')}{item('inventory', 'Inventory', '▤')}
           <p className="nav-label">TEAM &amp; PERFORMANCE</p>{item('target', 'Target', '◎')}{item('representatives', 'Sales representatives', '♙')}
           <p className="nav-label">ADMINISTRATION</p>{item('users', 'User management', '♧')}{item('settings', 'Settings', '⚙')}{item('notifications', 'Notification', '⚑')}{item('calls', 'Calls & IVR', '☎')}
-          <p className="nav-label">INDUSTRY TYPE</p>
-          <select
-            className="industry-select"
-            value={activeIndustry}
-            onChange={(e) => {
-              const key = e.target.value as IndustryKey;
-              setActiveIndustry(key);
-              setPage(`industry:${key}:${INDUSTRY_MODULES[key][0].id}` as Page);
-            }}
-          >
-            {INDUSTRY_ORDER.map((key) => <option key={key} value={key}>{INDUSTRY_CONFIGS[key].label}</option>)}
-          </select>
-          <p className="nav-label">{INDUSTRY_CONFIGS[activeIndustry].label.toUpperCase()} MODULES</p>
+               <p className="nav-label">{INDUSTRY_CONFIGS[activeIndustry].label.toUpperCase()} MODULES</p>
           {INDUSTRY_MODULES[activeIndustry].map((mod) => item(`industry:${activeIndustry}:${mod.id}` as Page, mod.label, mod.icon))}
         </nav>
         <div className="sidebar-footer"><span className="online-dot" />Secure organization workspace</div>
       </aside>
          <div className="workspace">
-        <header className="topbar">
-                    <span className="active-industry-badge" data-industry={activeIndustry}>{INDUSTRY_CONFIGS[activeIndustry].label}</span>
+          <header className="topbar">
+          {canSwitchIndustry ? (
+            <select
+              className="active-industry-badge active-industry-switch"
+              data-industry={activeIndustry}
+              aria-label="Switch industry type"
+              value={activeIndustry}
+              onChange={(e) => {
+                const key = e.target.value as IndustryKey;
+                setActiveIndustry(key);
+                setPage(`industry:${key}:${INDUSTRY_MODULES[key][0].id}` as Page);
+              }}
+            >
+              {INDUSTRY_ORDER.map((key) => <option key={key} value={key}>{INDUSTRY_CONFIGS[key].label}</option>)}
+            </select>
+          ) : (
+            <span className="active-industry-badge" data-industry={activeIndustry}>{INDUSTRY_CONFIGS[activeIndustry].label}</span>
+          )}
                <div className="account">
             <span>{session.user.email}</span>
             <button onClick={() => void signOut()}>Sign out</button>

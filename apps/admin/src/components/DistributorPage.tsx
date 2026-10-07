@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { collectionsInInr, ordersInInr } from '../lib/inr';
+import { kpiClick } from '../lib/kpiClick';
+import { KpiDetailModal } from './KpiDetailModal';
 import './MasterDataPages.css';
 
 type Assignment = { id: string; status: string; sales_representatives?: { employee_code: string; user_profiles?: { display_name?: string | null } | null } | null };
@@ -52,6 +55,7 @@ export function DistributorPage({ industryLabel = 'FMCG' }: { industryLabel?: st
   const [creditFilter, setCreditFilter] = useState<'all' | 'healthy' | 'watch' | 'over'>('all');
 
   const [viewing, setViewing] = useState<Client | null>(null);
+  const [kpiView, setKpiView] = useState<null | 'credit' | 'outstanding'>(null);
 
   async function load() {
     setLoading(true);
@@ -63,8 +67,8 @@ export function DistributorPage({ industryLabel = 'FMCG' }: { industryLabel?: st
         api<{ data: Collection[] }>('/collections').catch(() => ({ data: [] })),
       ]);
       setClients((clientsRes.data ?? []).filter((c) => (c.outlet_type ?? '').toLowerCase() === 'distributor'));
-      setOrders(ordersRes.data ?? []);
-      setCollections(collectionsRes.data ?? []);
+     setOrders(ordersInInr(ordersRes).data ?? []);
+setCollections(collectionsInInr(collectionsRes).data ?? []);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to load distributor data.');
     } finally {
@@ -133,6 +137,8 @@ export function DistributorPage({ industryLabel = 'FMCG' }: { industryLabel?: st
   const totalCreditExtended = clients.reduce((sum, c) => sum + (c.credit_limit ?? 0), 0);
   const totalOutstanding = rows.reduce((sum, r) => sum + r.outstanding, 0);
   const overLimitCount = rows.filter((r) => creditTone(r.client, r.outstanding) === 'over').length;
+  const creditRows = rows.filter((r) => (r.client.credit_limit ?? 0) > 0).sort((a, b) => (b.client.credit_limit ?? 0) - (a.client.credit_limit ?? 0));
+  const outstandingRows = rows.filter((r) => r.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding);
 
   const viewingLedger = viewing ? ledger(viewing.id) : null;
   const viewingOrders = viewing ? orders.filter((o) => o.client_id === viewing.id).slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) : [];
@@ -149,7 +155,7 @@ export function DistributorPage({ industryLabel = 'FMCG' }: { industryLabel?: st
       </div>
 
          <div className="kpi-grid">
-        <div className="kpi-card" data-tone="ink">
+       <div className="kpi-card" data-tone="ink" {...kpiClick(statusFilter === 'all' && creditFilter === 'all' && !search.trim(), () => { setStatusFilter('all'); setCreditFilter('all'); setSearch(''); })}>
           <div className="kpi-icon">▤</div>
           <div>
             <span>Distributors</span>
@@ -157,7 +163,7 @@ export function DistributorPage({ industryLabel = 'FMCG' }: { industryLabel?: st
             <small>{activeDistributors} active</small>
           </div>
         </div>
-        <div className="kpi-card" data-tone="blue">
+<div className="kpi-card" data-tone="blue" {...kpiClick(kpiView === 'credit', () => setKpiView('credit'))}>
           <div className="kpi-icon">₹</div>
           <div>
             <span>Credit extended</span>
@@ -165,7 +171,7 @@ export function DistributorPage({ industryLabel = 'FMCG' }: { industryLabel?: st
             <small>combined credit limit</small>
           </div>
         </div>
-        <div className="kpi-card" data-tone="amber">
+  <div className="kpi-card" data-tone="amber" {...kpiClick(kpiView === 'outstanding', () => setKpiView('outstanding'))}>
           <div className="kpi-icon">◒</div>
           <div>
             <span>Outstanding</span>
@@ -173,7 +179,7 @@ export function DistributorPage({ industryLabel = 'FMCG' }: { industryLabel?: st
             <small>across all distributors</small>
           </div>
         </div>
-        <div className="kpi-card" data-tone={overLimitCount > 0 ? 'red' : 'green'}>
+     <div className="kpi-card" data-tone={overLimitCount > 0 ? 'red' : 'green'} {...kpiClick(creditFilter === 'over', () => { setCreditFilter('over'); setStatusFilter('all'); setSearch(''); })}>
           <div className="kpi-icon">⚠</div>
           <div>
             <span>Over credit limit</span>
@@ -399,6 +405,30 @@ export function DistributorPage({ industryLabel = 'FMCG' }: { industryLabel?: st
             </div>
           </div>
         </div>
+      )}
+   
+      {kpiView === 'credit' && (
+        <KpiDetailModal
+          eyebrow="CREDIT EXTENDED"
+          title="Credit limit by distributor"
+          subtitle={`${money(totalCreditExtended)} combined credit limit across ${creditRows.length} distributor(s)`}
+          columns={['Distributor', 'Code', 'City', 'Credit limit', 'Credit days', 'Outstanding']}
+          rows={creditRows.map((r) => ({ id: r.client.id, cells: [r.client.client_name, r.client.client_code, r.client.city || '—', money(r.client.credit_limit ?? 0), r.client.credit_days ?? '—', money(r.outstanding)] }))}
+          emptyText="No distributor has a credit limit set."
+          onClose={() => setKpiView(null)}
+        />
+      )}
+
+      {kpiView === 'outstanding' && (
+        <KpiDetailModal
+          eyebrow="OUTSTANDING"
+          title="Outstanding by distributor"
+          subtitle={`${money(totalOutstanding)} outstanding across ${outstandingRows.length} distributor(s)`}
+          columns={['Distributor', 'Code', 'Total sales', 'Collected', 'Outstanding', 'Credit limit']}
+          rows={outstandingRows.map((r) => ({ id: r.client.id, cells: [r.client.client_name, r.client.client_code, money(r.totalSales), money(r.totalCollected), money(r.outstanding), r.client.credit_limit ? money(r.client.credit_limit) : '—'] }))}
+          emptyText="No distributor has an outstanding balance."
+          onClose={() => setKpiView(null)}
+        />
       )}
     </section>
   );
