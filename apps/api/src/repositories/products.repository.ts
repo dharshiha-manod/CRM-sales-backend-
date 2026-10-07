@@ -2,7 +2,7 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { setProductIndustryTypes } from './industry-types.repository.js';
 const fail = (error: unknown): never => { throw error; };
-const map = { productCode: 'product_code', productName: 'product_name', sellingPrice: 'selling_price', costPrice: 'cost_price', stockQuantity: 'stock_quantity', taxPercent: 'tax_percent', hsnCode: 'hsn_code', originCountry: 'origin_country', supplierName: 'supplier_name' } as Record<string, string>;
+const map = { productCode: 'product_code', productName: 'product_name', sellingPrice: 'selling_price', costPrice: 'cost_price', stockQuantity: 'stock_quantity', taxPercent: 'tax_percent', hsnCode: 'hsn_code', originCountry: 'origin_country', supplierName: 'supplier_name', discountPercent: 'discount_percent' } as Record<string, string>;
 const payload = (input: Record<string, unknown>) => { const { industryTypeIds, ...rest } = input; return Object.fromEntries(Object.entries(rest).map(([key, value]) => [map[key] ?? key, value])); };
 export async function listProducts(org: string, search?: string, status?: string, industryTypeId?: string) {
   let query = supabaseAdmin.from('products').select('*').eq('organization_id', org).order('product_name');
@@ -57,6 +57,24 @@ export async function updateProduct(org: string, id: string, input: Record<strin
   const industryTypeIds = input.industryTypeIds as string[] | undefined;
   if (industryTypeIds) await setProductIndustryTypes(org, id, industryTypeIds);
   return data;
+}
+// Adds (+) or removes (-) stock. It re-reads the current stock and only saves if nobody else changed it in
+// between ("compare and swap"); if someone did, it retries with the fresh number. So no stock change is lost.
+export async function changeProductStock(org: string, id: string, delta: number, allowNegative: boolean) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const { data: current, error } = await supabaseAdmin.from('products').select('id, stock_quantity').eq('organization_id', org).eq('id', id).maybeSingle();
+    if (error) fail(error);
+    if (!current) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product was not found.');
+    const before = Number(current.stock_quantity ?? 0);
+    const after = before + delta;
+    if (after < 0 && !allowNegative) throw new AppError(422, 'INSUFFICIENT_STOCK', `Stock cannot go below zero (current stock is ${before}).`);
+    let query = supabaseAdmin.from('products').update({ stock_quantity: after }).eq('organization_id', org).eq('id', id);
+    query = current.stock_quantity == null ? query.is('stock_quantity', null) : query.eq('stock_quantity', current.stock_quantity);
+    const { data: updated, error: updateError } = await query.select().maybeSingle();
+    if (updateError) fail(updateError);
+    if (updated) return updated;
+  }
+  throw new AppError(409, 'STOCK_CHANGED', 'Stock was changed by someone else at the same moment. Please try again.');
 }
 export async function deleteProduct(org: string, id: string) {
   const { data, error } = await supabaseAdmin.from('products').delete().eq('organization_id', org).eq('id', id).select().maybeSingle();

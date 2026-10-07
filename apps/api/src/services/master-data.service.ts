@@ -24,6 +24,20 @@ function cleanIndustryDetails(code: string | null, details: unknown) {
 
 export const representativeService = { list(org: string, search: string | undefined, status: string | undefined, industryTypeId: string | undefined, scope: IndustryScope) { return repo.listRepresentatives(org, search, status, resolveIndustryTypeId(scope, industryTypeId) ?? undefined); }, get: repo.getRepresentative, async create(org: string, input: Record<string, unknown>) { await repo.assertRepresentativeUserMembership(org, input.userId as string); return repo.createRepresentative(org, input); }, update: repo.updateRepresentative };
 
+/** Multi-country fields (countryCode / currencyCode) are an FMCG-only feature.
+ *  For every other industry they are dropped server-side, so those industries behave exactly as before. */
+function applyMultiCountryRule(code: string | null, input: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...input };
+  if ((code ?? '').toLowerCase() !== 'fmcg') {
+    delete next.countryCode;
+    delete next.currencyCode;
+    return next;
+  }
+  if (typeof next.countryCode === 'string') next.countryCode = next.countryCode.toUpperCase();
+  if (typeof next.currencyCode === 'string') next.currencyCode = next.currencyCode.toUpperCase();
+  return next;
+}
+
 export const clientService = {
   list(org: string, search: string | undefined, type: string | undefined, status: string | undefined, industryTypeId: string | undefined, scope: IndustryScope) {
     const effective = resolveIndustryTypeId(scope, industryTypeId);
@@ -37,7 +51,8 @@ export const clientService = {
   async create(org: string, input: Record<string, unknown>, scope: IndustryScope) {
     const industryTypeId = resolveIndustryTypeId(scope, input.industryTypeId as string | null | undefined);
     const code = await resolveIndustryCode(org, industryTypeId);
-    return repo.createClient(org, { ...input, industryTypeId, industryDetails: cleanIndustryDetails(code, input.industryDetails) });
+    const base = applyMultiCountryRule(code, input);
+    return repo.createClient(org, { ...base, industryTypeId, industryDetails: cleanIndustryDetails(code, input.industryDetails) });
   },
   async update(org: string, id: string, input: Record<string, unknown>, scope: IndustryScope) {
     const existing = await repo.getClient(org, id);
@@ -46,10 +61,15 @@ export const clientService = {
       throw new AppError(403, 'INDUSTRY_NOT_ASSIGNED', 'You are not assigned to this industry.');
     }
     const touchesIndustry = 'industryTypeId' in input || 'industryDetails' in input;
-    if (!touchesIndustry) return repo.updateClient(org, id, input);
+    const touchesCountry = 'countryCode' in input || 'currencyCode' in input;
+    // Requests that touch neither keep the exact original path (no extra lookups for any industry).
+    if (!touchesIndustry && !touchesCountry) return repo.updateClient(org, id, input);
     const industryTypeId = ('industryTypeId' in input ? input.industryTypeId : (existing as { industry_type_id?: string | null }).industry_type_id) as string | null | undefined;
     const code = await resolveIndustryCode(org, industryTypeId);
-    return repo.updateClient(org, id, { ...input, industryDetails: cleanIndustryDetails(code, input.industryDetails) });
+    const base = applyMultiCountryRule(code, input);
+    if (Object.keys(base).length === 0) return existing; // non-FMCG client sent only country fields: nothing to save
+    if (!touchesIndustry) return repo.updateClient(org, id, base);
+    return repo.updateClient(org, id, { ...base, industryDetails: cleanIndustryDetails(code, input.industryDetails) });
   },
   async syncAddressFromLead(org: string, id: string, scope: IndustryScope) {
     const client = await repo.getClient(org, id);

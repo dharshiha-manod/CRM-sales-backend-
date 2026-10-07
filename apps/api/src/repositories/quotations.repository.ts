@@ -1,19 +1,23 @@
 import { AppError } from '../errors/app-error.js';
 import { getOrderConfig, getSalesConfig, industryTypeIdOfClient } from '../lib/settings.js';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { formatOrderNumber } from './orders.repository.js';
+import { uniqueOrderNumber } from './orders.repository.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import { logger } from '../lib/logger.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { sendQuotationEmail } from '../services/quotation-email.service.js';
 import { getQuotationEmailTemplate } from './quotation-email-templates.repository.js';
 import { ensureLogisticsPlan } from '../lib/logistics-plan.js';
+import { assertWithinCreditLimit } from '../lib/credit.js';
+import { documentCurrencyForClient, isFmcgIndustry, toBase } from '../lib/fmcg-market.js';
+import { planAllocations, takeStockForOrder } from '../lib/stock.js';
+import { bestSchemeFor, loadLiveSchemes } from '../lib/fmcg-schemes.js';
 
 const fail = (error: unknown): never => { throw error; };
 type ItemInput = { productId: string; quantity: number; discountPercent: number };
 type CreateInput = { items: ItemInput[]; validUntil?: string | null; notes?: string | null };
 type PublicDecision = { decision: 'accepted' | 'rejected'; reason?: string };
-const FULL = '*, clients(id, client_code, client_name, email, industry_type_id), organizations(name), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, category, unit, cost_price, selling_price))';
+const FULL = '*, clients(id, client_code, client_name, email, industry_type_id), organizations(name), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, category, unit, cost_price, selling_price, mrp, discount_percent))';
 const PUBLIC = 'id, organization_id, quotation_number, status, valid_until, total_amount, tax_amount, created_at, clients(client_name, industry_type_id), organizations(name), quotation_items(quantity, unit_price, discount_amount, subtotal, tax_percent, tax_amount, products(product_code, product_name))';
 
 function scopeCheck(scope: IndustryScope | undefined, client: unknown) {
@@ -77,25 +81,34 @@ export async function createFromRequirement(organizationId: string, representati
   if ((products ?? []).length !== ids.length) throw new AppError(422, 'INVALID_QUOTATION_PRODUCT', 'One or more selected products are unavailable.');
   const byId = new Map((products ?? []).map((product) => [product.id, product]));
   // Price list first (customer-specific, then general), Products-table price as the fallback.
-  const { data: quoteClient } = await supabaseAdmin.from('clients').select('client_name, industry_type_id').eq('id', requirement.client_id).eq('organization_id', organizationId).maybeSingle();
+  const { data: quoteClient } = await supabaseAdmin.from('clients').select('client_name, industry_type_id, country_code, currency_code').eq('id', requirement.client_id).eq('organization_id', organizationId).maybeSingle();
   const listed = await priceListRates(organizationId, quoteClient, input.items.map((item) => ({ productName: String(byId.get(item.productId)?.product_name ?? ''), quantity: item.quantity })));
+  const docCurrency = await documentCurrencyForClient(organizationId, quoteClient as { country_code?: string | null; currency_code?: string | null; industry_type_id?: string | null } | null);
+  const schemes = docCurrency ? await loadLiveSchemes(organizationId, (quoteClient as { industry_type_id?: string | null } | null)?.industry_type_id, ids) : [];
   const lines = input.items.map((item) => {
     const product = byId.get(item.productId)!;
     const fromList = listed.get(String(product.product_name ?? ''));
-    const unitPrice = fromList ? fromList.rate : Number(product.selling_price);
+    // Catalog and price-list prices are rupee prices. For an international FMCG client the quotation is in the
+    // client's currency, so the rupee price is converted at the FMCG rate (1 unit of currency = rate INR).
+    const inrPrice = fromList ? fromList.rate : Number(product.selling_price);
+    const unitPrice = docCurrency && docCurrency.exchange_rate !== 1 ? Math.round((inrPrice / docCurrency.exchange_rate) * 100) / 100 : inrPrice;
     // A discount typed on the quotation line wins; otherwise the price list's own discount applies.
-    const discountPercent = item.discountPercent || fromList?.discount || 0;
+    const typedDiscount = item.discountPercent || fromList?.discount || 0;
     const gross = unitPrice * item.quantity;
-    const discount_amount = Math.round(gross * discountPercent) / 100;
+    // A live FMCG scheme applies only to a line that has no discount of its own (typed or from the price list).
+    const applied = docCurrency && !typedDiscount ? bestSchemeFor(schemes, product.id, item.quantity, unitPrice, docCurrency.exchange_rate) : null;
+    const discountPercent = applied ? applied.discountPercent : typedDiscount;
+    const discount_amount = applied ? applied.discountAmount : Math.round(gross * discountPercent) / 100;
     const subtotal = gross - discount_amount;
     const tax_percent = fromList?.tax != null ? fromList.tax : Number(product.tax_percent ?? 0);
     const tax_amount = Math.round(subtotal * tax_percent) / 100;
-    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_percent: discountPercent, discount_amount, subtotal, tax_percent, tax_amount };
+    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_percent: discountPercent, discount_amount, subtotal, tax_percent, tax_amount, ...(applied ? { scheme_id: applied.schemeId, free_quantity: applied.freeQuantity } : {}) };
   });
   const quotationNumber = `QT-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const subtotalSum = lines.reduce((sum, line) => sum + line.subtotal, 0);
   const taxSum = lines.reduce((sum, line) => sum + line.tax_amount, 0);
-  const { data: quotation, error } = await supabaseAdmin.from('quotations').insert({ organization_id: organizationId, quotation_number: quotationNumber, client_id: requirement.client_id, representative_id: representativeId, requirement_id: requirement.id, valid_until: input.validUntil ?? null, discount_amount: lines.reduce((sum, line) => sum + line.discount_amount, 0), tax_amount: taxSum, total_amount: subtotalSum + taxSum, notes: input.notes ?? null }).select().single();
+  const fxFields = docCurrency ? { ...docCurrency, base_total: toBase(subtotalSum + taxSum, docCurrency.exchange_rate) } : {};
+  const { data: quotation, error } = await supabaseAdmin.from('quotations').insert({ organization_id: organizationId, quotation_number: quotationNumber, client_id: requirement.client_id, representative_id: representativeId, requirement_id: requirement.id, valid_until: input.validUntil ?? null, discount_amount: lines.reduce((sum, line) => sum + line.discount_amount, 0), tax_amount: taxSum, total_amount: subtotalSum + taxSum, notes: input.notes ?? null, ...fxFields }).select().single();
   if (error) fail(error);
   const { error: itemError } = await supabaseAdmin.from('quotation_items').insert(lines.map((line) => ({ ...line, quotation_id: quotation.id })));
   if (itemError) { await supabaseAdmin.from('quotations').delete().eq('id', quotation.id); fail(itemError); }
@@ -121,7 +134,7 @@ export async function getQuotation(organizationId: string, id: string, scope?: I
   scopeCheck(scope, data.clients); return data;
 }
 export async function listQuotations(organizationId: string, filters: { representativeId?: string; status?: string; clientId?: string; industryTypeId?: string } = {}) {
-  const select = filters.industryTypeId ? '*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name))' : FULL;
+  const select = filters.industryTypeId ? '*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, mrp, discount_percent))' : FULL;
   let query = supabaseAdmin.from('quotations').select(select).eq('organization_id', organizationId).order('created_at', { ascending: false }).limit(200);
   if (filters.representativeId) query = query.eq('representative_id', filters.representativeId);
   if (filters.status) query = query.eq('status', filters.status);
@@ -144,15 +157,40 @@ export async function convertToOrder(organizationId: string, representativeId: s
   if (quotation.status !== 'accepted' || !quotation.approved_at) throw new AppError(422, 'QUOTATION_NOT_APPROVED', 'Only a manager-approved quotation can be converted into an order.');
   // Order numbering comes from the Order Configuration of the quotation's own industry.
   const orderConfig = await getOrderConfig(organizationId, await industryTypeIdOfClient(organizationId, quotation.client_id as string | null));
-  const number = formatOrderNumber(orderConfig.numberingFormat);
+  // Credit limit: the order must not push the client's unpaid balance above their limit.
+  await assertWithinCreditLimit(organizationId, quotation.client_id as string | null, Number(quotation.base_total ?? quotation.total_amount ?? 0));
+   const quotationValue = Number(quotation.base_total ?? quotation.total_amount ?? 0);
+  if (quotationValue < orderConfig.minOrderValue) throw new AppError(422, 'ORDER_BELOW_MINIMUM', `Order total (₹${quotationValue}) is below the minimum order value of ₹${orderConfig.minOrderValue} set in Settings.`);
+  if (await isFmcgIndustry(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
+    await planAllocations(organizationId, (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ product_id: item.product_id as string, quantity: item.quantity, free_quantity: item.free_quantity ?? 0 })));
+  }
+  const number = await uniqueOrderNumber(organizationId, orderConfig.numberingFormat);
   // quotation_id must be set here so the Orders page can correctly show
   // this as "converted from a quotation" instead of "Manual entry" — the
   // notes text alone isn't enough, the frontend only trusts quotation_id.
-  const { data: order, error } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: number, client_id: quotation.client_id, representative_id: quotation.representative_id, discount_amount: quotation.discount_amount, tax_amount: quotation.tax_amount, total_amount: quotation.total_amount, notes: `Converted from quotation ${quotation.quotation_number}`, status: 'confirmed', quotation_id: quotation.id }).select().single();
+  const { data: order, error } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: number, client_id: quotation.client_id, representative_id: quotation.representative_id, discount_amount: quotation.discount_amount, tax_amount: quotation.tax_amount, total_amount: quotation.total_amount, notes: `Converted from quotation ${quotation.quotation_number}`, status: 'confirmed', quotation_id: quotation.id, ...(quotation.currency_code ? { currency_code: quotation.currency_code, exchange_rate: quotation.exchange_rate, base_total: quotation.base_total } : {}) }).select().single();
   if (error) fail(error);
-  const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal, tax_percent: item.tax_percent ?? 0, tax_amount: item.tax_amount ?? 0 }));
+  const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal, tax_percent: item.tax_percent ?? 0, tax_amount: item.tax_amount ?? 0, ...(item.scheme_id ? { scheme_id: item.scheme_id, free_quantity: item.free_quantity ?? 0 } : {}) }));
   const { error: itemError } = await supabaseAdmin.from('sale_order_items').insert(items);
   if (itemError) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); fail(itemError); }
+  // Claim the quotation first (only one request can win), so a double-click can never create two orders or take stock twice.
+  const { data: claimed, error: claimError } = await supabaseAdmin.from('quotations').update({ status: 'converted', converted_order_id: order.id }).eq('id', id).eq('organization_id', organizationId).is('converted_order_id', null).select('id').maybeSingle();
+  if (claimError) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); fail(claimError); }
+  if (!claimed) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); return getQuotation(organizationId, id, scope); }
+  // FMCG orders take stock (first-expiry-first-out). If stock is short the order is removed and the quotation goes back to approved.
+  if (await isFmcgIndustry(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
+    try { await takeStockForOrder(organizationId, order.id as string); } catch (stockError) {
+      await supabaseAdmin.from('quotations').update({ status: quotation.status, converted_order_id: null }).eq('id', id).eq('organization_id', organizationId);
+      await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId);
+      throw stockError;
+    }
+  }
+  if (await isFmcgIndustry(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
+    try { await takeStockForOrder(organizationId, order.id as string); } catch (stockError) {
+      await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId);
+      throw stockError;
+    }
+  }
   // Conversion is automatic after approval. Mark it explicitly so every
   // consumer can present this quotation as completed rather than actionable.
   const { error: updateError } = await supabaseAdmin.from('quotations').update({ status: 'converted', converted_order_id: order.id }).eq('id', id).eq('organization_id', organizationId); if (updateError) fail(updateError);
@@ -437,6 +475,9 @@ async function finalizeApprovedQuotation(organizationId: string, id: string, sco
 export async function approveQuotation(organizationId: string, managerUserId: string, id: string, scope?: IndustryScope) {
   const quotation = await getQuotation(organizationId, id, scope);
   if (quotation.status !== 'client_accepted') throw new AppError(422, 'QUOTATION_NOT_AWAITING_APPROVAL', 'Only a client-accepted quotation can be approved.');
+  // Check credit BEFORE approving, so a blocked quotation stays "client accepted" and nothing
+  // (deal, shipment, order) is half-created. Approve again after payment is collected / limit raised.
+  await assertWithinCreditLimit(organizationId, quotation.client_id as string | null, Number(quotation.total_amount ?? 0));
   const { error } = await supabaseAdmin.from('quotations').update({ status: 'accepted', approved_at: new Date().toISOString(), approved_by: managerUserId }).eq('id', id).eq('organization_id', organizationId).eq('status', 'client_accepted');
   if (error) fail(error);
   return finalizeApprovedQuotation(organizationId, id, scope);

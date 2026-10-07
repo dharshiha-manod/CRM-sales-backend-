@@ -15,6 +15,14 @@ export const productCreateSchema = z.object({
   originCountry: z.string().trim().max(80).optional().nullable(),
   supplierName: z.string().trim().max(240).optional().nullable(),
   currency: z.string().trim().max(10).optional().nullable(),
+  mrp: z.number().nonnegative().optional().nullable(),
+  discountPercent: z.number().min(0).max(100).optional().nullable(),
   industryTypeIds: z.array(z.string().uuid()).max(50).optional(),
 });
 export const productUpdateSchema = productCreateSchema.partial();
+// Stock is changed by an amount (+ added / - removed), never by sending a final total, so two people
+// changing stock at the same time cannot overwrite each other.
+export const productStockChangeSchema = z.object({
+  delta: z.number().finite().refine((n) => n !== 0, 'Quantity change cannot be zero.'),
+  allowNegative: z.boolean().optional().default(false),
+});

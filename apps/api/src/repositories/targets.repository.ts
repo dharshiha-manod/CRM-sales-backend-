@@ -144,13 +144,13 @@ async function withAchievement<T extends {
     const endTs = `${b.end}T23:59:59.999`;
 
     const ordersQuery = supabaseAdmin.from('sale_orders')
-      .select('id, total_amount, clients!inner(industry_type_id)')
+      .select('id, total_amount, base_total, clients!inner(industry_type_id)')
       .eq('organization_id', organizationId).eq('representative_id', b.representativeId)
       .eq('clients.industry_type_id', b.industryTypeId)
-      .gte('created_at', startTs).lte('created_at', endTs).neq('status', 'cancelled');
+      .gte('created_at', startTs).lte('created_at', endTs).not('status', 'in', '(cancelled,rejected,pending_approval)'); // only real sales (same rule Inventory uses)
 
     const collectionsQuery = supabaseAdmin.from('sales_collections')
-      .select('amount, clients!inner(industry_type_id)')
+      .select('amount, sale_orders(exchange_rate), clients!inner(industry_type_id)')
       .eq('organization_id', organizationId).eq('representative_id', b.representativeId)
       .eq('clients.industry_type_id', b.industryTypeId)
       .gte('collected_at', startTs).lte('collected_at', endTs);
@@ -179,10 +179,11 @@ async function withAchievement<T extends {
     }
 
     agg.set(key, {
-      ordersAmount: (orders.data ?? []).reduce((sum, o) => sum + Number(o.total_amount), 0),
+      // base_total is the INR value of the order (a USD order's total_amount is in dollars); older orders fall back to total_amount.
+      ordersAmount: (orders.data ?? []).reduce((sum, o) => sum + Number(o.base_total ?? o.total_amount), 0),
       ordersCount: (orders.data ?? []).length,
       itemQty,
-      collections: (collections.data ?? []).reduce((sum, c) => sum + Number(c.amount), 0),
+      collections: (collections.data ?? []).reduce((sum, c) => sum + Number(c.amount) * (Number((c as { sale_orders?: { exchange_rate?: number | null } | null }).sale_orders?.exchange_rate ?? 1) || 1), 0),
       visits: visits.count ?? 0,
       newCustomers: newCustomers.count ?? 0,
     });

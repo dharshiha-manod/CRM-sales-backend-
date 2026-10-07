@@ -11,5 +11,6 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
   const known = error instanceof AppError;
   if (!known) logger.error({ err: error, requestId: req.id }, 'Unhandled request error');
   const status = known ? error.statusCode : 500;
-  res.status(status).json({ error: { code: known ? error.code : 'INTERNAL_ERROR', message: known ? error.message : 'An unexpected error occurred', ...(known && error.details ? { details: error.details } : {}) }, requestId: req.id });
+const devMessage = process.env.NODE_ENV === 'production' ? undefined : (error as { message?: string })?.message;
+res.status(status).json({ error: { code: known ? error.code : 'INTERNAL_ERROR', message: known ? error.message : (devMessage || 'An unexpected error occurred'), ...(known && error.details ? { details: error.details } : {}) }, requestId: req.id });
 };

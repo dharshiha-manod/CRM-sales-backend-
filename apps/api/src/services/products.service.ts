@@ -28,6 +28,10 @@ export const productService = {
     assertIndustryIdsInScope(scope, input.industryTypeIds as string[] | undefined);
     return repository.updateProduct(org, id, input);
   },
+  async changeStock(org: string, id: string, input: { delta: number; allowNegative?: boolean }, scope: IndustryScope) {
+    await assertProductInScope(org, id, scope);
+    return repository.changeProductStock(org, id, input.delta, Boolean(input.allowNegative));
+  },
   async remove(org: string, id: string, scope: IndustryScope) {
     await assertProductInScope(org, id, scope);
     return repository.deleteProduct(org, id);

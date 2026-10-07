@@ -10,7 +10,7 @@ export type IndustryFieldDef = { key: string; label: string; type: IndustryField
 export const INDUSTRY_FIELD_DEFS: Record<string, IndustryFieldDef[]> = {
   FMCG: [
     { key: 'fssaiNumber', label: 'FSSAI license number', type: 'text', pattern: /^[0-9]{14}$/, patternMessage: 'FSSAI number must be 14 digits' },
-    { key: 'outletCategory', label: 'Outlet category', type: 'select', options: ['General trade', 'Modern trade', 'HoReCa', 'Institutional'] }
+    { key: 'outletCategory', label: 'Trade channel', type: 'select', options: ['General trade', 'Modern trade', 'HoReCa', 'Institutional'] }
   ],
   SCHOOL: [
     { key: 'boardAffiliation', label: 'Board affiliation', type: 'select', required: true, options: ['CBSE', 'ICSE', 'State Board', 'IB', 'Other'] },
@@ -39,7 +39,9 @@ export function validateIndustryDetails(industryCode: string | null | undefined,
     if (Object.keys(input).length > 0) throw new Error('Select an industry before adding industry-specific details.');
     return {};
   }
-  const fields = INDUSTRY_FIELD_DEFS[industryCode];
+  // industry_types.code is stored in mixed case in the database ('fmcg', 'TRADING', ...). Match case-insensitively,
+  // otherwise a lower-case code finds no field list and every industry-specific value is silently dropped on save.
+  const fields = INDUSTRY_FIELD_DEFS[industryCode.toUpperCase()];
   if (!fields) return {};
   const cleaned: Record<string, unknown> = {};
   for (const field of fields) {

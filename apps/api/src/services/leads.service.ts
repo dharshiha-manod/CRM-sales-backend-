@@ -1,3 +1,4 @@
+import { isFmcgIndustry } from '../lib/fmcg-market.js';
 import { AppError } from '../errors/app-error.js';
 import { getSalesConfig } from '../lib/settings.js';
 
@@ -76,6 +77,28 @@ async function syncConvertedClientOwner(organizationId: string, lead: { converte
   if (!salesConfig.autoAssignCustomers) return;
   await repository.syncClientAssignmentWithLeadRep(organizationId, lead.converted_client_id, newRepresentativeId, previous);
 }
+/**
+ * A qualified lead can stop after its client was created (no representative yet). Once a
+ * representative is set on that converted lead, finish Requirement -> Quotation automatically.
+ * Safe to call any time: the chain never duplicates what already exists, and never throws.
+ */
+async function resumeLeadChain(organizationId: string, lead: { id: string; converted_client_id?: string | null }, newRepresentativeId: string | null, actorId?: string) {
+  if (!lead.converted_client_id || !newRepresentativeId) return;
+  try {
+    await repository.continueLeadChain(organizationId, lead.id, actorId);
+  } catch (err) {
+    console.error('[lead-chain] could not continue the pipeline after assigning a representative', err);
+  }
+}
+/** Country / currency are an FMCG-only feature: dropped for every other industry, upper-cased for FMCG. */
+async function applyMarketRule<T extends object>(organizationId: string, industryTypeId: string | null | undefined, input: T): Promise<T> {
+  if (!('countryCode' in input) && !('currencyCode' in input)) return input;
+  const next = { ...input } as Record<string, unknown>;
+  if (!(await isFmcgIndustry(organizationId, industryTypeId))) { delete next.countryCode; delete next.currencyCode; return next as T; }
+  if (typeof next.countryCode === 'string') next.countryCode = next.countryCode.toUpperCase();
+  if (typeof next.currencyCode === 'string') next.currencyCode = next.currencyCode.toUpperCase();
+  return next as T;
+}
 async function create(organizationId: string, createdBy: string, input: Parameters<typeof repository.createLead>[2], scope: IndustryScope, representativeId?: string) {
   if (representativeId) {
     await assertRepresentativeCanAccessIndustry(organizationId, representativeId, input.industryTypeId!);
@@ -90,12 +113,14 @@ async function create(organizationId: string, createdBy: string, input: Paramete
       if (suggestion) input = { ...input, representativeId: suggestion.id };
     }
   }
+  input = await applyMarketRule(organizationId, input.industryTypeId, input);
   input = { ...input, score: computeLeadScore(input) };
   return repository.createLead(organizationId, createdBy, input);
 }
 
-async function update(organizationId: string, id: string, input: Parameters<typeof repository.updateLead>[2], scope: IndustryScope, representativeId?: string) {
+async function update(organizationId: string, id: string, input: Parameters<typeof repository.updateLead>[2], scope: IndustryScope, representativeId?: string, actorId?: string) {
   const current = await getScoped(organizationId, id, scope, representativeId);
+  input = await applyMarketRule(organizationId, input.industryTypeId ?? current.industry_type_id, input);
   if (representativeId && input.industryTypeId) {
     await assertRepresentativeCanAccessIndustry(organizationId, representativeId, input.industryTypeId);
   } else if (!representativeId && input.industryTypeId) {
@@ -108,6 +133,7 @@ async function update(organizationId: string, id: string, input: Parameters<type
   const updated = await repository.updateLead(organizationId, id, merged);
   if (input.representativeId !== undefined) {
     await syncConvertedClientOwner(organizationId, current, input.representativeId ?? null);
+    await resumeLeadChain(organizationId, current, input.representativeId ?? null, actorId);
   }
   return updated;
 }
@@ -149,6 +175,7 @@ async function assign(organizationId: string, id: string, actorId: string, newRe
   await assertRepresentativeCanAccessIndustry(organizationId, newRepresentativeId, lead.industry_type_id);
   const assigned = await repository.assignLeadRepresentative(organizationId, id, actorId, newRepresentativeId);
   await syncConvertedClientOwner(organizationId, lead, newRepresentativeId);
+  await resumeLeadChain(organizationId, lead, newRepresentativeId, actorId);
   return assigned;
 }
 

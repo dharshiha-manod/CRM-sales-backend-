@@ -39,7 +39,7 @@ export const leads: Record<string, RequestHandler> = {
   update: async (req, res) => {
     const organizationId = org(req);
     const repId = await representativeIdIfRep(req, organizationId);
-    res.json({ data: await leadService.update(organizationId, id(req.params.id), leadUpdateSchema.parse(req.body), scope(req), repId) });
+    res.json({ data: await leadService.update(organizationId, id(req.params.id), leadUpdateSchema.parse(req.body), scope(req), repId, req.auth!.sub!) });
   },
   delete: async (req, res) => {
     const organizationId = org(req);

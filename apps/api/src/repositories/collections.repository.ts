@@ -1,3 +1,4 @@
+import { approvedReturnCredits } from './orders.repository.js';
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
@@ -38,8 +39,9 @@ export async function createFromVisit(organizationId: string, representativeId: 
     const { data: priorCollections, error: collectionError } = await supabaseAdmin.from('sales_collections').select('amount').eq('organization_id', organizationId).eq('sale_order_id', order.id);
     if (collectionError) throw collectionError;
     const alreadyCollected = (priorCollections ?? []).reduce((sum, collection) => sum + Number(collection.amount), 0);
-    if (alreadyCollected + input.amount > Number(order.total_amount) + 0.00001) {
-      throw new AppError(422, 'COLLECTION_EXCEEDS_ORDER_TOTAL', `Collection exceeds the remaining order balance of ${(Number(order.total_amount) - alreadyCollected).toFixed(2)}.`);
+    const visitCredit = (await approvedReturnCredits(organizationId, [order.id as string])).get(order.id as string)?.credit ?? 0;
+    if (alreadyCollected + input.amount > Number(order.total_amount) - visitCredit + 0.00001) {
+      throw new AppError(422, 'COLLECTION_EXCEEDS_ORDER_TOTAL', `Collection exceeds the remaining order balance of ${Math.max(0, Number(order.total_amount) - visitCredit - alreadyCollected).toFixed(2)}.`);
     }
   }
   const { data, error } = await supabaseAdmin.from('sales_collections').insert({ organization_id: organizationId, client_id: visit.client_id, representative_id: representativeId, visit_id: visit.id, sale_order_id: input.saleOrderId ?? null, amount: input.amount, mode: input.mode, reference_no: input.referenceNo ?? null, notes: input.notes ?? null }).select().single();
@@ -68,7 +70,8 @@ assertRecordInScope(scope, (order.clients as unknown as { industry_type_id?: str
     .eq('sale_order_id', order.id);
   if (collectionsError) throw collectionsError;
   const alreadyCollected = (priorCollections ?? []).reduce((sum, collection) => sum + Number(collection.amount), 0);
-  const balance = Number(order.total_amount) - alreadyCollected;
+  const credited = (await approvedReturnCredits(organizationId, [order.id as string])).get(order.id as string)?.credit ?? 0;
+  const balance = Number(order.total_amount) - credited - alreadyCollected;
   if (input.amount > balance + 0.00001) {
     throw new AppError(422, 'COLLECTION_EXCEEDS_ORDER_TOTAL', `Collection exceeds the remaining order balance of ${Math.max(0, balance).toFixed(2)}.`);
   }
@@ -88,7 +91,7 @@ assertRecordInScope(scope, (order.clients as unknown as { industry_type_id?: str
 }
 
 export async function listCollections(organizationId: string, representativeId?: string, industryTypeId?: string | null) {
-  let query = supabaseAdmin.from('sales_collections').select('*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), sale_orders(order_number)').eq('organization_id', organizationId).order('collected_at', { ascending: false }).limit(100);
+  let query = supabaseAdmin.from('sales_collections').select('*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), sale_orders(order_number, currency_code, exchange_rate)').eq('organization_id', organizationId).order('collected_at', { ascending: false }).limit(100);
   if (representativeId) query = query.eq('representative_id', representativeId);
   if (industryTypeId) query = query.eq('clients.industry_type_id', industryTypeId);
   const { data, error } = await query;

@@ -1,3 +1,4 @@
+import { approvedReturnCredits } from './orders.repository.js';
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
@@ -118,10 +119,11 @@ async function syncOverdueCollectionFollowUps(organizationId: string) {
     for (const row of priorRes.data ?? []) if (row.sale_order_id) alreadyRaised.add(row.sale_order_id);
   }
 
+  const creditByOrder = await approvedReturnCredits(organizationId, orders.map((o) => o.id));
   const rows: Record<string, unknown>[] = [];
   for (const order of orders) {
     if (alreadyRaised.has(order.id)) continue;
-    const outstanding = Number(order.total_amount) - (collectedByOrder.get(order.id) ?? 0);
+    const outstanding = Number(order.total_amount) - (creditByOrder.get(order.id)?.credit ?? 0) - (collectedByOrder.get(order.id) ?? 0);
     if (outstanding <= 0.00001) continue;
     const daysOverdue = Math.floor((Date.now() - new Date(order.created_at).getTime()) / (24 * 60 * 60 * 1000));
     rows.push({ organization_id: organizationId, representative_id: order.representative_id, client_id: order.client_id, sale_order_id: order.id, title: `Payment overdue: ${order.order_number}`, due_at: new Date().toISOString(), priority: 'high', follow_up_type: 'call', notes: `Outstanding balance ₹${outstanding.toFixed(2)} on order ${order.order_number}, confirmed ${daysOverdue} day(s) ago.` });

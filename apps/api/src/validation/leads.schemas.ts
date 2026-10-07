@@ -27,6 +27,9 @@ const leadFieldsSchema = z.object({
   streetAddress: optionalText,
   city: z.string().trim().max(120).optional().nullable(),
   state: z.string().trim().max(120).optional().nullable(),
+  // FMCG only (the service drops them for every other industry): ISO country + currency of the market.
+  countryCode: z.string().trim().regex(/^[A-Za-z]{2}$/, 'Use a 2-letter country code').optional().nullable(),
+  currencyCode: z.string().trim().regex(/^[A-Za-z]{3}$/, 'Use a 3-letter currency code').optional().nullable(),
   source: z.enum(leadSourceValues).default('other'),
   priority: z.enum(leadPriorityValues).default('normal'),
   notes: z.string().trim().max(10000).optional().nullable(),

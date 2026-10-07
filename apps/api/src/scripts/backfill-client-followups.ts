@@ -15,7 +15,7 @@
 // Run with:
 //   npx tsx scripts/backfill-client-followups.ts
 
-import { supabaseAdmin } from '../src/lib/supabase.js';
+import { supabaseAdmin } from '../lib/supabase.js';
 
 async function main() {
   const { data: convertedLeads, error: leadsError } = await supabaseAdmin

@@ -4,6 +4,7 @@ import { createRequirement } from './requirements.repository.js';
 import { createFromRequirement } from './quotations.repository.js';
 import { listProducts } from './products.repository.js';
 import { getFollowUpConfig, getSalesConfig } from '../lib/settings.js';
+import { findRateToInr } from '../lib/fmcg-market.js';
 
 const fail = (error: unknown): never => {
   throw error;
@@ -37,100 +38,187 @@ function parseLeadMeta(notes?: string | null): LeadMeta {
   }
 }
 
+async function logLeadNote(organizationId: string, leadId: string, actorId: string | null | undefined, note: string) {
+  await supabaseAdmin.from('lead_activities').insert({
+    organization_id: organizationId,
+    lead_id: leadId,
+    activity_type: 'note_added',
+    note,
+    actor_id: actorId ?? null,
+  });
+}
+
+// Picks the catalog product a lead is interested in. The lead form's field is
+// "Interested product / category", so after the exact / partial name match this
+// also tries the product code and the category (e.g. "Biscuits" -> first active
+// biscuit product) instead of silently giving up and leaving no quotation.
+function matchInterestedProduct(products: any[], interested: string | undefined) {
+  const wanted = interested?.trim().toLowerCase();
+  if (!wanted) return undefined;
+  const list = products ?? [];
+  const name = (p: any) => String(p.product_name ?? '').toLowerCase();
+  return (
+    list.find((p) => name(p) === wanted) ??
+    list.find((p) => name(p) && (name(p).includes(wanted) || wanted.includes(name(p)))) ??
+    list.find((p) => String(p.product_code ?? '').toLowerCase() === wanted) ??
+    list.find((p) => String(p.category ?? '').toLowerCase() === wanted) ??
+    list.find((p) => String(p.category ?? '').toLowerCase() && wanted.includes(String(p.category).toLowerCase()))
+  );
+}
+
+export type LeadChainResult = {
+  clientId?: string;
+  requirementId?: string;
+  quotationNumber?: string;
+  /** Why the chain stopped early (shown to the user); undefined when it ran to the end. */
+  stoppedReason?: string;
+};
+
 /**
  * Fires the moment a lead's status becomes "qualified" — called from
  * changeLeadStatus below, no matter which caller (admin web, mobile rep
- * app, IVR, a future integration) triggered the status change. This is
- * the server-side replacement for the automation that used to live only
- * in the admin frontend's changeStatus() handler.
+ * app, IVR, a future integration) triggered the status change.
  *
- * Chain: Client -> Requirement -> (best-effort) Quotation. Every step is
+ * Chain: Client -> Requirement -> (best-effort) Quotation. It is the same
+ * for every industry (Trading, FMCG, Pharma, ...). Every step is
  * best-effort and logged to lead_activities on failure; a failure at any
  * step never throws back to the caller and never blocks the status
- * change itself — the lead simply stays "qualified" with whatever prefix
- * of the chain succeeded, and the rest can be finished manually from the
- * existing "Convert to client" / Requirements / Quotations screens.
+ * change itself. The Requirement/Quotation part lives in continueLeadChain,
+ * which is safe to run again, so a lead that stopped half-way (for example
+ * because no representative was assigned yet) is finished automatically
+ * as soon as the missing piece is fixed.
  */
-async function autoConvertQualifiedLead(organizationId: string, lead: Record<string, any>, actorId: string) {
+async function autoConvertQualifiedLead(organizationId: string, lead: Record<string, any>, actorId: string): Promise<LeadChainResult> {
   const meta = parseLeadMeta(lead.notes);
   const clientCode = `CLI-${String(lead.lead_code).replace(/^LD-/, '')}`;
 
-  let clientId: string | undefined;
   try {
-    const converted = await convertLeadToClient(organizationId, lead.id, actorId, {
+    await convertLeadToClient(organizationId, lead.id, actorId, {
       clientCode,
       clientType: meta.customerType || 'retailer',
       address: [lead.street_address, lead.city, lead.state].filter(Boolean).join(', ') || null,
     });
-    clientId = (converted as any).converted_client_id ?? (converted as any).clients?.id;
   } catch (err) {
-    await supabaseAdmin.from('lead_activities').insert({
-      organization_id: organizationId,
-      lead_id: lead.id,
-      activity_type: 'note_added',
-      note: `Auto-convert to client failed: ${err instanceof Error ? err.message : 'unknown error'}`,
-      actor_id: actorId,
-    });
-    return;
+    const reason = `Auto-convert to client failed: ${err instanceof Error ? err.message : 'unknown error'}`;
+    await logLeadNote(organizationId, lead.id, actorId, reason);
+    return { stoppedReason: reason };
   }
-  // No representative assigned — leave it converted to a client only;
-  // requirement/quotation need a rep to own them.
-  if (!clientId || !lead.representative_id) return;
+  return continueLeadChain(organizationId, lead.id, actorId);
+}
 
+/**
+ * Requirement + Quotation part of the Lead pipeline for a lead that already
+ * has its client. Idempotent: an auto-created requirement / quotation is
+ * found and reused, never duplicated, so this can be called again whenever
+ * something that stopped the chain has been fixed (rep assigned, product
+ * added, ...).
+ */
+export async function continueLeadChain(organizationId: string, leadId: string, actorId?: string | null): Promise<LeadChainResult> {
+  const { data: lead, error: leadError } = await supabaseAdmin.from('leads').select('*').eq('id', leadId).eq('organization_id', organizationId).maybeSingle();
+  if (leadError) fail(leadError);
+  if (!lead || !lead.converted_client_id) return {};
+  const clientId = lead.converted_client_id as string;
+  const result: LeadChainResult = { clientId };
+  const stop = async (reason: string): Promise<LeadChainResult> => {
+    await logLeadNote(organizationId, leadId, actorId, reason);
+    return { ...result, stoppedReason: reason };
+  };
+
+  // Every requirement / quotation needs an owner. Use the lead's rep; if the lead has none
+  // (the Rep field is optional on the lead form), fall back to a rep assigned to this lead's
+  // industry so the chain does not stall right after the client is created.
+  let representativeId: string | null = lead.representative_id ?? null;
+  if (!representativeId && lead.industry_type_id) {
+    const suggestion = await suggestRepresentativeForIndustry(organizationId, lead.industry_type_id);
+    if (suggestion) {
+      representativeId = suggestion.id;
+      const { error: assignError } = await supabaseAdmin.from('leads').update({ representative_id: representativeId }).eq('id', leadId).eq('organization_id', organizationId);
+      if (assignError) return stop(`Could not assign a representative automatically: ${assignError.message}`);
+      const salesConfig = await getSalesConfig(organizationId, lead.industry_type_id);
+      if (salesConfig.autoAssignCustomers) await syncClientAssignmentWithLeadRep(organizationId, clientId, representativeId, null);
+      await supabaseAdmin.from('lead_activities').insert({ organization_id: organizationId, lead_id: leadId, activity_type: 'assigned', note: 'Representative assigned automatically to continue Requirement and Quotation.', actor_id: actorId ?? null });
+    }
+  }
+  if (!representativeId) {
+    return stop('Requirement and Quotation were not created: no sales representative is assigned to this lead or to its industry. Assign a representative (Sales Representatives -> industries) and the Requirement and Quotation will be created automatically.');
+  }
+
+  const meta = parseLeadMeta(lead.notes);
   const interested = meta.interestedProduct?.trim();
   let matchedProduct: { id: string; selling_price: number } | undefined;
   if (interested) {
-    const products = await listProducts(organizationId, undefined, 'active', lead.industry_type_id ?? undefined);
-    matchedProduct = (products ?? []).find(
-      (p: any) =>
-        p.product_name.toLowerCase().includes(interested.toLowerCase()) ||
-        interested.toLowerCase().includes(p.product_name.toLowerCase()),
-    );
-  }
-  const expectedValue = Number(meta.expectedOrderValue) || 0;
-  const quantity = matchedProduct && matchedProduct.selling_price > 0 ? Math.max(1, Math.round(expectedValue / matchedProduct.selling_price)) : 1;
-
-  let requirement;
-  try {
-    requirement = await createRequirement(organizationId, lead.representative_id, {
-      clientId,
-      title: `Requirement — ${interested || lead.company_name}`,
-      description: `Auto-created when lead ${lead.lead_code} was qualified.`,
-      urgency: lead.priority === 'critical' || lead.priority === 'high' ? 'high' : 'normal',
-      targetDate: meta.nextFollowUp || null,
-      items: [
-        matchedProduct
-          ? { productId: matchedProduct.id, quantity, notes: `Auto-matched from lead's "${interested}"` }
-          : { freeTextItem: interested || 'General requirement', quantity: 1, notes: 'No catalog product matched automatically — pick the exact product to enable quoting.' },
-      ],
-    });
-  } catch (err) {
-    await supabaseAdmin.from('lead_activities').insert({
-      organization_id: organizationId,
-      lead_id: lead.id,
-      activity_type: 'note_added',
-      note: `Auto-create requirement failed: ${err instanceof Error ? err.message : 'unknown error'}`,
-      actor_id: actorId,
-    });
-    return;
-  }
-
-  if (matchedProduct) {
     try {
-      await createFromRequirement(organizationId, lead.representative_id, requirement.id, {
+      const products = await listProducts(organizationId, undefined, 'active', lead.industry_type_id ?? undefined);
+      matchedProduct = matchInterestedProduct(products ?? [], interested);
+    } catch (err) {
+      await logLeadNote(organizationId, leadId, actorId, `Product lookup failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+  }
+  let expectedValue = Number(meta.expectedOrderValue) || 0;
+  // An international FMCG lead states its expected value in the client's currency; product prices are rupees,
+  // so convert to INR before working out the quantity. No rate yet -> quantity 1 and a note in the lead's activity.
+  const leadCurrency = String(lead.currency_code ?? '').toUpperCase();
+  if (expectedValue > 0 && leadCurrency && leadCurrency !== 'INR') {
+    const rate = await findRateToInr(organizationId, lead.industry_type_id, leadCurrency);
+    if (rate) expectedValue *= rate;
+    else {
+      expectedValue = 0;
+      await logLeadNote(organizationId, leadId, actorId, `Expected order value is in ${leadCurrency} but there is no ${leadCurrency} to INR rate in FMCG Currency Rates yet, so the quantity was set to 1. Add the rate and adjust the quantity on the Requirement.`);
+    }
+  }
+   const quantity = matchedProduct && matchedProduct.selling_price > 0 ? Math.max(1, Math.round(expectedValue / matchedProduct.selling_price)) : 1;
+  const marker = `Auto-created when lead ${lead.lead_code} was qualified.`;
+  let requirement: { id: string; status: string } | null = null;
+  const { data: existing, error: existingError } = await supabaseAdmin
+    .from('requirements')
+    .select('id, status')
+    .eq('organization_id', organizationId)
+    .eq('client_id', clientId)
+    .eq('description', marker)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (existingError) return stop(`Could not check for an existing requirement: ${existingError.message}`);
+  if (existing && existing.length > 0) requirement = existing[0] as { id: string; status: string };
+
+  if (!requirement) {
+    try {
+      // The follow-up field is a datetime-local string; the requirement's target date is a date.
+      const targetDate = (meta.nextFollowUp || '').slice(0, 10) || null;
+      const created = await createRequirement(organizationId, representativeId, {
+        clientId,
+        title: `Requirement — ${interested || lead.company_name}`,
+        description: marker,
+        urgency: lead.priority === 'critical' || lead.priority === 'high' ? 'high' : 'normal',
+        targetDate,
+        items: [
+          matchedProduct
+            ? { productId: matchedProduct.id, quantity, notes: `Auto-matched from lead's "${interested}"` }
+            : { freeTextItem: interested || 'General requirement', quantity: 1, notes: 'No catalog product matched automatically — pick the exact product to enable quoting.' },
+        ],
+      });
+      requirement = { id: created.id, status: created.status };
+    } catch (err) {
+      return stop(`Auto-create requirement failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+  }
+  result.requirementId = requirement.id;
+
+  if (requirement.status === 'open') {
+    if (!matchedProduct) {
+      result.stoppedReason = 'Quotation not generated: the interested product did not match an active product of this industry.';
+      return result;
+    }
+    try {
+      const quotation = await createFromRequirement(organizationId, representativeId, requirement.id, {
         items: [{ productId: matchedProduct.id, quantity, discountPercent: 0 }],
         notes: 'Auto-generated when lead was qualified.',
       });
+      result.quotationNumber = (quotation as { quotation_number?: string }).quotation_number;
     } catch (err) {
-      await supabaseAdmin.from('lead_activities').insert({
-        organization_id: organizationId,
-        lead_id: lead.id,
-        activity_type: 'note_added',
-        note: `Auto-create quotation failed: ${err instanceof Error ? err.message : 'unknown error'}`,
-        actor_id: actorId,
-      });
+      return stop(`Auto-create quotation failed: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
   }
+  return result;
 }
 
 const SELECT_WITH_RELATIONS =
@@ -163,6 +251,8 @@ const columnMap: Record<string, string> = {
   companyName: 'company_name',
   contactName: 'contact_name',
   streetAddress: 'street_address',
+  countryCode: 'country_code',
+  currencyCode: 'currency_code',
   nextAction: 'next_action',
   nextActionDueAt: 'next_action_due_at',
   nextActionType: 'next_action_type',
@@ -607,6 +697,7 @@ export async function convertLeadToClient(
       address: input.address ?? null,
       city: lead.city,
       state: lead.state,
+      ...(lead.country_code ? { country_code: lead.country_code, currency_code: lead.currency_code ?? null } : {}),
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       gps_radius_meters: input.gpsRadiusMeters ?? null,
