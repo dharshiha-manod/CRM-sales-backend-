@@ -85,6 +85,44 @@ export async function industryTypeIdOfVisit(organizationId: string, visitId: str
   return client?.industry_type_id ?? null;
 }
 
+// Expiry rules come from two Settings sections ("Inventory Configuration" and "Expiry & Batch Rules").
+// Like every other section they are resolved per industry: defaults < org-wide base < this industry's own values.
+export interface ExpiryRulesConfig {
+  expiryWarningDays: number;
+  blockSaleWithinDaysOfExpiry: number;
+  batchMandatory: boolean;
+  expiryMandatory: boolean;
+}
+
+const DEFAULT_EXPIRY_RULES_CONFIG: ExpiryRulesConfig = {
+  expiryWarningDays: 30,
+  blockSaleWithinDaysOfExpiry: 7,
+  batchMandatory: true,
+  expiryMandatory: true,
+};
+
+function expiryRulesFrom(blob: Blob, industryKey: string | null): ExpiryRulesConfig {
+  const inventory = resolveSection(blob, 'inventory', {} as { expiryWarningDays?: number }, industryKey);
+  const expiry = resolveSection(blob, 'expiryBatch', {} as Partial<ExpiryRulesConfig>, industryKey);
+  const days = (value: unknown, fallback: number) => (Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : fallback);
+  return {
+    expiryWarningDays: days(inventory.expiryWarningDays, DEFAULT_EXPIRY_RULES_CONFIG.expiryWarningDays),
+    blockSaleWithinDaysOfExpiry: days(expiry.blockSaleWithinDaysOfExpiry, DEFAULT_EXPIRY_RULES_CONFIG.blockSaleWithinDaysOfExpiry),
+    batchMandatory: expiry.batchMandatory ?? DEFAULT_EXPIRY_RULES_CONFIG.batchMandatory,
+    expiryMandatory: expiry.expiryMandatory ?? DEFAULT_EXPIRY_RULES_CONFIG.expiryMandatory,
+  };
+}
+
+export async function getExpiryRulesConfig(organizationId: string, industryTypeId?: string | null): Promise<ExpiryRulesConfig> {
+  const blob = await getSettingsBlob(organizationId);
+  return expiryRulesFrom(blob, await industryKeyOf(organizationId, industryTypeId));
+}
+
+/** Expiry rules of the FMCG industry (batch picking only ever runs for FMCG orders). */
+export async function getFmcgExpiryRules(organizationId: string): Promise<ExpiryRulesConfig> {
+  return expiryRulesFrom(await getSettingsBlob(organizationId), 'fmcg');
+}
+
 export interface OrderConfig {
   statuses: string[];
   approvalRequired: boolean;

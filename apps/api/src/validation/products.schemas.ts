@@ -17,6 +17,8 @@ export const productCreateSchema = z.object({
   currency: z.string().trim().max(10).optional().nullable(),
   mrp: z.number().nonnegative().optional().nullable(),
   discountPercent: z.number().min(0).max(100).optional().nullable(),
+  /** Days from manufacture to expiry. Lets Batch & Expiry work out an expiry date by itself. */
+  shelfLifeDays: z.number().int().positive().max(36500).optional().nullable(),
   industryTypeIds: z.array(z.string().uuid()).max(50).optional(),
 });
 export const productUpdateSchema = productCreateSchema.partial();

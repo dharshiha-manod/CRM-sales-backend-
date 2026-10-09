@@ -6,7 +6,7 @@ import { requireRoles } from '../middleware/authorize.js';
 import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 import { isFmcgIndustry } from '../lib/fmcg-market.js';
 import { representativeForUser } from '../repositories/stock-requests.repository.js';
-import { batchSchema, createBatch, deleteBatch, listBatches, updateBatch } from '../repositories/product-batches.repository.js';
+import { batchSchema, createBatch, deleteBatch, listBatches, updateBatch, writeOffBatch, writeOffSchema } from '../repositories/product-batches.repository.js';
 import { createReturn, decideReturn, deleteReturn, listReturns, returnSchema } from '../repositories/sales-returns.repository.js';
 import { beatSchema, createBeat, deleteBeat, listBeats, updateBeat } from '../repositories/route-beats.repository.js';
 
@@ -31,6 +31,10 @@ fmcgOperationsRouter.patch('/fmcg/batches/:id', authenticate, staff, async (req,
   const body = z.object({ batchNo: z.string().trim().min(1).max(60).optional(), mfgDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(), expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(), quantity: z.number().finite().min(0).max(1e8).optional() }).parse(req.body ?? {});
 res.json({ data: await updateBatch(org(req), req.industryScope!, paramId(req), body, industryTypeId) });});
 fmcgOperationsRouter.delete('/fmcg/batches/:id', authenticate, staff, async (req, res) => { await fmcgId(req); await deleteBatch(org(req), req.industryScope!, paramId(req)); res.status(204).send(); });
+fmcgOperationsRouter.post('/fmcg/batches/:id/write-off', authenticate, staff, async (req, res) => {
+  const industryTypeId = await fmcgId(req);
+  res.json({ data: await writeOffBatch(org(req), req.auth!.sub as string, req.industryScope!, paramId(req), writeOffSchema.parse(req.body ?? {}), industryTypeId) });
+});
 
 // ---------- Returns & damage ----------
 fmcgOperationsRouter.get('/fmcg/returns', authenticate, requireRoles('super_admin', 'admin', 'sales_manager', 'sales_representative'), async (req, res) => {

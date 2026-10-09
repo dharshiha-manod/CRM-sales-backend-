@@ -93,8 +93,8 @@ export async function loadLiveSchemes(org: string, industryTypeId: string | null
   const { data, error } = await supabaseAdmin.from('fmcg_schemes')
     .select('id, name, scheme_type, discount_percent, discount_amount, buy_quantity, free_quantity, slabs, fmcg_scheme_products(product_id)')
     .eq('organization_id', org).eq('industry_type_id', industryTypeId).eq('status', 'active')
-    .or('start_date.is.null,start_date.lte.' + today).or('end_date.is.null,end_date.gte.' + today);
-  if (error) {
+    .or('start_date.is.null,start_date.lte.' + today).or('end_date.is.null,end_date.gte.' + today)
+    .order('created_at', { ascending: true });  if (error) {
     // Schemes tables not created yet: pricing carries on without schemes instead of blocking every order.
     if (['42P01', 'PGRST205', 'PGRST200'].includes((error as { code?: string }).code ?? '')) return [];
     throw new AppError(500, 'SCHEMES_LOAD_FAILED', error.message, error);

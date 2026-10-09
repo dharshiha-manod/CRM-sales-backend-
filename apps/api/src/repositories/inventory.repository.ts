@@ -4,6 +4,9 @@ import { isGlobalRole, type IndustryScope } from '../lib/industry-scope.js';
 import { changeProductStock, listProducts } from './products.repository.js';
 import { changeBatch } from '../lib/stock.js';
 import { assertApprovedRequest, markRequestFulfilled } from './stock-requests.repository.js';
+import { addDays, autoBatchNo } from './product-batches.repository.js';
+import { isFmcgIndustry } from '../lib/fmcg-market.js';
+import { getFmcgExpiryRules } from '../lib/settings.js';
 
 const fail = (error: unknown): never => { throw error; };
 export type MovementType = 'stock_in' | 'adjustment' | 'transfer' | 'assign' | 'return';
@@ -129,8 +132,26 @@ async function trimBatchesToStock(org: string, productId: string) {
   }
 }
 
+/** FMCG goods receipt: batch number and expiry are worked out here when they are not typed, so receiving needs no manual batch work. */
+async function autoFillStockIn(org: string, input: MovementInput): Promise<MovementInput> {
+  const { data: product, error } = await supabaseAdmin.from('products').select('product_code, shelf_life_days').eq('organization_id', org).eq('id', input.productId).maybeSingle();
+  if (error) fail(error);
+  const mfg = input.mfgDate || null;
+  const shelfLife = Number(product?.shelf_life_days ?? 0);
+  const expiry = input.expiryDate || (mfg && shelfLife > 0 ? addDays(mfg, shelfLife) : null);
+  if (!expiry && (await getFmcgExpiryRules(org)).expiryMandatory) throw new AppError(422, 'EXPIRY_REQUIRED', 'Expiry is required. Enter the expiry date, or the manufacturing date (the product needs a shelf life set).');
+  let batch = (input.batch ?? '').trim();
+  if (!batch) {
+    const { data: used, error: usedError } = await supabaseAdmin.from('product_batches').select('batch_no').eq('organization_id', org).eq('product_id', input.productId);
+    if (usedError) fail(usedError);
+    batch = autoBatchNo(String(product?.product_code ?? 'BATCH'), mfg, (used ?? []).map((b) => String(b.batch_no)));
+  }
+  return { ...input, batch, mfgDate: mfg, expiryDate: expiry };
+}
+
 export async function createMovement(org: string, userId: string, scope: IndustryScope, input: MovementInput) {
   const product = await assertProduct(org, input.productId, scope);
+  if (input.type === 'stock_in' && await isFmcgIndustry(org, scope.activeIndustryTypeId ?? scope.lockedIndustryTypeId)) input = await autoFillStockIn(org, input);
   const stock = Number(product.stock_quantity ?? 0);
   const productMovements = await movementsFor(org, [input.productId]);
   const holdings = (await holdingsFor(org, productMovements)).filter((h) => h.product_id === input.productId);

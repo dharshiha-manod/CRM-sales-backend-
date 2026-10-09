@@ -1,3 +1,4 @@
+import { assertNoActiveShipments } from './fmcg-shipment.repository.js';
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { getOrderConfig, industryTypeIdOfClient } from '../lib/settings.js';
@@ -185,6 +186,7 @@ export async function cancelOrder(organizationId: string, scope: IndustryScope, 
   if (!order) throw notFound;
   assertRecordInScope(scope, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null, notFound);
   if (order.status === 'cancelled') return order;
+  await assertNoActiveShipments(organizationId, id, 'cancelled');
   if (order.status === 'completed') throw new AppError(422, 'ORDER_ALREADY_COMPLETED', 'A completed order cannot be cancelled.');
   if (order.status !== 'pending_approval') {
     const orderConfig = await getOrderConfig(organizationId, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null);
@@ -240,6 +242,7 @@ export async function updateOrder(organizationId: string, scope: IndustryScope, 
 
   if (input.items) {
     await assertNoReturns(organizationId, id, 'edited');
+    await assertNoActiveShipments(organizationId, id, 'edited');
     const productIds = input.items.map((item) => item.productId);
     const { data: products, error: productError } = await supabaseAdmin.from('products').select('id, product_code, product_name, selling_price').eq('organization_id', organizationId).eq('status', 'active').in('id', productIds);
     if (productError) fail(productError);

@@ -3,6 +3,7 @@
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from './supabase.js';
 import { changeProductStock } from '../repositories/products.repository.js';
+import { getFmcgExpiryRules } from './settings.js';
 
 export type BatchPart = { batchId: string; batchNo: string; quantity: number; restocked?: number };
 export type Allocation = { productId: string; total: number; batches: BatchPart[] };
@@ -27,7 +28,11 @@ export async function changeBatch(org: string, batchId: string, delta: number) {
   throw new AppError(409, 'STOCK_CHANGED', 'Stock was changed by someone else at the same moment. Please try again.');
 }
 
-/** Works out which batches each product line will be picked from (earliest expiry first, expired batches never). Does not change anything. */
+/** Whole days from today until a batch's expiry date (negative = already expired). Both sides are UTC dates. */
+export const daysUntilExpiry = (expiryDate: string, today: string) => Math.round((Date.parse(expiryDate.slice(0, 10)) - Date.parse(today)) / 86_400_000);
+
+/** Works out which batches each product line will be picked from (earliest expiry first).
+ *  A batch is skipped when it is expired, or when it is within the FMCG "Block sale within (days) of expiry" Setting. Does not change anything. */
 export async function planAllocations(org: string, lines: StockLine[]): Promise<Map<string, Allocation[]>> {
   const need = new Map<string, number>();
   for (const line of lines) if (line.product_id) need.set(line.product_id, (need.get(line.product_id) ?? 0) + num(line.quantity) + num(line.free_quantity));
@@ -40,25 +45,35 @@ export async function planAllocations(org: string, lines: StockLine[]): Promise<
   const tracked = new Map((products ?? []).filter((p) => p.stock_quantity != null).map((p) => [p.id as string, p]));
 
   const today = new Date().toISOString().slice(0, 10);
+  const blockDays = (await getFmcgExpiryRules(org)).blockSaleWithinDaysOfExpiry;
   const { data: batchRows, error: batchError } = await supabaseAdmin.from('product_batches').select('id, product_id, batch_no, expiry_date, quantity').eq('organization_id', org).in('product_id', productIds).gt('quantity', 0).order('expiry_date', { ascending: true, nullsFirst: false });
   if (batchError) fail(batchError);
   const pool = new Map<string, { id: string; batch_no: string; left: number }[]>();
   const expiredUnits = new Map<string, number>();
+  const closeUnits = new Map<string, number>();
   for (const b of batchRows ?? []) {
-    if (b.expiry_date && String(b.expiry_date) < today) { expiredUnits.set(b.product_id as string, (expiredUnits.get(b.product_id as string) ?? 0) + num(b.quantity)); continue; }
-    const list = pool.get(b.product_id as string) ?? [];
+    const pid = b.product_id as string;
+    const days = b.expiry_date ? daysUntilExpiry(String(b.expiry_date), today) : null;
+    if (days !== null && days < 0) { expiredUnits.set(pid, (expiredUnits.get(pid) ?? 0) + num(b.quantity)); continue; }
+    if (days !== null && blockDays > 0 && days <= blockDays) { closeUnits.set(pid, (closeUnits.get(pid) ?? 0) + num(b.quantity)); continue; }
+    const list = pool.get(pid) ?? [];
     list.push({ id: b.id as string, batch_no: b.batch_no as string, left: num(b.quantity) });
-    pool.set(b.product_id as string, list);
+    pool.set(pid, list);
   }
 
   for (const [productId, qty] of need) {
-      const product = tracked.get(productId);
+    const product = tracked.get(productId);
+    if (!product) continue;
+    const stock = num(product.stock_quantity);
     const expired = expiredUnits.get(productId) ?? 0;
-    if (product && expired > 0 && qty > num(product.stock_quantity) - expired + 1e-9 && qty <= num(product.stock_quantity) + 1e-9) {
-      throw new AppError(422, 'INSUFFICIENT_STOCK', `Not enough in-date stock for ${product.product_name}: ${Math.max(0, num(product.stock_quantity) - expired)} usable, ${expired} expired, ${qty} needed.`);
+    const close = closeUnits.get(productId) ?? 0;
+    const locked = expired + close;
+    if (locked > 0 && qty > stock - locked + 1e-9 && qty <= stock + 1e-9) {
+      const parts = [expired > 0 ? `${expired} expired` : '', close > 0 ? `${close} within ${blockDays} day(s) of expiry` : ''].filter(Boolean).join(', ');
+      throw new AppError(422, 'INSUFFICIENT_STOCK', `Not enough sellable stock for ${product.product_name}: ${Math.max(0, stock - locked)} sellable, ${parts}, ${qty} needed.`);
     }
-    if (product && qty > num(product.stock_quantity) + 1e-9) {
-      throw new AppError(422, 'INSUFFICIENT_STOCK', `Not enough stock for ${product.product_name}: ${Math.max(0, num(product.stock_quantity))} available, ${qty} needed.`);
+    if (qty > stock + 1e-9) {
+      throw new AppError(422, 'INSUFFICIENT_STOCK', `Not enough stock for ${product.product_name}: ${Math.max(0, stock)} available, ${qty} needed.`);
     }
   }
 
