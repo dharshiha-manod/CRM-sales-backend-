@@ -3,6 +3,8 @@ import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
 import { kpiClick } from '../lib/kpiClick';
+import { lockedUnitsByProduct } from '../lib/batchExpiry';
+import { useOrgSettings } from '../settings/useOrgSettings';
 import { loadNameList, brandListKey, categoryListKey, unitListKey } from './BrandsCategoriesPage';
 import './MasterDataPages.css';
 
@@ -23,6 +25,7 @@ type Product = {
  category?: string | null;
   selling_price: number;
   cost_price?: number | null;
+  shelf_life_days?: number | null;
   unit?: string | null;
   stock_quantity?: number | null;
   status: 'active' | 'inactive';
@@ -163,7 +166,8 @@ type ProductForm = {
  category: string;
   sellingPrice: string;
   costPrice: string;
-  stockQuantity: string;  
+  stockQuantity: string;
+  shelfLifeDays: string;
   status: 'active' | 'inactive';
   industryTypeId: string;
   // Real, backend-persisted field (products.tax_percent) — not part of
@@ -184,6 +188,7 @@ const blankForm: ProductForm = {
   sellingPrice: '',
   costPrice: '',
   stockQuantity: '',
+  shelfLifeDays: '',
   status: 'active',
   industryTypeId: '',
   taxPercent: '',
@@ -261,6 +266,34 @@ export function ProductsPage() {
     }
   }
 
+  // FMCG only: units sitting in expired / blocked batches, so Stock can show what is really sellable.
+  const { settings: orgSettings } = useOrgSettings();
+  const blockDays = Math.max(0, Number(orgSettings.expiryBatch.blockSaleWithinDaysOfExpiry) || 0);
+  const [fmcgBatches, setFmcgBatches] = useState<{ product_id: string; batch_no: string; mfg_date: string | null; expiry_date: string | null; quantity: number }[]>([]);
+  useEffect(() => {
+    if (activeIndustry !== 'fmcg') { setFmcgBatches([]); return; }
+    let live = true;
+    api<{ data: { product_id: string; batch_no: string; mfg_date: string | null; expiry_date: string | null; quantity: number }[] }>('/fmcg/batches').then((r) => { if (live) setFmcgBatches(r.data ?? []); }).catch(() => { if (live) setFmcgBatches([]); });
+    return () => { live = false; };
+  }, [activeIndustry, activeIndustryTypeId]);
+  const lockedUnits = useMemo(() => lockedUnitsByProduct(fmcgBatches, blockDays), [fmcgBatches, blockDays]);
+  // FMCG: batch / expiry come from the real batches (earliest-expiring one that still has units), never from typed product fields.
+  const nearestBatch = useMemo(() => {
+    const out: Record<string, { batch: string; mfg: string; expiry: string; count: number }> = {};
+    const live = fmcgBatches.filter((b) => Number(b.quantity) > 0).sort((a, b) => (a.expiry_date ?? '9999') < (b.expiry_date ?? '9999') ? -1 : 1);
+    for (const b of live) {
+      const hit = out[b.product_id];
+      if (hit) hit.count += 1; else out[b.product_id] = { batch: b.batch_no, mfg: b.mfg_date ?? '', expiry: b.expiry_date ?? '', count: 1 };
+    }
+    return out;
+  }, [fmcgBatches]);
+  const metaOf = (id: string): FmcgMeta => {
+    const base = fmcgMetaMap[id] ?? blankFmcgMeta;
+    if (activeIndustry !== 'fmcg') return base;
+    const n = nearestBatch[id];
+    return { ...base, batchNumber: n ? `${n.batch}${n.count > 1 ? ` (+${n.count - 1} more)` : ''}` : '', mfgDate: n?.mfg ?? '', expiryDate: n?.expiry ?? '' };
+  };
+
   async function loadOrders() {
     try {
       setAllOrders((await api<{ data: RelatedOrder[] }>('/orders')).data ?? []);
@@ -316,7 +349,7 @@ export function ProductsPage() {
     [industryItems, fmcgMetaMap],
   );
   const filteredItems = useMemo(() => industryItems.filter((item) => {
-    const meta = fmcgMetaMap[item.id] ?? blankFmcgMeta;
+    const meta = metaOf(item.id);
     const term = search.trim().toLowerCase();
     const searchMatches = !term
       || item.product_name.toLowerCase().includes(term)
@@ -332,13 +365,13 @@ export function ProductsPage() {
       || (filterExpiry === 'expired' && expiry?.label === 'Expired')
       || (filterExpiry === 'none' && !meta.expiryDate);
     return searchMatches && brandMatches && categoryMatches && statusMatches && stockMatches && expiryMatches;
-  }), [industryItems, fmcgMetaMap, search, filterBrand, filterCategory, filterStatus, filterStock, filterExpiry]);
+  }), [industryItems, fmcgMetaMap, nearestBatch, activeIndustry, search, filterBrand, filterCategory, filterStatus, filterStock, filterExpiry]);
 
   const kpis = useMemo(() => {
     let active = 0, lowStock = 0, outOfStock = 0, expiringSoon = 0, totalStock = 0;
     industryItems.forEach((item) => {
       if (item.status === 'active') active += 1;
-      const meta = fmcgMetaMap[item.id] ?? blankFmcgMeta;
+      const meta = metaOf(item.id);
       const state = stockStatus(item.stock_quantity, meta.minStockLevel);
       if (state === 'low') lowStock += 1;
       if (state === 'out') outOfStock += 1;
@@ -347,7 +380,7 @@ export function ProductsPage() {
       totalStock += item.stock_quantity ?? 0;
     });
     return { total: industryItems.length, active, lowStock, outOfStock, expiringSoon, totalStock };
-  }, [industryItems, fmcgMetaMap]);
+  }, [industryItems, fmcgMetaMap, nearestBatch, activeIndustry]);
 
   // Show the Batch/Expiry column, card and filter only when they're useful:
   // always for FMCG/Pharma, otherwise only if some product tracks batches.
@@ -375,6 +408,7 @@ export function ProductsPage() {
      sellingPrice: String(product.selling_price),
       costPrice: product.cost_price == null ? '' : String(product.cost_price),
       stockQuantity: product.stock_quantity == null ? '' : String(product.stock_quantity),
+      shelfLifeDays: product.shelf_life_days ? String(product.shelf_life_days) : '',
          status: product.status,
       industryTypeId: product.industry_type_id ?? activeIndustryTypeId ?? '',
          ...loadFmcgMeta(product.id),
@@ -425,6 +459,7 @@ export function ProductsPage() {
          sellingPrice: Number(form.sellingPrice),
       costPrice: form.costPrice === '' ? null : Number(form.costPrice),
       stockQuantity: form.stockQuantity === '' ? null : Number(form.stockQuantity),
+      ...(showBatchUi ? { shelfLifeDays: form.shelfLifeDays === '' ? null : Number(form.shelfLifeDays) } : {}),
       status: form.status,
       unit: form.unit || null,
       taxPercent: form.taxPercent === '' ? null : Number(form.taxPercent),
@@ -578,7 +613,7 @@ export function ProductsPage() {
             </thead>
             <tbody>
               {filteredItems.map((item) => {
-                const meta = fmcgMetaMap[item.id] ?? blankFmcgMeta;
+                const meta = metaOf(item.id);
                 const expiry = expiryStatus(meta.expiryDate);
                 const stockState = stockStatus(item.stock_quantity, meta.minStockLevel);
                 return (
@@ -603,6 +638,7 @@ export function ProductsPage() {
                     <td><strong>{formatMoney(Number(item.selling_price) + (Number(item.selling_price) * Number(item.tax_percent || 0)) / 100)}</strong></td>
                                       <td>
                       {item.stock_quantity ?? '—'}{item.stock_quantity != null && meta.unit ? ` ${meta.unit}` : ''}
+                      {item.stock_quantity != null && (lockedUnits[item.id] ?? 0) > 0 && <><br /><small className="text-faint-inline">{Math.max(0, item.stock_quantity - lockedUnits[item.id])} sellable · {lockedUnits[item.id]} expired/blocked</small></>}
                       {stockState === 'low'&& <><br /><span className="status-badge status-quoted">Low stock</span></>}
                       {stockState === 'out' && <><br /><span className="status-badge status-cancelled">Out of stock</span></>}
                     </td>
@@ -743,6 +779,8 @@ export function ProductsPage() {
                 <label>Final price incl. GST (₹)<input readOnly disabled value={form.sellingPrice && form.taxPercent ? (Number(form.sellingPrice) + (Number(form.sellingPrice) * Number(form.taxPercent)) / 100).toFixed(2) : form.sellingPrice} /></label>
                 <label>Opening stock<input min="0" type="number" step="1" value={form.stockQuantity} onChange={(event) => setForm({ ...form, stockQuantity: event.target.value })} /></label>
                 <label>Minimum stock level<input min="0" type="number" step="1" value={form.minStockLevel} onChange={(event) => setForm({ ...form, minStockLevel: event.target.value })} /></label>
+                {showBatchUi && <label>Shelf life (days)<input min="1" type="number" step="1" placeholder="e.g. 180" value={form.shelfLifeDays} onChange={(event) => setForm({ ...form, shelfLifeDays: event.target.value })} /><small className="text-faint-inline">Expiry = manufacturing date + this</small></label>}
+                {activeIndustry !== 'fmcg' && (<>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '.6rem' }}>
 <input type="checkbox" style={{ width: 'auto', padding: 0, border: 'none', boxShadow: 'none', background: 'none' }} checked={form.trackBatch} onChange={(event) => setForm({ ...form, trackBatch: event.target.checked })} />                  This product has batch / expiry
                 </label>
@@ -753,6 +791,7 @@ export function ProductsPage() {
                     <label>Expiry date<input type="date" value={form.expiryDate} onChange={(event) => setForm({ ...form, expiryDate: event.target.value })} /></label>
                   </>
                 )}
+                </>)}
                 <label>Status<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as ProductForm['status'] })}><option value="active">Active</option><option value="inactive">Inactive</option></select></label>
               </div>
               <div className="modal-actions"><button type="button" className="quiet-button" onClick={() => closeModal()} disabled={saving}>Cancel</button><button type="submit" className="primary-action" disabled={saving}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Add product'}</button></div>
@@ -762,7 +801,7 @@ export function ProductsPage() {
       )}
 
       {viewing && (() => {
-        const meta = fmcgMetaMap[viewing.id] ?? blankFmcgMeta;
+        const meta = metaOf(viewing.id);
         const expiry = expiryStatus(meta.expiryDate);
         const stockState = stockStatus(viewing.stock_quantity, meta.minStockLevel);
         return (

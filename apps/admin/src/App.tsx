@@ -28,6 +28,7 @@ import { SpecificPricingDiscountPage } from './components/SpecificPricingDiscoun
 import { SalesReturnDamagePage } from './components/SalesReturnDamagePage';
 import { BatchExpiryPage } from './components/BatchExpiryPage';
 import { FmcgCurrencyRatesPage } from './components/FmcgCurrencyRatesPage';
+import { FmcgShipmentsPage } from './components/FmcgShipmentsPage';
 import { DesignPatternPage } from './components/DesignPatternPage';
 import { ColourSizePage } from './components/ColourSizePage';
 import { FabricRollPage } from './components/FabricRollPage';
@@ -122,6 +123,7 @@ const { isGlobal } = useCurrentMembership();
     });
   });
   content['industry:fmcg:route-beat'] = <RouteBeatPage />;
+  content['industry:fmcg:shipment'] = <FmcgShipmentsPage />;
   content['industry:fmcg:scheme-discount'] = <SchemeDiscountPage />;
    content['industry:fmcg:distributor'] = <DistributorPage />;
   content['industry:fmcg:sales-return-damage'] = <SalesReturnDamagePage />;

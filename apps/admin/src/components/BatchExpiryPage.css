@@ -1,0 +1,33 @@
+/* ══════════ Batch & expiry (builds on the Sales return & damage styles) ══════════ */
+
+.batch-page .kpi-icon-red { background: var(--red-soft); color: var(--red); }
+
+/* Expiry badges */
+.status-badge.bx-expired { background: var(--red-soft); color: var(--red); }
+.status-badge.bx-blocked { background: var(--red-soft); color: var(--red); }
+.status-badge.bx-soon { background: var(--amber-soft); color: var(--amber-strong); }
+.status-badge.bx-ok { background: var(--green-soft); color: var(--green); }
+.status-badge.bx-unset { background: var(--paper); color: var(--text-faint); }
+
+/* Filters / small cards */
+.batch-page .bx-toggle { display: inline-flex; align-items: center; gap: .45rem; font-size: .82rem; font-weight: 500; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
+.batch-page .bx-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--ink); }
+.batch-page .bx-card-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .85rem 1.1rem; border-bottom: 1px solid var(--line); }
+.batch-page .bx-card-head small { font-size: .78rem; color: var(--text-faint); }
+.batch-page .bx-risk { margin-top: 0; }
+
+/* Rows */
+.batch-page .bx-row-empty td { opacity: .55; }
+.batch-page .row-actions-cell .icon-action { margin-left: .3rem; }
+.batch-page .bx-writeoff { padding: .35rem .7rem; font-size: .8rem; font-weight: 600; border-radius: 8px; }
+.batch-page .bx-writeoff--due { border-color: var(--red); color: var(--red); }
+.batch-page .bx-writeoff:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); color: var(--red); }
+
+/* Write-off dialog */
+.bx-writeoff-modal { width: min(460px, 100vw); height: auto; }
+.bx-writeoff-modal .rd-body { padding: 1.2rem 1.6rem; }
+.rd-segment.bx-segment-3 { grid-template-columns: repeat(3, 1fr); }
+.rd-summary.rd-summary--red { border-left-color: var(--red); }
+
+.batch-page .bx-hint, .bx-hint { display: block; font-size: .76rem; color: var(--text-faint); }
+.rd-field > label .bx-auto { font-style: normal; font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: .1rem .4rem; border-radius: 99px; background: var(--green-soft); color: var(--green); margin-left: .3rem; }

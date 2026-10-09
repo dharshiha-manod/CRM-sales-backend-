@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { FmcgExportPanel } from './FmcgExportPanel';
+import { FmcgShipmentPanel } from './FmcgShipmentPanel';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { GenerateDocumentButton } from './GenerateDocumentButton';
 import { buildDraftFromOrder } from '../lib/tradeDocumentHandoff';
@@ -37,6 +38,12 @@ type Order = {
   port_of_loading?: string | null;
   port_of_discharge?: string | null;
   export_docs?: Record<string, boolean> | null;
+  payment_type?: string | null;
+  dispatch_status?: string | null;
+  transport_ref?: string | null;
+  shipped_at?: string | null;
+  expected_arrival?: string | null;
+  delivered_at?: string | null;
   sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null;
   sale_order_items?: OrderItem[];
 };
@@ -286,6 +293,18 @@ export function OrdersPage() {
     setOrderMeta(next);
     saveOrderMeta(selected.id, next);
   }
+  async function savePaymentType(value: string) {
+    if (!selected) return;
+    const previous = selected.payment_type ?? 'credit';
+    setSelected({ ...selected, payment_type: value });
+    try {
+      await api(`/orders/${selected.id}/payment-type`, { method: 'PATCH', body: JSON.stringify({ paymentType: value }) });
+      void load();
+    } catch (err) {
+      setSelected((s) => (s ? { ...s, payment_type: previous } : s));
+      setApproveError((err as Error).message);
+    }
+  }
   function closeOrder() {
     setSelected(null);
     setPaymentOpen(false);
@@ -516,7 +535,7 @@ export function OrdersPage() {
   const completedCount = scopedItems.filter((o) => o.status === 'completed').length;
   const cancelledCount = scopedItems.filter((o) => o.status === 'cancelled').length;
   const totalSalesValue = useMemo(
-    () => scopedItems.filter((o) => o.status !== 'cancelled').reduce((sum, o) => sum + Number(o.base_total ?? o.total_amount ?? 0), 0),
+    () => scopedItems.filter((o) => o.status !== 'cancelled' && o.status !== 'pending_approval').reduce((sum, o) => sum + Number(o.base_total ?? o.total_amount ?? 0), 0),
     [scopedItems],
   );
 
@@ -626,13 +645,13 @@ export function OrdersPage() {
             <thead>
                           <tr>
                 <th>Order ID</th><th>Client</th><th>Industry</th><th>Representative</th><th>Items</th>
-                <th>Order Value</th><th>Payment Status</th><th>Order Status</th><th>Order Date</th><th>Actions</th>
+                <th>Order Value</th><th>Payment Status</th><th>Order Status</th>{activeIndustry === 'fmcg' && <th>Shipment</th>}<th>Order Date</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {scopedItems.length === 0 ? (
                 <tr>
-                  <td colSpan={10}>
+                  <td colSpan={11}>
                     <div className="empty-state empty-state-lg ready-empty-state">
                       <div className="empty-state-icon">🧾</div>
                       <h3>No sales orders yet</h3>
@@ -656,6 +675,13 @@ export function OrdersPage() {
                         <td>{currency(order.total_amount, order.currency_code ?? 'INR')}{order.currency_code && order.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(order.base_total ?? 0))}</small>}{Number(order.returns_credit ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Returns credit − {currency(Number(order.returns_credit), order.currency_code ?? 'INR')}</small>}</td>
                         <td><span className={`status-badge status-${ps.tone === 'good' ? 'paid' : ps.tone === 'warn' ? 'quoted' : 'overdue'}`}>{ps.tone === 'good' ? 'Paid' : ps.tone === 'warn' ? 'Partial' : 'Outstanding'}</span></td>
                         <td><span className={`status-badge status-${order.status}`}>{order.status}</span></td>
+                        {activeIndustry === 'fmcg' && (
+                          <td>
+                            {order.status === 'confirmed' || order.status === 'completed'
+                              ? <span className={`status-badge status-${order.dispatch_status === 'delivered' ? 'paid' : order.dispatch_status === 'dispatched' || order.dispatch_status === 'partially_shipped' ? 'quoted' : 'confirmed'}`}>{({ pending: 'Not shipped', packed: 'Packed', partially_shipped: 'Partially shipped', dispatched: 'Dispatched', delivered: 'Delivered' } as Record<string, string>)[order.dispatch_status ?? 'pending'] ?? 'Not shipped'}</span>
+                              : '—'}
+                          </td>
+                        )}
                         <td>{dateLabel(order.created_at)}</td>
                         <td className="master-actions">
                           <button type="button" className="icon-action row-menu-trigger" title="More actions" aria-label="More actions" onClick={() => openOrder(order)}>
@@ -689,7 +715,7 @@ export function OrdersPage() {
         const quoteRef = /QT-[A-Za-z0-9-]+/.exec(selected.notes ?? '')?.[0];
         const canCancel = selected.status !== 'cancelled' && selected.status !== 'completed';
         const showCancelButton = canCancel && !cancelOpen;
-        const showPayButton = balance > 0.01 && !paymentOpen;
+             const showPayButton = selected.status !== 'cancelled' && balance > 0.01 && !paymentOpen;
         const showFooter = activeIndustry === 'trading' || selected.status === 'pending_approval' || showCancelButton || showPayButton;
 
         return (
@@ -757,7 +783,7 @@ export function OrdersPage() {
                           {selCur(shown.discountAmount)}
                           {shown.discountPercent > 0 && <small> ({shown.discountPercent}%)</small>}
                         </td>
-                        <td><strong>{currency(line.subtotal)}</strong></td>
+                <td><strong>{selCur(line.subtotal)}</strong></td>
                       </tr>
                       );
                     })}
@@ -779,6 +805,10 @@ export function OrdersPage() {
                 <FmcgExportPanel key={selected.id} order={selected} onSaved={(saved) => { setSelected((s) => (s ? { ...s, ...saved } : s)); void load(); }} />
               )}
 
+              {activeIndustry === 'fmcg' && (
+                <FmcgShipmentPanel key={`ship-${selected.id}`} order={selected} onSaved={(saved) => { setSelected((s) => (s ? { ...s, ...saved } : s)); void load(); }} />
+              )}
+
               <div className="qd-panel">
                 <div className="qd-panel-head">
                   <span>Payment &amp; dispatch</span>
@@ -787,18 +817,24 @@ export function OrdersPage() {
                 <div className="qd-fields">
                   <label>
                     Payment type
-                    <select value={orderMeta.paymentType} onChange={(e) => updateOrderMeta({ paymentType: e.target.value })}>
+                    <select
+                      value={activeIndustry === 'fmcg' ? (selected.payment_type ?? 'credit') : orderMeta.paymentType}
+                      disabled={activeIndustry === 'fmcg' && selected.status === 'cancelled'}
+                      onChange={(e) => (activeIndustry === 'fmcg' ? void savePaymentType(e.target.value) : updateOrderMeta({ paymentType: e.target.value }))}
+                    >
                       <option value="credit">Credit</option>
                       <option value="advance">Advance</option>
                       <option value="cod">Cash on delivery</option>
                     </select>
                   </label>
-                  <label>
-                    Dispatch status
-                    <select value={orderMeta.dispatchStatus} onChange={(e) => updateOrderMeta({ dispatchStatus: e.target.value })}>
-                      {Object.entries(dispatchLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                    </select>
-                  </label>
+                  {activeIndustry !== 'fmcg' && (
+                    <label>
+                      Dispatch status
+                      <select value={orderMeta.dispatchStatus} onChange={(e) => updateOrderMeta({ dispatchStatus: e.target.value })}>
+                        {Object.entries(dispatchLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                      </select>
+                    </label>
+                  )}
                 </div>
               </div>
 

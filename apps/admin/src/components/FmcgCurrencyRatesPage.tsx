@@ -23,6 +23,7 @@ export function FmcgCurrencyRatesPage() {
   const [currencyText, setCurrencyText] = useState(labelOf('USD'));
   const listId = useId();
   const [form, setForm] = useState({ currencyCode: 'USD', rateToInr: '', effectiveFrom: today() });
+  
 
   const load = () => {
     setLoading(true);
@@ -70,7 +71,15 @@ export function FmcgCurrencyRatesPage() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!ADDABLE.includes(form.currencyCode)) { setError('Pick a currency from the list.'); return; }
+       if (!ADDABLE.includes(form.currencyCode)) { setError('Pick a currency from the list.'); return; }
+    // Typo guard: compare with the rate already in force for this currency on the chosen date.
+    const newRate = Number(form.rateToInr);
+    const reference = rows.find((r) => r.currency_code === form.currencyCode && r.effective_from <= form.effectiveFrom);
+    if (reference && Number(reference.rate_to_inr) > 0 && Number.isFinite(newRate)) {
+      const oldRate = Number(reference.rate_to_inr);
+      const change = Math.abs(newRate - oldRate) / oldRate;
+      if (change > 0.2 && !window.confirm(`The new ${form.currencyCode} rate ${newRate} is ${Math.round(change * 100)}% ${newRate > oldRate ? 'higher' : 'lower'} than the current rate ${oldRate} (from ${reference.effective_from}). Rates rarely move this much, so please check for a typing mistake.\n\nSave this rate anyway?`)) return;
+    }
     setSaving(true);
     try {
       await api('/fmcg/currency-rates', { method: 'POST', body: JSON.stringify({ currencyCode: form.currencyCode, rateToInr: Number(form.rateToInr), effectiveFrom: form.effectiveFrom }) });

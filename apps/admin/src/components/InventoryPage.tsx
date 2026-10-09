@@ -4,6 +4,7 @@ import { useIndustryScope } from '../industry/useIndustryScope';
 import { api } from '../lib/api';
 import { useOrgSettings } from '../settings/useOrgSettings';
 import { kpiClick } from '../lib/kpiClick';
+import { addDaysIso } from '../lib/batchExpiry';
 import type { IndustryKey } from '../industry/types';
 import './InventoryPage.css';
 
@@ -23,6 +24,7 @@ type ApiProduct = {
   brand?: string | null;
   selling_price: number;
   cost_price?: number | null;
+  shelf_life_days?: number | null;
   stock_quantity?: number | null;
   status: 'active' | 'inactive';
   industry_type_id?: string | null;
@@ -68,6 +70,7 @@ interface InventoryItem {
   unitValue: number;
   costValue: number;
   barcode: string;
+  shelfLifeDays?: number | null;
   repNames?: string[];
   expiryWarnDays?: number;
   // industry-specific extras
@@ -177,6 +180,7 @@ function buildInventoryFromProducts(products: ApiProduct[], rules: { minStock: n
        unitValue: p.selling_price ?? 0,
       costValue: p.cost_price ?? 0,
        barcode: meta.barcode || '',
+      shelfLifeDays: p.shelf_life_days ?? null,
       expiryWarnDays: rules.expiryWarnDays,
     };
   });
@@ -924,7 +928,7 @@ export function InventoryPage() {
 
       {/* ============ MODALS ============ */}
       {modal.kind === 'addStock' && (
-        <AddStockModal items={industryItems} onCancel={() => setModal({ kind: 'none' })} onSubmit={handleAddStock} />
+        <AddStockModal items={industryItems} autoBatch={activeIndustry === 'fmcg'} onCancel={() => setModal({ kind: 'none' })} onSubmit={handleAddStock} />
       )}
       {modal.kind === 'transfer' && (
         <TransferModal items={industryItems} presetItem={modal.item} locations={locations} onCancel={() => setModal({ kind: 'none' })} onSubmit={handleTransfer} />
@@ -1200,25 +1204,31 @@ function ModalShell({ title, onCancel, children, onSubmit, submitLabel = 'Save' 
   );
 }
 
-function AddStockModal({ items, onCancel, onSubmit }: {
-  items: InventoryItem[]; onCancel: () => void;
+function AddStockModal({ items, autoBatch, onCancel, onSubmit }: {
+  items: InventoryItem[]; autoBatch: boolean; onCancel: () => void;
   onSubmit: (d: { productId: string; batch: string; mfgDate: string; expiryDate: string; quantity: number; location: string; supplierRef: string; purchaseRef: string; remarks: string }) => void;
 }) {
   const [productId, setProductId] = useState(items[0]?.id ?? '');
   const [batch, setBatch] = useState('');
-  const [mfgDate, setMfgDate] = useState('');
+  // FMCG: manufacturing date starts as today, expiry follows from it and the product's shelf life, batch number is automatic.
+  const [mfgDate, setMfgDate] = useState(autoBatch ? new Date().toISOString().slice(0, 10) : '');
   const [expiryDate, setExpiryDate] = useState('');
+  const [expiryTouched, setExpiryTouched] = useState(false);
   const [quantity, setQuantity] = useState(0);
   const [location, setLocation] = useState('');
   const [supplierRef, setSupplierRef] = useState('');
   const [purchaseRef, setPurchaseRef] = useState('');
   const [remarks, setRemarks] = useState('');
+  const item = items.find((i) => i.id === productId);
+  const autoExpiry = autoBatch && mfgDate && item?.shelfLifeDays ? addDaysIso(mfgDate, item.shelfLifeDays) : '';
+  const effectiveExpiry = expiryTouched ? expiryDate : (autoExpiry || expiryDate);
   return (
-    <ModalShell title="Add Stock" onCancel={onCancel} submitLabel="Add Stock" onSubmit={() => quantity > 0 && productId && onSubmit({ productId, batch, mfgDate, expiryDate, quantity, location, supplierRef, purchaseRef, remarks })}>
-      <label>Product<select value={productId} onChange={(e) => setProductId(e.target.value)}>{items.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>
-      <label>Batch Number<input value={batch} onChange={(e) => setBatch(e.target.value)} placeholder="e.g. BT202609" /></label>
+    <ModalShell title="Add Stock" onCancel={onCancel} submitLabel="Add Stock" onSubmit={() => quantity > 0 && productId && onSubmit({ productId, batch, mfgDate, expiryDate: effectiveExpiry, quantity, location, supplierRef, purchaseRef, remarks })}>
+      <label>Product<select value={productId} onChange={(e) => { setProductId(e.target.value); setExpiryTouched(false); }}>{items.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>
+      <label>Batch Number{autoBatch ? ' (optional)' : ''}<input value={batch} onChange={(e) => setBatch(e.target.value)} placeholder={autoBatch ? 'Leave empty to auto-number, or type the supplier batch no.' : 'e.g. BT202609'} /></label>
       <label>Manufacturing Date<input type="date" value={mfgDate} onChange={(e) => setMfgDate(e.target.value)} /></label>
-      <label>Expiry Date<input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} /></label>
+      <label>Expiry Date{autoBatch && !expiryTouched && autoExpiry ? ' (auto from shelf life)' : ''}<input type="date" value={effectiveExpiry} onChange={(e) => { setExpiryTouched(true); setExpiryDate(e.target.value); }} /></label>
+      {autoBatch && item && !item.shelfLifeDays && <p className="inv-modal-hint">This product has no shelf life yet. Set it on the Products page to fill expiry automatically.</p>}
       <label>Quantity<input type="number" min={1} value={quantity || ''} onChange={(e) => setQuantity(Number(e.target.value))} /></label>
       <label>Location<input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Warehouse A" /></label>
       <label>Supplier Reference<input value={supplierRef} onChange={(e) => setSupplierRef(e.target.value)} /></label>

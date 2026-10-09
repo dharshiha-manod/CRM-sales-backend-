@@ -10,6 +10,7 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
   fmcg: [
     { id: 'route-beat', label: 'Route / Beat Management', icon: '⌖' },
     { id: 'scheme-discount', label: 'Scheme / Discount Management', icon: '％' },
+    { id: 'shipment', label: 'Shipments', icon: '🚚' },
     { id: 'distributor', label: 'Distributor Management', icon: '▤' },
     { id: 'sales-return-damage', label: 'Sales Return & Damage Management', icon: '↩' },
      { id: 'batch-expiry', label: 'Batch & Expiry Management', icon: '⏱' },
