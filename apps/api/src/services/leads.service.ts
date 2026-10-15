@@ -1,4 +1,4 @@
-import { isFmcgIndustry } from '../lib/fmcg-market.js';
+import { isMultiCurrencyIndustry } from '../lib/fmcg-market.js';
 import { AppError } from '../errors/app-error.js';
 import { getSalesConfig } from '../lib/settings.js';
 
@@ -90,11 +90,11 @@ async function resumeLeadChain(organizationId: string, lead: { id: string; conve
     console.error('[lead-chain] could not continue the pipeline after assigning a representative', err);
   }
 }
-/** Country / currency are an FMCG-only feature: dropped for every other industry, upper-cased for FMCG. */
+/** Country / currency are an FMCG + Trading feature: dropped for every other industry, upper-cased for these two. */
 async function applyMarketRule<T extends object>(organizationId: string, industryTypeId: string | null | undefined, input: T): Promise<T> {
   if (!('countryCode' in input) && !('currencyCode' in input)) return input;
   const next = { ...input } as Record<string, unknown>;
-  if (!(await isFmcgIndustry(organizationId, industryTypeId))) { delete next.countryCode; delete next.currencyCode; return next as T; }
+  if (!(await isMultiCurrencyIndustry(organizationId, industryTypeId))) { delete next.countryCode; delete next.currencyCode; return next as T; }
   if (typeof next.countryCode === 'string') next.countryCode = next.countryCode.toUpperCase();
   if (typeof next.currencyCode === 'string') next.currencyCode = next.currencyCode.toUpperCase();
   return next as T;

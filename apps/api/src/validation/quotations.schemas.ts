@@ -23,6 +23,8 @@ export const quotationUpdateSchema = z.object({
 export const publicQuotationDecisionSchema = z.object({
   decision: z.enum(['accepted', 'rejected']),
   reason: z.string().trim().max(2_000).optional(),
+  // Optional: quantities the client changed on the public page (accept only). Omitted = no change, same as before.
+  items: z.array(z.object({ id: z.string().uuid(), quantity: z.number().int().min(1).max(1_000_000) })).max(200).optional(),
 });
 
 export const quotationDenySchema = z.object({

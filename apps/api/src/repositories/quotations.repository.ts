@@ -16,9 +16,9 @@ import { bestSchemeFor, loadLiveSchemes } from '../lib/fmcg-schemes.js';
 const fail = (error: unknown): never => { throw error; };
 type ItemInput = { productId: string; quantity: number; discountPercent: number };
 type CreateInput = { items: ItemInput[]; validUntil?: string | null; notes?: string | null };
-type PublicDecision = { decision: 'accepted' | 'rejected'; reason?: string };
+type PublicDecision = { decision: 'accepted' | 'rejected'; reason?: string; items?: Array<{ id: string; quantity: number }> };
 const FULL = '*, clients(id, client_code, client_name, email, industry_type_id), organizations(name), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, category, unit, cost_price, selling_price, mrp, discount_percent))';
-const PUBLIC = 'id, organization_id, quotation_number, status, valid_until, total_amount, tax_amount, created_at, clients(client_name, industry_type_id), organizations(name), quotation_items(quantity, unit_price, discount_amount, subtotal, tax_percent, tax_amount, products(product_code, product_name))';
+const PUBLIC = 'id, organization_id, quotation_number, status, valid_until, total_amount, currency_code, tax_amount, created_at, clients(client_name, industry_type_id), organizations(name), quotation_items(id, quantity, unit_price, discount_percent, discount_amount, subtotal, tax_percent, tax_amount, products(product_code, product_name))';
 
 function scopeCheck(scope: IndustryScope | undefined, client: unknown) {
   if (scope) assertRecordInScope(scope, (client as { industry_type_id?: string | null } | null)?.industry_type_id, new AppError(404, 'QUOTATION_NOT_FOUND', 'Quotation not found in this organization.'));
@@ -224,9 +224,50 @@ export async function sendQuotation(organizationId: string, representativeId: st
 }
 async function publicQuotation(token: string) { const { data, error } = await supabaseAdmin.from('quotations').select(`${PUBLIC}, public_token, token_expires_at`).eq('public_token', token).maybeSingle(); if (error) fail(error); if (!data || !data.token_expires_at || new Date(data.token_expires_at).getTime() < Date.now()) throw new AppError(404, 'QUOTATION_LINK_NOT_FOUND', 'This quotation link is invalid or has expired.'); return data; }
 export async function getPublicQuotation(token: string) { const { public_token: _token, token_expires_at: _expiry, organization_id, clients, ...quotation } = await publicQuotation(token); const industryTypeId = (clients as { industry_type_id?: string | null } | null)?.industry_type_id; const template = industryTypeId ? await getQuotationEmailTemplate(organization_id, industryTypeId) : null; return { ...quotation, clients: clients ? { client_name: (clients as { client_name?: string }).client_name } : null, company_logo_url: template?.logo_url ?? null }; }
+/** Lets the client change line quantities on the public quote page. Recalculates each changed line, the quotation totals,
+ *  and appends an audit note (old -> new) so the team can see exactly what the client changed. */
+async function applyClientQuantities(quotationId: string, requested: Array<{ id: string; quantity: number }>) {
+  const { data: quote, error: quoteError } = await supabaseAdmin.from('quotations').select('id, notes, exchange_rate, quotation_items(id, quantity, unit_price, discount_percent, tax_percent, products(product_name))').eq('id', quotationId).single();
+  if (quoteError) fail(quoteError);
+  type Row = { id: string; quantity: number; unit_price: number; discount_percent: number | null; tax_percent: number | null; products?: { product_name?: string | null } | null };
+  const rows = ((quote as unknown as { quotation_items?: Row[] }).quotation_items ?? []);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  for (const item of requested) if (!byId.has(item.id)) throw new AppError(422, 'QUOTATION_LINE_NOT_FOUND', 'One of the quotation lines could not be found.');
+
+  const changes: string[] = [];
+  for (const item of requested) {
+    const row = byId.get(item.id)!;
+    if (Number(row.quantity) === item.quantity) continue;
+    const gross = Number(row.unit_price) * item.quantity;
+    const discountPercent = Number(row.discount_percent ?? 0);
+    const discount_amount = Math.round(gross * discountPercent) / 100;
+    const subtotal = gross - discount_amount;
+    const tax_amount = Math.round(subtotal * Number(row.tax_percent ?? 0)) / 100;
+    const { error } = await supabaseAdmin.from('quotation_items').update({ quantity: item.quantity, discount_amount, subtotal, tax_amount }).eq('id', row.id).eq('quotation_id', quotationId);
+    if (error) fail(error);
+    changes.push(`${row.products?.product_name ?? 'Item'}: ${row.quantity} -> ${item.quantity}`);
+    Object.assign(row, { quantity: item.quantity, discount_amount, subtotal, tax_amount });
+  }
+  if (changes.length === 0) return;
+
+  // Re-total from the stored lines so the header always matches the lines.
+  const { data: fresh, error: freshError } = await supabaseAdmin.from('quotation_items').select('subtotal, tax_amount, discount_amount').eq('quotation_id', quotationId);
+  if (freshError) fail(freshError);
+  const sum = (key: 'subtotal' | 'tax_amount' | 'discount_amount') => (fresh ?? []).reduce((total, line) => total + Number((line as Record<string, unknown>)[key] ?? 0), 0);
+  const total = sum('subtotal') + sum('tax_amount');
+  const rate = Number((quote as { exchange_rate?: unknown }).exchange_rate ?? 0);
+  const note = `Client changed quantities on ${new Date().toISOString().slice(0, 10)} via the quotation link: ${changes.join('; ')}.`;
+  const previous = String((quote as { notes?: string | null }).notes ?? '').trim();
+  const { error: updateError } = await supabaseAdmin.from('quotations').update({ tax_amount: sum('tax_amount'), discount_amount: sum('discount_amount'), total_amount: total, ...(rate > 0 ? { base_total: toBase(total, rate) } : {}), notes: previous ? `${previous}\n${note}` : note }).eq('id', quotationId);
+  if (updateError) fail(updateError);
+}
+
 export async function recordPublicDecision(token: string, input: PublicDecision) {
   const quotation = await publicQuotation(token);
   if (quotation.status !== 'sent') throw new AppError(409, 'QUOTATION_ALREADY_DECIDED', 'This quotation has already been decided.');
+  // Client-revised quantities (accept only). Applied before the status change so a failure here leaves the quotation
+  // untouched and the client can simply try again. Everything after this block is the original flow.
+  if (input.decision === 'accepted' && input.items && input.items.length > 0) await applyClientQuantities(quotation.id as string, input.items);
   const update = input.decision === 'accepted'
     ? { status: 'client_accepted', decision_source: 'client_portal', decided_at: new Date().toISOString(), decided_by: null }
     : { status: 'rejected', decision_source: 'client_portal', decided_at: new Date().toISOString(), decided_by: null, rejection_reason: input.reason?.trim() ?? null };
@@ -272,6 +313,9 @@ async function createDealFromApprovedQuotation(quotation: Awaited<ReturnType<typ
     .limit(1);
   const primaryContact = contactRows?.[0];
 
+  const fx = quotation as unknown as { currency_code?: string | null; exchange_rate?: number | string | null };
+  const dealCurrency = String(fx.currency_code ?? '').trim().toUpperCase() || 'INR';
+  const dealRate = dealCurrency === 'INR' ? 1 : Number(fx.exchange_rate ?? 0);
   const payload = {
     organization_id: quotation.organization_id,
     industry_type_id: client?.industry_type_id ?? null,
@@ -290,7 +334,10 @@ async function createDealFromApprovedQuotation(quotation: Awaited<ReturnType<typ
     product_category: product?.category ?? null,
     quantity: item?.quantity ?? null,
     unit: product?.unit ?? null,
-    purchase_rate: product?.cost_price ?? null,
+    // The catalog cost price is in rupees. For a foreign-currency quotation the deal is in the client's currency, so the cost
+    // is converted the same way the selling price was (1 unit of currency = exchange_rate INR). Otherwise margin would
+    // compare a rupee cost with a foreign selling price.
+    purchase_rate: product?.cost_price != null && dealRate > 1e-9 && dealRate !== 1 ? Math.round((Number(product.cost_price) / dealRate) * 100) / 100 : (product?.cost_price ?? null),
     // Use the quotation's tax-inclusive total_amount (not the item's
     // pre-tax subtotal) so the deal's selling_rate × quantity matches
     // what the Trading Sales Order and Collections modules show —
@@ -299,7 +346,7 @@ async function createDealFromApprovedQuotation(quotation: Awaited<ReturnType<typ
     discount_percent: item?.discount_percent ?? 0,
     tax_percent: item?.tax_percent ?? 0,
     sales_rep: (quotation.sales_representatives as { user_profiles?: { display_name?: string | null } | null } | null)?.user_profiles?.display_name ?? null,
-    currency: 'INR',
+    currency: dealCurrency,
     deal_date: new Date().toISOString().slice(0, 10),
     priority: 'Medium',
     status: 'Confirmed',

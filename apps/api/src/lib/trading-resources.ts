@@ -119,9 +119,9 @@ columns: ['transaction_number', 'transaction_type', 'deal_number', 'customer_nam
   {
     path: 'customs',
     table: 'trading_customs',
-    codeField: 'customs_reference',
+     codeField: 'customs_reference',
     requiredFields: ['customs_reference'],
-   columns: ['customs_reference', 'shipment_number', 'transaction_number', 'transaction_type', 'customer_name', 'supplier_name', 'product_name', 'hs_code', 'quantity', 'country_of_origin', 'destination_country', 'port', 'declared_value', 'currency', 'customs_broker', 'declaration_date', 'customs_duty', 'other_charges', 'inspection_status', 'clearance_date', 'clearance_status', 'notes', 'industry_type_id', 'port_of_loading', 'port_of_discharge', 'exchange_rate', 'base_currency', 'base_value', 'required_documents', 'duty_paid_date', 'assessment_date'],
+   columns: ['customs_reference', 'shipment_number', 'transaction_number', 'transaction_type', 'customer_name', 'supplier_name', 'product_name', 'hs_code', 'quantity', 'country_of_origin', 'destination_country', 'port', 'declared_value', 'currency', 'customs_broker', 'declaration_date', 'customs_duty', 'other_charges', 'inspection_status', 'clearance_date', 'clearance_status', 'notes', 'industry_type_id', 'port_of_loading', 'port_of_discharge', 'exchange_rate', 'base_currency', 'base_value', 'required_documents', 'duty_paid_date', 'assessment_date', 'declaration_number', 'clearance_document'],
   },
   {
     path: 'claims',
@@ -186,6 +186,24 @@ columns: ['transaction_number', 'transaction_type', 'deal_number', 'customer_nam
     codeField: 'finance_reference',
     requiredFields: ['finance_reference', 'deal_number'],
     columns: ['finance_reference', 'instrument_type', 'deal_number', 'order_number', 'shipment_number', 'invoice_number', 'customer_name', 'supplier_name', 'currency', 'transaction_value', 'financing_amount', 'finance_charges', 'payment_terms', 'credit_days', 'advance_percent', 'advance_amount', 'lc_number', 'lc_type', 'lc_amount', 'issuing_bank', 'advising_bank', 'confirming_bank', 'applicant', 'beneficiary', 'tolerance_percent', 'presentation_period', 'port_place', 'document_requirements', 'bank_reference', 'issue_date', 'expiry_date', 'due_date', 'latest_shipment_date', 'payment_status', 'collected_amount', 'notes', 'industry_type_id'],
+  },
+  // Itemised charges for one shipment: what we pay (cost_amount) and what we bill the customer (sell_amount),
+  // one row per charge (sea freight, customs duty, clearance fee, port, delivery, insurance...).
+  {
+    path: 'shipment-charges',
+    table: 'trading_shipment_charges',
+    codeField: 'charge_number',
+    requiredFields: ['charge_number', 'shipment_number', 'charge_type'],
+    columns: ['charge_number', 'shipment_number', 'deal_number', 'customer_name', 'charge_type', 'description', 'vendor_name', 'currency', 'cost_amount', 'sell_amount', 'invoice_number', 'notes', 'industry_type_id'],
+  },
+  // The bill we raise to the customer for a shipment. subtotal comes from the shipment's sell charges; tax_amount,
+  // total_amount, balance_amount and status are always worked out by the API (see lib/invoice-totals.ts).
+  {
+    path: 'customer-invoices',
+    table: 'trading_customer_invoices',
+    codeField: 'invoice_number',
+    requiredFields: ['invoice_number', 'shipment_number'],
+    columns: ['invoice_number', 'shipment_number', 'deal_number', 'customer_name', 'invoice_date', 'due_date', 'currency', 'subtotal', 'tax_percent', 'tax_amount', 'total_amount', 'paid_amount', 'balance_amount', 'payment_date', 'payment_reference', 'notes', 'industry_type_id'],
   },
 ];
 

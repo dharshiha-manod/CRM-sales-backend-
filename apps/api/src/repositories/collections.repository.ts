@@ -4,6 +4,7 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { getCollectionConfig, industryTypeIdOfClient } from '../lib/settings.js';
+import { billedTotalsForCoreOrders, syncInvoicePaymentsForSaleOrder } from './trading.repository.js';
 
 // Maps your app's internal mode codes to the labels shown in Settings →
 // Collection Configuration → Payment Methods, so we can check the right toggle.
@@ -33,26 +34,30 @@ export async function createFromVisit(organizationId: string, representativeId: 
   if (!visit?.client_id) throw new AppError(422, 'COLLECTION_REQUIRES_CLIENT', 'A collection requires a visit linked to a client.');
   await assertPaymentAllowed(organizationId, input.mode, input.referenceNo, await industryTypeIdOfClient(organizationId, visit.client_id));
   if (input.saleOrderId) {
-    const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, total_amount').eq('id', input.saleOrderId).eq('organization_id', organizationId).eq('visit_id', visit.id).eq('client_id', visit.client_id).eq('representative_id', representativeId).maybeSingle();
+    const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, total_amount, exchange_rate').eq('id', input.saleOrderId).eq('organization_id', organizationId).eq('visit_id', visit.id).eq('client_id', visit.client_id).eq('representative_id', representativeId).maybeSingle();
     if (error) throw error;
     if (!order) throw new AppError(422, 'INVALID_COLLECTION_ORDER', 'The selected order does not belong to this active visit, client, and representative.');
     const { data: priorCollections, error: collectionError } = await supabaseAdmin.from('sales_collections').select('amount').eq('organization_id', organizationId).eq('sale_order_id', order.id);
     if (collectionError) throw collectionError;
     const alreadyCollected = (priorCollections ?? []).reduce((sum, collection) => sum + Number(collection.amount), 0);
     const visitCredit = (await approvedReturnCredits(organizationId, [order.id as string])).get(order.id as string)?.credit ?? 0;
-    if (alreadyCollected + input.amount > Number(order.total_amount) - visitCredit + 0.00001) {
-      throw new AppError(422, 'COLLECTION_EXCEEDS_ORDER_TOTAL', `Collection exceeds the remaining order balance of ${Math.max(0, Number(order.total_amount) - visitCredit - alreadyCollected).toFixed(2)}.`);
+    // A Trading order can be billed for more than it was quoted (extra shipment charges): the payable amount is the larger of the two.
+    const visitRate = Number(order.exchange_rate) > 0 ? Number(order.exchange_rate) : 1;
+    const visitPayable = Math.max(Number(order.total_amount), ((await billedTotalsForCoreOrders(organizationId, [order.id as string])).get(order.id as string) ?? 0) / visitRate);
+    if (alreadyCollected + input.amount > visitPayable - visitCredit + 0.00001) {
+      throw new AppError(422, 'COLLECTION_EXCEEDS_ORDER_TOTAL', `Collection exceeds the remaining order balance of ${Math.max(0, visitPayable - visitCredit - alreadyCollected).toFixed(2)}.`);
     }
   }
   const { data, error } = await supabaseAdmin.from('sales_collections').insert({ organization_id: organizationId, client_id: visit.client_id, representative_id: representativeId, visit_id: visit.id, sale_order_id: input.saleOrderId ?? null, amount: input.amount, mode: input.mode, reference_no: input.referenceNo ?? null, notes: input.notes ?? null }).select().single();
   if (error) throw error;
+  await syncInvoicePaymentsForSaleOrder(organizationId, input.saleOrderId ?? null);
   return data;
 }
 
 export async function createForOrder(organizationId: string, input: { orderId: string; amount: number; mode: string; referenceNo?: string | null; notes?: string | null }, scope: IndustryScope) {
   const { data: order, error: orderError } = await supabaseAdmin
     .from('sale_orders')
-    .select('id, client_id, representative_id, total_amount, status, clients!inner(industry_type_id)')
+    .select('id, client_id, representative_id, total_amount, exchange_rate, status, clients!inner(industry_type_id)')
     .eq('id', input.orderId)
     .eq('organization_id', organizationId)
     .maybeSingle();
@@ -71,10 +76,24 @@ assertRecordInScope(scope, (order.clients as unknown as { industry_type_id?: str
   if (collectionsError) throw collectionsError;
   const alreadyCollected = (priorCollections ?? []).reduce((sum, collection) => sum + Number(collection.amount), 0);
   const credited = (await approvedReturnCredits(organizationId, [order.id as string])).get(order.id as string)?.credit ?? 0;
-  const balance = Number(order.total_amount) - credited - alreadyCollected;
+  // A Trading order can be billed for more than it was quoted (extra shipment charges): the payable amount is the larger of the two.
+  const billed = (await billedTotalsForCoreOrders(organizationId, [order.id as string])).get(order.id as string) ?? 0;
+  const orderRate = Number(order.exchange_rate) > 0 ? Number(order.exchange_rate) : 1;
+  const balance = Math.max(Number(order.total_amount), billed / orderRate) - credited - alreadyCollected;
   if (input.amount > balance + 0.00001) {
     throw new AppError(422, 'COLLECTION_EXCEEDS_ORDER_TOTAL', `Collection exceeds the remaining order balance of ${Math.max(0, balance).toFixed(2)}.`);
   }
+
+  // Duplicate guard: the same payment (order, amount, mode, reference) saved twice within 2 minutes - a double click -
+  // is refused, and a cheque / UTR reference already used on this order cannot be recorded again.
+  const { data: sameOrder, error: duplicateError } = await supabaseAdmin.from('sales_collections')
+    .select('amount, mode, reference_no, created_at').eq('organization_id', organizationId).eq('sale_order_id', order.id);
+  if (duplicateError) throw duplicateError;
+  const reference = (input.referenceNo ?? '').trim();
+  const recent = Date.now() - 120000;
+  const duplicate = (sameOrder ?? []).some((p) => (reference && String(p.reference_no ?? '').trim() === reference)
+    || (Number(p.amount) === Number(input.amount) && p.mode === input.mode && String(p.reference_no ?? '').trim() === reference && new Date(String(p.created_at)).getTime() > recent));
+  if (duplicate) throw new AppError(409, 'DUPLICATE_COLLECTION', 'This payment was already recorded for this order (same amount and reference). Check the payment list before saving again.');
 
   const { data, error } = await supabaseAdmin.from('sales_collections').insert({
     organization_id: organizationId,
@@ -87,6 +106,7 @@ assertRecordInScope(scope, (order.clients as unknown as { industry_type_id?: str
     notes: input.notes ?? null,
   }).select().single();
   if (error) throw error;
+  await syncInvoicePaymentsForSaleOrder(organizationId, order.id as string);
   return data;
 }
 

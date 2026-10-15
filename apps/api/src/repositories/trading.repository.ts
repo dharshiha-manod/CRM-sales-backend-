@@ -10,7 +10,14 @@ import { resolveIndustryTypeId, assertRecordInScope } from '../lib/industry-scop
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { logger } from '../lib/logger.js';
 import { sumInCurrency } from '../lib/currency-sum.js';
+import { computeInvoiceTotals } from '../lib/invoice-totals.js';
+import { addDays, daysFromPaymentTerms } from '../lib/invoice-terms.js';
 import { sendPurchaseEnquiryEmail } from '../services/purchase-enquiry-email.service.js';
+import { sendShipmentDocumentsEmail } from '../services/shipment-documents-email.service.js';
+import { sendCustomerInvoiceEmail } from '../services/customer-invoice-email.service.js';
+import { customsProblems, dispatchBlockMessage, documentProblems, paymentProblems } from '../lib/dispatch-gates.js';
+import { assertCanClear, assertNoDirectReviewChange, planDocumentReview, resetApprovalOnNewFile } from '../lib/trade-verification.js';
+import type { ReviewActor } from '../lib/trade-verification.js';
 import { promoteEnquiriesToComparison } from '../services/purchase-enquiry-comparison.service.js';
 import {
   OPEN_COMPLIANCE_STATUSES, buildComplianceSnapshot, complianceTypeFor, customsFromTransaction, nextReference,
@@ -215,6 +222,103 @@ async function autoCreateShipmentDocuments(org: string, shipment: Record<string,
   }
 }
 
+// ---------------------------------------------------------------------------
+// Dispatch gates (the professional export flow). Before OUR goods leave (outbound shipments) three things must be true:
+// the Commercial Invoice + Packing List are Verified, export customs is Cleared, and - only when the deal is backed
+// by an LC or an advance - that LC is issued / the advance received. Inbound shipments (supplier -> us) are not
+// gated: the supplier does their own export paperwork. The paperwork is created on the spot when it does not exist
+// yet, so the person sees exactly what to work on instead of a bare refusal.
+// Rules live in lib/dispatch-gates.ts (pure, unit-tested); this part only loads the rows.
+// ---------------------------------------------------------------------------
+const DISPATCH_LOGISTICS_STATUSES = new Set(['Dispatched', 'In Transit', 'At Destination', 'Out for Delivery', 'Delivered']);
+const LEFT_LOGISTICS_STATUSES = new Set([...DISPATCH_LOGISTICS_STATUSES, 'Cancelled']);
+
+const asText = (v: unknown): string => (v == null ? '' : String(v).trim());
+
+/** Goods crossing a border: a foreign-currency deal or logistics cost, or an Import/Export transaction or customs record exists. */
+async function isCrossBorderShipment(org: string, shipment: Record<string, unknown>): Promise<boolean> {
+  const shipmentNumber = asText(shipment.shipment_number);
+  const dealNumber = asText(shipment.deal_number);
+  const foreign = async (currency: string) => {
+    if (!currency) return false;
+    const fx = await baseRateFor(org, shipment.industry_type_id, currency);
+    return currency.toUpperCase() !== fx.base;
+  };
+  if (dealNumber) {
+    const { data: deal, error } = await supabaseAdmin.from('trading_deals').select('currency').eq('organization_id', org).eq('deal_number', dealNumber).limit(1).maybeSingle();
+    if (error) throw error;
+    if (await foreign(asText((deal as { currency?: string | null } | null)?.currency))) return true;
+  }
+  if (shipmentNumber) {
+    const { data: txn, error: txnError } = await supabaseAdmin.from('trading_import_export').select('id').eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
+    if (txnError) throw txnError;
+    if (txn) return true;
+    const { data: plan, error: planError } = await supabaseAdmin.from('trading_logistics').select('currency').eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
+    if (planError) throw planError;
+    if (await foreign(asText((plan as { currency?: string | null } | null)?.currency))) return true;
+  }
+  return false;
+}
+
+/** The shipment's customs record(s). Creates one (status Not Started) when the shipment is cross-border and has none. */
+async function ensureShipmentCustoms(org: string, shipment: Record<string, unknown>): Promise<Array<Record<string, unknown>>> {
+  const shipmentNumber = asText(shipment.shipment_number);
+  if (!shipmentNumber) return [];
+  const { data, error } = await supabaseAdmin.from('trading_customs').select('id, customs_reference, clearance_status, status').eq('organization_id', org).eq('shipment_number', shipmentNumber);
+  if (error) throw error;
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+  if (rows.length > 0) return rows;
+  if (!(await isCrossBorderShipment(org, shipment))) return [];
+  const inbound = asText(shipment.direction).toLowerCase() === 'inbound';
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const reference = await nextOrgReference(org, 'trading_customs', 'customs_reference', 'CUS');
+    const { data: created, error: insertError } = await supabaseAdmin.from('trading_customs').insert({
+      organization_id: org, industry_type_id: shipment.industry_type_id ?? null,
+      customs_reference: reference, shipment_number: shipmentNumber, transaction_type: inbound ? 'Import' : 'Export',
+      customer_name: shipment.customer_name ?? null, supplier_name: shipment.supplier_name ?? null,
+      product_name: shipment.product_name ?? null, quantity: shipment.quantity ?? null,
+      port_of_loading: shipment.origin ?? null, port_of_discharge: shipment.destination ?? null,
+      clearance_status: 'Not Started', status: 'Not Started',
+      notes: `Automatically created from shipment ${shipmentNumber}. Export customs must be Cleared before the goods are dispatched.`,
+    }).select('id, customs_reference, clearance_status, status').single();
+    if (!insertError) return [created as Record<string, unknown>];
+    if (insertError.code !== '23505') throw insertError;
+  }
+  return [];
+}
+
+/** At Ready to Ship (or later): the Packing List + Commercial Invoice drafts and the customs record all exist. Never throws. */
+async function autoCreateShipmentPaperwork(org: string, shipment: Record<string, unknown>) {
+  await autoCreateShipmentDocuments(org, shipment);
+  try { await ensureShipmentCustoms(org, shipment); } catch (error) {
+    logger.error({ err: error, shipmentNumber: shipment.shipment_number }, 'Automatic customs record for the shipment failed');
+  }
+}
+
+/** Throws SHIPMENT_NOT_READY (422) listing everything still blocking an outbound shipment from leaving. */
+async function assertReadyToDispatch(org: string, shipmentNumber: string): Promise<void> {
+  if (!shipmentNumber) return;
+  const { data, error } = await supabaseAdmin.from('trading_shipments').select('*').eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
+  if (error) throw error;
+  if (!data) return;
+  const shipment = data as Record<string, unknown>;
+  if (asText(shipment.direction).toLowerCase() === 'inbound') return;
+
+  await autoCreateShipmentDocuments(org, shipment);
+  const customs = await ensureShipmentCustoms(org, shipment);
+  const { data: docs, error: docsError } = await supabaseAdmin.from('trading_documents').select('document_number, document_type, status, verification_status').eq('organization_id', org).eq('shipment_number', shipmentNumber);
+  if (docsError) throw docsError;
+  const dealNumber = asText(shipment.deal_number);
+  const finance = await fetchByAnyKey(org, 'trading_trade_finance', { shipment_number: [shipmentNumber], deal_number: dealNumber ? [dealNumber] : [] });
+
+  const problems = [
+    ...documentProblems((docs ?? []) as Array<Record<string, unknown>>),
+    ...customsProblems(customs),
+    ...paymentProblems(finance),
+  ];
+  if (problems.length > 0) throw new AppError(422, 'SHIPMENT_NOT_READY', dispatchBlockMessage(shipmentNumber, problems));
+}
+
 // Goods physically arrive when a shipment reaches "Delivered" — that's
 // the moment stock should increase, matched to the product by name.
 // Only ever called on the actual transition INTO Delivered (see the
@@ -242,6 +346,311 @@ async function autoUpdateInventoryOnDelivery(org: string, shipment: Record<strin
   } catch (error) {
       logger.error({ err: error, shipmentNumber: shipment.shipment_number }, 'Automatic inventory update on delivery failed');
   }
+}
+
+// What a shipment's invoice is built from. Goods value = THIS shipment's quantity x the Deal's selling rate, less the
+// Deal's discount (the agreed quotation amount, before tax). Tax % comes from the Deal. Payment days = the Deal's
+// payment terms, else the customer's own Credit days (the same days Collections uses for its due date).
+async function invoiceBasisForShipment(org: string, shipment: Record<string, unknown>) {
+  const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
+  const dealNumber = typeof shipment.deal_number === 'string' ? shipment.deal_number : '';
+  const orderNumber = typeof shipment.order_number === 'string' ? shipment.order_number : '';
+  let deal: Row | null = null;
+  let order: Row | null = null;
+  if (dealNumber) {
+    const { data, error } = await supabaseAdmin.from('trading_deals')
+      .select('currency, selling_rate, discount_percent, tax_percent, payment_terms, customer_id')
+      .eq('organization_id', org).eq('deal_number', dealNumber).maybeSingle();
+    if (error) throw error;
+    deal = (data ?? null) as Row | null;
+  }
+  if (orderNumber && !deal) {
+    const { data, error } = await supabaseAdmin.from('trading_sales_orders')
+      .select('currency, selling_rate, payment_terms')
+      .eq('organization_id', org).eq('order_number', orderNumber).maybeSingle();
+    if (error) throw error;
+    order = (data ?? null) as Row | null;
+  }
+  let creditDays: number | null = null;
+  const customerId = deal?.customer_id;
+  if (typeof customerId === 'string' && customerId) {
+    const { data: client, error } = await supabaseAdmin.from('clients').select('credit_days').eq('organization_id', org).eq('id', customerId).maybeSingle();
+    if (error) throw error;
+    const days = (client as Row | null)?.credit_days;
+    creditDays = days == null ? null : Number(days);
+  }
+  const quantity = Number(shipment.quantity) || 0;
+  const sellingRate = Number(deal?.selling_rate ?? order?.selling_rate) || 0;
+  const discountPercent = Number(deal?.discount_percent) || 0;
+  return {
+    quantity, sellingRate, discountPercent,
+    goodsValue: round2(quantity * sellingRate * (1 - discountPercent / 100)),
+    taxPercent: Number(deal?.tax_percent) || 0,
+    currency: String(deal?.currency ?? order?.currency ?? '').trim(),
+    paymentDays: daysFromPaymentTerms(deal?.payment_terms ?? order?.payment_terms) ?? (creditDays != null && Number.isFinite(creditDays) ? creditDays : null),
+  };
+}
+
+// When a shipment is Delivered, the customer is billed: one DRAFT customer invoice per shipment.
+//   Subtotal = goods value (the agreed quotation amount for this shipment) + the shipment's open sell charges.
+//   Charges already inside the quotation are never added: only Shipment Charges rows are, and each is billed once.
+// It is a Draft on purpose, so a person checks the amounts before marking it Sent. Skipped when there is no customer,
+// or when the shipment already has a (non-cancelled) invoice, so saving the shipment again never makes a second one.
+async function autoCreateCustomerInvoice(org: string, shipment: Record<string, unknown>) {
+  try {
+    const shipmentNumber = typeof shipment.shipment_number === 'string' ? shipment.shipment_number : '';
+    const customerName = typeof shipment.customer_name === 'string' ? shipment.customer_name.trim() : '';
+    if (!shipmentNumber || !customerName) return;
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from('trading_customer_invoices').select('id')
+      .eq('organization_id', org).eq('shipment_number', shipmentNumber).neq('status', 'Cancelled').limit(1);
+    if (existingError) throw existingError;
+    if ((existing ?? []).length) return;
+
+    const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
+    const basis = await invoiceBasisForShipment(org, shipment);
+    const { data: charges, error: chargesError } = await supabaseAdmin
+      .from('trading_shipment_charges').select('currency, sell_amount, status')
+      .eq('organization_id', org).eq('shipment_number', shipmentNumber).is('invoice_number', null);
+    if (chargesError) throw chargesError;
+    const open = ((charges ?? []) as Row[]).filter((c) => c.status !== 'Cancelled');
+    const currency = basis.currency || String(open.find((c) => c.currency)?.currency ?? '');
+    const chargesValue = round2(open.filter((c) => String(c.currency ?? '') === currency).reduce((sum, c) => sum + (Number(c.sell_amount) || 0), 0));
+    const subtotal = round2(basis.goodsValue + chargesValue);
+
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const dueDate = basis.paymentDays == null ? null : addDays(today, basis.paymentDays);
+    const figures = { subtotal, tax_percent: basis.taxPercent, paid_amount: 0, due_date: dueDate, status: 'Draft' };
+    const breakdown = `Goods ${basis.goodsValue}${currency ? ` ${currency}` : ''} (${basis.quantity} x ${basis.sellingRate}${basis.discountPercent ? `, less ${basis.discountPercent}% discount` : ''}) + shipment charges ${chargesValue}.`;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const invoiceNumber = await nextCustomerInvoiceNumber(org);
+      const { error } = await supabaseAdmin.from('trading_customer_invoices').insert({
+        organization_id: org,
+        industry_type_id: shipment.industry_type_id ?? null,
+        invoice_number: invoiceNumber,
+        shipment_number: shipmentNumber,
+        deal_number: shipment.deal_number ?? null,
+        customer_name: customerName,
+        invoice_date: today,
+        due_date: dueDate,
+        currency: currency || null,
+        subtotal,
+        tax_percent: basis.taxPercent,
+        paid_amount: 0,
+        ...computeInvoiceTotals(figures, today),
+        notes: `Automatically created when shipment ${shipmentNumber} was delivered. ${breakdown} Please check the amounts, then mark it Sent.`,
+      });
+      if (error) {
+        if (error.code === '23505') continue; // number taken meanwhile: pick the next free one
+        throw error;
+      }
+      // Billing a shipment locks in its open charges: they now belong to this invoice.
+      await supabaseAdmin.from('trading_shipment_charges').update({ invoice_number: invoiceNumber })
+        .eq('organization_id', org).eq('shipment_number', shipmentNumber).is('invoice_number', null).eq('currency', currency);
+      // An advance paid before delivery is applied to the new invoice (recalculated from the payments, never added twice).
+      await syncInvoicePaymentsForDeal(org, typeof shipment.deal_number === 'string' ? shipment.deal_number : '');
+      return;
+    }
+  } catch (error) {
+    logger.error({ err: error, shipmentNumber: shipment.shipment_number }, 'Automatic customer invoice creation failed');
+  }
+}
+// Next free CINV-<year>-<0001> across the whole organization (same style the form uses by hand).
+async function nextCustomerInvoiceNumber(org: string): Promise<string> {
+  const prefix = `CINV-${new Date().getFullYear()}-`;
+  const { data, error } = await supabaseAdmin.from('trading_customer_invoices').select('invoice_number')
+    .eq('organization_id', org).like('invoice_number', `${prefix}%`);
+  if (error) fail(error);
+  let max = 0;
+  for (const row of (data ?? []) as Array<{ invoice_number: string | null }>) {
+    const n = Number((row.invoice_number ?? '').slice(prefix.length));
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return `${prefix}${String(max + 1).padStart(4, '0')}`;
+}
+
+// Payments recorded in Collections (against the Deal's core order, in the company currency) flow onto the Deal's
+// customer invoices: converted to the Deal's currency, then allocated oldest invoice first. paid_amount only ever goes
+// UP here (a figure typed by hand is never lowered) and is recalculated from the payments each time, so an advance is
+// never counted twice. Status, balance and tax are recalculated by computeInvoiceTotals.
+async function syncInvoicePaymentsForDeal(org: string, dealNumber: string) {
+  try {
+    if (!dealNumber) return;
+    const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
+    const { data: dealRow, error: dealError } = await supabaseAdmin.from('trading_deals')
+      .select('deal_number, currency, industry_type_id, core_order_id')
+      .eq('organization_id', org).eq('deal_number', dealNumber).maybeSingle();
+    if (dealError) throw dealError;
+    const deal = dealRow as Row | null;
+    if (!deal || !deal.core_order_id) return;
+    const dealCurrency = String(deal.currency ?? '').trim();
+    const fx = await baseRateFor(org, deal.industry_type_id, dealCurrency);
+    if (fx.rate == null || fx.rate <= 0) {
+      logger.warn({ dealNumber, currency: dealCurrency }, 'Invoice payments NOT synced: no exchange rate to the company currency.');
+      return;
+    }
+    const { data: paymentRows, error: paymentError } = await supabaseAdmin.from('sales_collections')
+      .select('amount, reference_no, created_at')
+      .eq('organization_id', org).eq('sale_order_id', deal.core_order_id as string).order('created_at', { ascending: true });
+    if (paymentError) throw paymentError;
+    const payments = (paymentRows ?? []) as Row[];
+    if (!payments.length) return;
+    const collectedBase = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+    const { data: coreOrder, error: coreError } = await supabaseAdmin.from('sale_orders')
+      .select('total_amount').eq('organization_id', org).eq('id', deal.core_order_id as string).maybeSingle();
+    if (coreError) throw coreError;
+    const orderTotal = Number((coreOrder as Row | null)?.total_amount) || 0;
+    const last = payments[payments.length - 1];
+    const { data: invoiceRows, error: invoiceError } = await supabaseAdmin.from('trading_customer_invoices').select('*')
+      .eq('organization_id', org).eq('deal_number', dealNumber).neq('status', 'Cancelled')
+      .order('invoice_date', { ascending: true }).order('invoice_number', { ascending: true });
+    if (invoiceError) throw invoiceError;
+    const invoices = (invoiceRows ?? []) as Row[];
+    if (!invoices.length) return;
+    const invoicedBase = invoices.reduce((sum, i) => sum + (Number(i.total_amount) || 0), 0) * fx.rate;
+    // Company currency is exact. For a foreign-currency deal today's rate may differ from the rate used when the order
+    // was made, so when the payments cover EVERYTHING ordered and billed, the invoices count as fully paid.
+    const coversAll = fx.rate !== 1 && collectedBase + 0.01 >= Math.max(orderTotal, invoicedBase);
+    let remaining = coversAll ? Number.POSITIVE_INFINITY : round2(collectedBase / fx.rate);
+    for (const inv of invoices) {
+      const invoiceCurrency = String(inv.currency ?? '').trim();
+      if (invoiceCurrency && dealCurrency && invoiceCurrency !== dealCurrency) continue; // different currency: never guess
+      const total = Number(inv.total_amount) || 0;
+      const allocated = round2(Math.min(remaining, total));
+      remaining = remaining - allocated;
+      if (allocated <= (Number(inv.paid_amount) || 0)) continue;
+      const patch = {
+        paid_amount: allocated,
+        payment_date: String(last.created_at ?? '').slice(0, 10) || null,
+        payment_reference: (last.reference_no as string | null) ?? (inv.payment_reference as string | null) ?? null,
+      };
+      const { error } = await supabaseAdmin.from('trading_customer_invoices')
+        .update({ ...patch, ...computeInvoiceTotals({ ...inv, ...patch }) })
+        .eq('organization_id', org).eq('id', inv.id as string);
+      if (error) throw error;
+    }
+  } catch (error) {
+    logger.error({ err: error, dealNumber }, 'Syncing collections onto customer invoices failed');
+  }
+}
+
+// Called by Collections after a payment is saved. Orders that do not belong to a Trading deal are ignored.
+export async function syncInvoicePaymentsForSaleOrder(org: string, saleOrderId: string | null | undefined) {
+  try {
+    if (!saleOrderId) return;
+    const { data, error } = await supabaseAdmin.from('trading_deals').select('deal_number')
+      .eq('organization_id', org).eq('core_order_id', saleOrderId).maybeSingle();
+    if (error) throw error;
+    const dealNumber = (data as Row | null)?.deal_number;
+    if (typeof dealNumber === 'string' && dealNumber) await syncInvoicePaymentsForDeal(org, dealNumber);
+  } catch (error) {
+    logger.error({ err: error, saleOrderId }, 'Syncing a collection onto its customer invoice failed');
+  }
+}
+
+// A cancelled shipment is no longer billed: its DRAFT invoice is cancelled and the charges go back to "open".
+// An invoice that was already sent or has money on it is NOT touched (it needs a manual credit note); it is logged.
+async function autoCancelInvoiceOnShipmentCancel(org: string, shipment: Record<string, unknown>) {
+  try {
+    const shipmentNumber = typeof shipment.shipment_number === 'string' ? shipment.shipment_number : '';
+    if (!shipmentNumber) return;
+    const { data, error } = await supabaseAdmin.from('trading_customer_invoices')
+      .select('id, invoice_number, status, paid_amount')
+      .eq('organization_id', org).eq('shipment_number', shipmentNumber).neq('status', 'Cancelled');
+    if (error) throw error;
+    for (const inv of (data ?? []) as Row[]) {
+      if (inv.status !== 'Draft' || (Number(inv.paid_amount) || 0) > 0) {
+        logger.warn({ shipmentNumber, invoiceNumber: inv.invoice_number }, 'Shipment cancelled but its invoice was already sent or paid: handle it manually.');
+        continue;
+      }
+      const { error: cancelError } = await supabaseAdmin.from('trading_customer_invoices')
+        .update({ status: 'Cancelled', notes: `Cancelled automatically because shipment ${shipmentNumber} was cancelled.` })
+        .eq('organization_id', org).eq('id', inv.id as string);
+      if (cancelError) throw cancelError;
+      await supabaseAdmin.from('trading_shipment_charges').update({ invoice_number: null })
+        .eq('organization_id', org).eq('invoice_number', inv.invoice_number as string);
+    }
+  } catch (error) {
+    logger.error({ err: error, shipmentNumber: shipment.shipment_number }, 'Cancelling the invoice of a cancelled shipment failed');
+  }
+}
+
+// Charges are often entered AFTER the shipment is delivered, when its invoice already exists as a Draft. While the
+// invoice is still a Draft it follows the shipment's charges: goods (first invoice of the shipment only, so a second
+// invoice never bills the goods again) + every live sell charge in the invoice's currency. A Sent / Paid invoice is
+// never changed: a charge added later stays open for its own invoice.
+async function rebuildDraftInvoiceFromCharges(org: string, shipmentNumber: string) {
+  try {
+    if (!shipmentNumber) return;
+    const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
+    const { data: invoiceRows, error } = await supabaseAdmin.from('trading_customer_invoices').select('*')
+      .eq('organization_id', org).eq('shipment_number', shipmentNumber).neq('status', 'Cancelled').order('created_at', { ascending: true });
+    if (error) throw error;
+    const invoices = (invoiceRows ?? []) as Row[];
+    const draft = invoices.find((i) => i.status === 'Draft');
+    if (!draft) return;
+    const { data: shipmentRow, error: shipmentError } = await supabaseAdmin.from('trading_shipments').select('*')
+      .eq('organization_id', org).eq('shipment_number', shipmentNumber).maybeSingle();
+    if (shipmentError) throw shipmentError;
+    if (!shipmentRow) return;
+    const basis = await invoiceBasisForShipment(org, shipmentRow as Row);
+    const { data: chargeRows, error: chargeError } = await supabaseAdmin.from('trading_shipment_charges')
+      .select('id, currency, sell_amount, status, invoice_number').eq('organization_id', org).eq('shipment_number', shipmentNumber);
+    if (chargeError) throw chargeError;
+    const mine = ((chargeRows ?? []) as Row[]).filter((c) => c.invoice_number == null || c.invoice_number === draft.invoice_number);
+    const live = mine.filter((c) => c.status !== 'Cancelled');
+    const currency = String(draft.currency ?? '').trim() || basis.currency || String(live.find((c) => c.currency)?.currency ?? '');
+    const billable = live.filter((c) => String(c.currency ?? '') === currency);
+    const chargesValue = round2(billable.reduce((sum, c) => sum + (Number(c.sell_amount) || 0), 0));
+    const goods = draft.id === invoices[0].id ? basis.goodsValue : 0;
+    const patch = { subtotal: round2(goods + chargesValue), currency: currency || null };
+    const { error: updateError } = await supabaseAdmin.from('trading_customer_invoices')
+      .update({ ...patch, ...computeInvoiceTotals({ ...draft, ...patch }) })
+      .eq('organization_id', org).eq('id', draft.id as string);
+    if (updateError) throw updateError;
+    const billIds = billable.map((c) => c.id as string);
+    if (billIds.length) await supabaseAdmin.from('trading_shipment_charges').update({ invoice_number: draft.invoice_number }).eq('organization_id', org).in('id', billIds);
+    const freeIds = mine.filter((c) => c.status === 'Cancelled' && c.invoice_number === draft.invoice_number).map((c) => c.id as string);
+    if (freeIds.length) await supabaseAdmin.from('trading_shipment_charges').update({ invoice_number: null }).eq('organization_id', org).in('id', freeIds);
+  } catch (error) {
+    logger.error({ err: error, shipmentNumber }, 'Refreshing the draft invoice from shipment charges failed');
+  }
+}
+
+// Core order id -> total of its FINAL Trading invoices (Sent / Partially Paid / Paid / Overdue; Draft and Cancelled are
+// not final), in the company currency. Collections uses it so the amount due follows the final invoice, not only the quote.
+export async function billedTotalsForCoreOrders(org: string, orderIds: string[]): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  try {
+    if (!orderIds.length) return result;
+    const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
+    const deals: Row[] = [];
+    for (let i = 0; i < orderIds.length; i += 100) {
+      const { data, error } = await supabaseAdmin.from('trading_deals').select('deal_number, currency, industry_type_id, core_order_id')
+        .eq('organization_id', org).in('core_order_id', orderIds.slice(i, i + 100));
+      if (error) throw error;
+      deals.push(...((data ?? []) as Row[]));
+    }
+    if (!deals.length) return result;
+    const { data: invoiceRows, error: invoiceError } = await supabaseAdmin.from('trading_customer_invoices')
+      .select('deal_number, total_amount').eq('organization_id', org)
+      .in('deal_number', deals.map((d) => String(d.deal_number))).neq('status', 'Draft').neq('status', 'Cancelled');
+    if (invoiceError) throw invoiceError;
+    const invoices = (invoiceRows ?? []) as Row[];
+    const rates = new Map<string, number | null>();
+    for (const deal of deals) {
+      const currency = String(deal.currency ?? '').trim();
+      const key = `${String(deal.industry_type_id ?? '')}|${currency}`;
+      if (!rates.has(key)) rates.set(key, (await baseRateFor(org, deal.industry_type_id, currency)).rate);
+      const rate = rates.get(key);
+      if (rate == null) continue;
+      const total = invoices.filter((i) => i.deal_number === deal.deal_number).reduce((sum, i) => sum + (Number(i.total_amount) || 0), 0);
+      result.set(deal.core_order_id as string, round2(total * rate));
+    }
+  } catch (error) {
+    logger.error({ err: error }, 'Reading the billed totals of orders failed');
+  }
+  return result;
 }
 
 // When an inbound shipment made from a purchase enquiry (SHP-IN-2026-0008) is marked Delivered,
@@ -747,6 +1156,17 @@ async function autoCreateCustomsForTransaction(org: string, txn: Row) {
     const { data: existing, error: existingError } = await supabaseAdmin.from('trading_customs').select('id').eq('organization_id', org).eq('transaction_number', transactionNumber).limit(1).maybeSingle();
     if (existingError) throw existingError;
     if (existing) return;
+    // The shipment may already have its own customs record (created when it was Ready to Ship): link it instead of adding a second one.
+    const shipmentNumber = String(txn.shipment_number ?? '').trim();
+    if (shipmentNumber) {
+      const { data: byShipment } = await supabaseAdmin.from('trading_customs').select('id, transaction_number').eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
+      if (byShipment) {
+        if (!(byShipment as { transaction_number?: string | null }).transaction_number) {
+          await supabaseAdmin.from('trading_customs').update({ transaction_number: transactionNumber, transaction_type: txn.transaction_type ?? null }).eq('organization_id', org).eq('id', (byShipment as { id: string }).id);
+        }
+        return;
+      }
+    }
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const reference = await nextOrgReference(org, 'trading_customs', 'customs_reference', 'CUS');
       const { error } = await supabaseAdmin.from('trading_customs').insert({ ...customsFromTransaction(txn, reference), organization_id: org, industry_type_id: txn.industry_type_id ?? null });
@@ -1070,6 +1490,13 @@ export async function createTradingRecord(resource: TradingResource, org: string
   if (resource.table === 'trading_price_lists') await validatePriceList(org, industryTypeId, payload);
   await stampForeignRate(resource.table, org, industryTypeId, payload);
   if (resource.table === 'trading_import_export') await assertTypeMatchesShipment(org, payload);
+  if (resource.table === 'trading_documents') assertNoDirectReviewChange(payload);
+  if (resource.table === 'trading_customs' && payload.clearance_status === 'Cleared') assertCanClear(payload);
+  if (resource.table === 'trading_customer_invoices') {
+    // The form sends blank fields as null, and the database does not accept null for these amounts. A blank means 0.
+    for (const key of ['subtotal', 'tax_percent', 'paid_amount']) if (payload[key] == null) payload[key] = 0;
+    Object.assign(payload, computeInvoiceTotals({ ...payload, status: payload.status || 'Sent' }));
+  }
   // A customs record always starts as "Not Started" (never blank), and the plain status mirrors the clearance status.
   if (resource.table === 'trading_customs') {
     if (!payload.clearance_status) payload.clearance_status = 'Not Started';
@@ -1087,8 +1514,19 @@ export async function createTradingRecord(resource: TradingResource, org: string
   for (let attempt = 0; ; attempt += 1) {
     const { data, error } = await supabaseAdmin.from(resource.table).insert({ ...payload, industry_type_id: industryTypeId, organization_id: org }).select().single();
     if (!error) {
-         if (resource.table === 'trading_shipments') await ensureLogisticsPlan(org, data as Record<string, unknown>);
+      // Billing a shipment locks in its open charges: they now belong to this invoice.
+      if (resource.table === 'trading_customer_invoices') {
+        const inv = data as Record<string, unknown>;
+        const { error: tagError } = await supabaseAdmin.from('trading_shipment_charges').update({ invoice_number: inv.invoice_number })
+          .eq('organization_id', org).eq('shipment_number', inv.shipment_number as string).is('invoice_number', null)
+          .eq('currency', String(inv.currency ?? ''));
+          if (tagError) logger.warn({ err: tagError }, 'Could not tag shipment charges with the new invoice number');
+        await syncInvoicePaymentsForDeal(org, String(inv.deal_number ?? ''));
+      }
+       if (resource.table === 'trading_shipments') await ensureLogisticsPlan(org, data as Record<string, unknown>);
+      if (resource.table === 'trading_logistics') await syncFreightChargeFromLogistics(org, data as Record<string, unknown>);
       if (resource.table === 'trading_deals') await runDealSideEffects(org, data as Record<string, unknown>);
+         if (resource.table === 'trading_shipment_charges') await rebuildDraftInvoiceFromCharges(org, String((data as Record<string, unknown>).shipment_number ?? ''));
       // A new cost record (logistics, customs, finance, commission...) updates the deal's live profit row.
       await refreshProfitabilityForRecord(org, resource.table, data as Record<string, unknown>);
       await runTradeLinks(org, resource.table, data as Record<string, unknown>, true);
@@ -1132,6 +1570,66 @@ const ROUTE_LOGISTICS_TO_SHIPMENT: Array<[string, string]> = [
   ['tracking_number', 'tracking_number'], ['vehicle_container_number', 'vehicle_container_number'], ['freight_cost', 'freight_cost'],
 ];
 
+// Freight is typed once: the freight on a Logistics record (what we pay the carrier) becomes ONE Shipment Charges line.
+// The line is found again by its reference (CHG-<logistics number>), so saving Logistics again updates it, never duplicates it.
+// Only the COST follows Logistics. The sell price (what the customer is billed) is a business decision: it starts at 0 and
+// is never changed here, so nothing is billed by accident and an amount already billed is never altered.
+async function syncFreightChargeFromLogistics(org: string, logistics: Record<string, unknown>) {
+  try {
+    const logisticsNumber = String(logistics.logistics_number ?? '').trim();
+    const shipmentNumber = String(logistics.shipment_number ?? '').trim();
+    if (!logisticsNumber || !shipmentNumber) return;
+    const freight = Math.round((Math.max(0, Number(logistics.freight_cost) || 0) + Number.EPSILON) * 100) / 100;
+    const chargeNumber = `CHG-${logisticsNumber}`;
+    const currency = String(logistics.currency ?? '').trim() || null;
+
+    const { data: existing, error: existingError } = await supabaseAdmin.from('trading_shipment_charges')
+      .select('id, sell_amount').eq('organization_id', org).eq('charge_number', chargeNumber).maybeSingle();
+    if (existingError) throw existingError;
+
+    if (existing) {
+      const row = existing as Record<string, unknown>;
+      // Cost follows Logistics. The currency follows too, but only while nothing is set to bill (the sell price is in that currency).
+      const patch: Record<string, unknown> = { cost_amount: freight };
+      if (currency && !(Number(row.sell_amount) > 0)) patch.currency = currency;
+      const { error: updateError } = await supabaseAdmin.from('trading_shipment_charges').update(patch)
+        .eq('organization_id', org).eq('id', row.id as string);
+      if (updateError) throw updateError;
+      return;
+    }
+
+    if (freight <= 0) return;
+    const mode = String(logistics.shipping_mode ?? '').trim().toLowerCase();
+    const chargeType = mode === 'air' ? 'Air Freight' : mode === 'sea' ? 'Sea Freight' : mode === 'road' ? 'Road Freight' : 'Other';
+    // Freight already typed by hand on this shipment: do not add it a second time.
+    const { data: sameType, error: sameTypeError } = await supabaseAdmin.from('trading_shipment_charges')
+      .select('charge_number, status').eq('organization_id', org).eq('shipment_number', shipmentNumber).eq('charge_type', chargeType);
+    if (sameTypeError) throw sameTypeError;
+    if (((sameType ?? []) as Record<string, unknown>[]).some((c) => c.status !== 'Cancelled' && !String(c.charge_number ?? '').startsWith('CHG-LOG-'))) return;
+
+    const route = [logistics.origin, logistics.destination].map((v) => String(v ?? '').trim()).filter(Boolean).join(' to ');
+    const { error: insertError } = await supabaseAdmin.from('trading_shipment_charges').insert({
+      organization_id: org,
+      industry_type_id: logistics.industry_type_id ?? null,
+      charge_number: chargeNumber,
+      shipment_number: shipmentNumber,
+      deal_number: logistics.deal_number ?? null,
+      customer_name: logistics.customer_name ?? null,
+      charge_type: chargeType,
+      description: route ? `Freight ${route}` : `Freight for ${logisticsNumber}`,
+      vendor_name: String(logistics.carrier ?? '').trim() || null,
+      currency,
+      cost_amount: freight,
+      sell_amount: 0,
+      status: 'Active',
+      notes: `Created automatically from logistics ${logisticsNumber}. Set the sell price to bill the customer.`,
+    });
+    if (insertError && insertError.code !== '23505') throw insertError;
+  } catch (error) {
+    logger.error({ err: error, logistics: logistics.logistics_number }, 'Creating the freight charge from logistics failed');
+  }
+}
+
 async function syncShipmentFromLogistics(org: string, logistics: Record<string, unknown>, scope: IndustryScope) {
   try {
     const shipmentNumber = typeof logistics.shipment_number === 'string' ? logistics.shipment_number : '';
@@ -1169,7 +1667,9 @@ async function syncShipmentFromLogistics(org: string, logistics: Record<string, 
     if (next === 'Delivered') patch.actual_delivery_date = current.actual_delivery_date ?? logistics.actual_delivery_date ?? new Date().toISOString().slice(0, 10);
     await updateTradingRecord(shipmentResource, org, current.id as string, patch, scope);
   } catch (error) {
-    logger.error({ err: error, shipmentNumber: logistics.shipment_number }, 'Syncing the shipment from logistics failed');
+    // Picked Up asks the shipment to move to Dispatched; the dispatch gates may say "not yet". That is expected, not a failure.
+    if (error instanceof AppError && error.code === 'SHIPMENT_NOT_READY') logger.info({ shipmentNumber: logistics.shipment_number }, error.message);
+    else logger.error({ err: error, shipmentNumber: logistics.shipment_number }, 'Syncing the shipment from logistics failed');
   }
 }
 
@@ -1184,11 +1684,27 @@ export async function updateTradingRecord(resource: TradingResource, org: string
   assertNotFutureDelivery(resource, payload);
   if (resource.table === 'trading_price_lists') await validatePriceList(org, (existing as { industry_type_id?: string | null }).industry_type_id, payload, id);
   if (resource.table === 'trading_import_export') {
-    const { data: current } = await supabaseAdmin.from('trading_import_export').select('transaction_type, shipment_number').eq('organization_id', org).eq('id', id).maybeSingle();
+     const { data: current } = await supabaseAdmin.from('trading_import_export').select('transaction_type, shipment_number').eq('organization_id', org).eq('id', id).maybeSingle();
     await assertTypeMatchesShipment(org, payload, (current ?? {}) as unknown as Record<string, unknown>);
+  }
+  // Trade documents: verification only moves through Submit / Approve / Reject (who + when is recorded), and a new file voids an old approval.
+  if (resource.table === 'trading_documents') {
+    const { data: current } = await supabaseAdmin.from('trading_documents').select('status, verification_status, file_reference').eq('organization_id', org).eq('id', id).maybeSingle();
+    assertNoDirectReviewChange(payload, (current ?? {}) as Record<string, unknown>);
+    resetApprovalOnNewFile(payload, (current ?? {}) as Record<string, unknown>);
+  }
+  // Customs: moving to Cleared needs the declaration number, clearance date, declared value and the stamped copy.
+  if (resource.table === 'trading_customs' && payload.clearance_status === 'Cleared') {
+    const { data: current } = await supabaseAdmin.from('trading_customs').select('*').eq('organization_id', org).eq('id', id).maybeSingle();
+    if (String((current as { clearance_status?: string | null } | null)?.clearance_status ?? '') !== 'Cleared') assertCanClear({ ...((current ?? {}) as Record<string, unknown>), ...payload });
   }
   // Customs: the plain status always follows the clearance status.
   if (resource.table === 'trading_customs' && typeof payload.clearance_status === 'string' && payload.clearance_status) payload.status = payload.clearance_status;
+  if (resource.table === 'trading_customer_invoices') {
+    const { data: current } = await supabaseAdmin.from('trading_customer_invoices').select('*').eq('organization_id', org).eq('id', id).maybeSingle();
+    const merged = { ...((current ?? {}) as Record<string, unknown>), ...payload };
+    Object.assign(payload, computeInvoiceTotals({ ...merged, status: payload.status || merged.status || 'Sent' }));
+  }
   if (RATE_STAMPED_AMOUNT[resource.table]) {
     const { data: current } = await supabaseAdmin.from(resource.table).select(`currency, ${RATE_STAMPED_AMOUNT[resource.table]}`).eq('organization_id', org).eq('id', id).maybeSingle();
     await stampForeignRate(resource.table, org, (existing as { industry_type_id?: string | null }).industry_type_id, payload, (current ?? {}) as unknown as Record<string, unknown>);
@@ -1205,12 +1721,21 @@ export async function updateTradingRecord(resource: TradingResource, org: string
     // The shipment's own route fields fill any blank in the plan first, then the plan is checked.
     const plan = await ensureLogisticsPlan(org, merged);
     assertPlanReady(plan, String(merged.shipment_number ?? ''));
+    // Documents Verified + export customs Cleared + LC/advance in place (outbound shipments only).
+    await assertReadyToDispatch(org, String(merged.shipment_number ?? ''));
   }
   if (resource.table === 'trading_logistics' && typeof payload.status === 'string' && MOVING_LOGISTICS_STATUSES.has(payload.status) && !STARTED_LOGISTICS_STATUSES.has(previousStatusBefore)) {
     const { data: current, error: currentError } = await supabaseAdmin.from('trading_logistics').select('*').eq('organization_id', org).eq('id', id).maybeSingle();
     if (currentError) fail(currentError);
     const merged = { ...(current as Record<string, unknown> | null), ...payload };
     assertPlanReady(merged, String(merged.shipment_number ?? ''));
+  }
+  // Same gates for Logistics: leaving (Dispatched / In Transit ...) is blocked until documents, customs and payment are in order.
+  // "Picked Up" is NOT gated: goods are collected from the factory before customs clearance happens at the port.
+  if (resource.table === 'trading_logistics' && typeof payload.status === 'string' && DISPATCH_LOGISTICS_STATUSES.has(payload.status) && !LEFT_LOGISTICS_STATUSES.has(previousStatusBefore)) {
+    const { data: current, error: currentError } = await supabaseAdmin.from('trading_logistics').select('shipment_number').eq('organization_id', org).eq('id', id).maybeSingle();
+    if (currentError) fail(currentError);
+    await assertReadyToDispatch(org, String(payload.shipment_number ?? (current as { shipment_number?: string | null } | null)?.shipment_number ?? ''));
   }
   // The Customer ID is a hidden field. If the visible Customer name is empty, drop the ID too,
   // otherwise a stale ID makes the enquiry look like it has a customer.
@@ -1233,7 +1758,7 @@ export async function updateTradingRecord(resource: TradingResource, org: string
     const previousStatus = typeof (existing as { status?: string | null }).status === 'string' ? (existing as { status?: string | null }).status : '';
     await cascadeShipmentStatus(org, shipment);
     const status = typeof shipment.status === 'string' ? shipment.status : '';
-    if (DOCUMENT_TRIGGER_STATUSES.has(status)) await autoCreateShipmentDocuments(org, shipment);
+    if (DOCUMENT_TRIGGER_STATUSES.has(status)) await autoCreateShipmentPaperwork(org, shipment);
     // Every shipment has a Logistics plan; keep its status/dates in step with the shipment.
     await syncLogisticsFromShipment(org, shipment);
     // Only on the actual transition INTO Delivered — never re-fires on a
@@ -1241,9 +1766,14 @@ export async function updateTradingRecord(resource: TradingResource, org: string
     if (status === 'Delivered' && previousStatus !== 'Delivered') {
       await autoUpdateInventoryOnDelivery(org, shipment);
       await autoCloseEnquiryOnInboundDelivery(org, shipment);
+         await autoCreateCustomerInvoice(org, shipment);
     }
+    // Only on the actual transition INTO Cancelled.
+    if (status === 'Cancelled' && previousStatus !== 'Cancelled') await autoCancelInvoiceOnShipmentCancel(org, shipment);
   }
   if (resource.table === 'trading_logistics') await syncShipmentFromLogistics(org, data as Record<string, unknown>, scope);
+  if (resource.table === 'trading_logistics') await syncFreightChargeFromLogistics(org, data as Record<string, unknown>);  if (resource.table === 'trading_logistics') await syncShipmentFromLogistics(org, data as Record<string, unknown>, scope);
+  if (resource.table === 'trading_shipment_charges') await rebuildDraftInvoiceFromCharges(org, String((data as Record<string, unknown>).shipment_number ?? ''));
   if (resource.table === 'trading_deals') await runDealSideEffects(org, data as Record<string, unknown>);
   // A cost changed on a linked record: keep the deal's live profit row up to date.
   await refreshProfitabilityForRecord(org, resource.table, data as Record<string, unknown>);
@@ -1326,10 +1856,40 @@ export async function deleteTradingRecord(resource: TradingResource, org: string
     const { data, error } = await supabaseAdmin.from(resource.table).delete().eq('organization_id', org).eq('id', id).select().maybeSingle();
   if (error) fail(error);
   if (!data) throw notFound;
+  // A deleted invoice gives its charges back: they are "open" again and can be billed on a new invoice.
+  if (resource.table === 'trading_customer_invoices') {
+    const invoiceNumber = (data as Record<string, unknown>).invoice_number;
+    if (typeof invoiceNumber === 'string' && invoiceNumber) {
+      const { error: releaseError } = await supabaseAdmin.from('trading_shipment_charges').update({ invoice_number: null })
+        .eq('organization_id', org).eq('invoice_number', invoiceNumber);
+      if (releaseError) logger.warn({ err: releaseError }, 'Could not release the charges of a deleted invoice');
+    }
+  }
+  if (resource.table === 'trading_shipment_charges') await rebuildDraftInvoiceFromCharges(org, String((data as Record<string, unknown>).shipment_number ?? ''));
   // A deleted logistics / customs / finance / commission / shipment record was part of the deal's profit.
   await refreshProfitabilityForRecord(org, resource.table, data as Record<string, unknown>);
   // A deleted document / customs record changes what compliance can see.
   await refreshComplianceForRecord(org, resource.table, data as Record<string, unknown>);
+  return data;
+}
+
+// Submit / Approve / Reject a trade document. The only way a document enters Pending Verification, Verified or Rejected.
+export async function reviewTradeDocument(org: string, id: string, action: string, input: Record<string, unknown>, scope: IndustryScope, actor: ReviewActor) {
+  const notFound = new AppError(404, 'RECORD_NOT_FOUND', 'documents record was not found.');
+  const { data: doc, error } = await supabaseAdmin.from('trading_documents').select('*').eq('organization_id', org).eq('id', id).maybeSingle();
+  if (error) fail(error);
+  if (!doc) throw notFound;
+  const row = doc as Record<string, unknown>;
+  assertRecordInScope(scope, row.industry_type_id as string | null | undefined, notFound);
+  const patch = planDocumentReview(row, action, actor, input);
+  // Only write if nobody changed the status meanwhile (two approvers clicking at once).
+  let query = supabaseAdmin.from('trading_documents').update(patch).eq('organization_id', org).eq('id', id);
+  query = row.status ? query.eq('status', row.status as string) : query.is('status', null);
+  const { data, error: updateError } = await query.select().maybeSingle();
+  if (updateError) fail(updateError);
+  if (!data) throw new AppError(409, 'DOCUMENT_CHANGED', 'This document was changed by someone else. Refresh and try again.');
+  await refreshProfitabilityForRecord(org, 'trading_documents', data as Record<string, unknown>);
+  await runTradeLinks(org, 'trading_documents', data as Record<string, unknown>, false);
   return data;
 }
 
@@ -1373,4 +1933,94 @@ export async function sendPurchaseEnquiry(org: string, id: string, scope: Indust
   if (updateError) fail(updateError);
   if (!updated) throw notFound;
   return updated;
+}
+
+// "Send documents": emails the shipment's Verified documents (download links) to the customer, or to the address typed.
+const EMAIL_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+function parseEmails(value: unknown): string[] {
+  const raw = Array.isArray(value) ? value.map(String) : typeof value === 'string' ? value.split(/[\s,;]+/) : [];
+  const list = [...new Set(raw.map((v) => v.trim()).filter(Boolean))];
+  const bad = list.find((v) => !EMAIL_PATTERN.test(v));
+  if (bad) throw new AppError(422, 'INVALID_EMAIL', `"${bad}" is not a valid email address.`);
+  return list;
+}
+
+async function customerEmailFor(org: string, shipment: Record<string, unknown>): Promise<string> {
+  try {
+    const dealNumber = asText(shipment.deal_number);
+    if (dealNumber) {
+      const { data: deal } = await supabaseAdmin.from('trading_deals').select('customer_id').eq('organization_id', org).eq('deal_number', dealNumber).limit(1).maybeSingle();
+      const customerId = asText((deal as { customer_id?: string | null } | null)?.customer_id);
+      if (customerId) {
+        const { data: client } = await supabaseAdmin.from('clients').select('email').eq('organization_id', org).eq('id', customerId).maybeSingle();
+        const email = asText((client as { email?: string | null } | null)?.email);
+        if (email) return email;
+      }
+    }
+    const name = asText(shipment.customer_name);
+    if (!name) return '';
+    const { data: rows } = await supabaseAdmin.from('clients').select('client_name, email').eq('organization_id', org).ilike('client_name', name.replace(/[\\%_]/g, (m) => `\\${m}`)).limit(5);
+    return asText(((rows ?? []) as Array<{ email?: string | null }>).find((r) => asText(r.email))?.email);
+  } catch (error) {
+    logger.warn({ err: error }, 'Could not look up the customer email');
+    return '';
+  }
+}
+
+export async function sendShipmentDocuments(org: string, id: string, input: Record<string, unknown>, scope: IndustryScope) {
+  const notFound = new AppError(404, 'RECORD_NOT_FOUND', 'shipments record was not found.');
+  const { data, error } = await supabaseAdmin.from('trading_shipments').select('*').eq('organization_id', org).eq('id', id).maybeSingle();
+  if (error) fail(error);
+  if (!data) throw notFound;
+  const shipment = data as Record<string, unknown>;
+  assertRecordInScope(scope, (shipment as { industry_type_id?: string | null }).industry_type_id, notFound);
+  const shipmentNumber = asText(shipment.shipment_number);
+
+  let recipients = parseEmails(input.to);
+  if (recipients.length === 0) { const email = await customerEmailFor(org, shipment); if (email) recipients = [email]; }
+  if (recipients.length === 0) throw new AppError(422, 'RECIPIENT_REQUIRED', 'Type the email address to send to, or save an email address on the customer first.');
+
+  const { data: docs, error: docsError } = await supabaseAdmin.from('trading_documents').select('id, document_number, document_type, status, verification_status, file_reference, issue_date').eq('organization_id', org).eq('shipment_number', shipmentNumber);
+  if (docsError) fail(docsError);
+  const wanted = Array.isArray(input.documentIds) ? input.documentIds.map(String) : null;
+  const sendable = ((docs ?? []) as Array<Record<string, unknown>>).filter((d) => (!wanted || wanted.includes(String(d.id))) && (d.status === 'Verified' || d.verification_status === 'Verified'));
+  if (sendable.length === 0) throw new AppError(422, 'NO_VERIFIED_DOCUMENTS', 'This shipment has no Verified documents yet. Verify them in Trade Documents first, then send.');
+
+  const { data: organization } = await supabaseAdmin.from('organizations').select('name').eq('id', org).maybeSingle();
+  const result = await sendShipmentDocumentsEmail({
+    shipmentNumber, customerName: asText(shipment.customer_name), recipients, documents: sendable,
+    companyName: (organization as { name?: string | null } | null)?.name ?? 'Our company',
+    note: typeof input.message === 'string' ? input.message.trim().slice(0, 1000) : undefined,
+    carrier: asText(shipment.transporter), tracking: asText(shipment.tracking_number), origin: asText(shipment.origin), destination: asText(shipment.destination),
+  });
+  return { shipment_number: shipmentNumber, sent_to: recipients, documents: sendable.map((d) => d.document_number), message_id: result.messageId };
+}
+
+export async function sendCustomerInvoice(org: string, id: string, input: Record<string, unknown>, scope: IndustryScope) {
+  const notFound = new AppError(404, 'RECORD_NOT_FOUND', 'customer invoices record was not found.');
+  const { data, error } = await supabaseAdmin.from('trading_customer_invoices').select('*').eq('organization_id', org).eq('id', id).maybeSingle();
+  if (error) fail(error);
+  if (!data) throw notFound;
+  const invoice = data as Record<string, unknown>;
+  assertRecordInScope(scope, (invoice as { industry_type_id?: string | null }).industry_type_id, notFound);
+  if (asText(invoice.status) === 'Cancelled') throw new AppError(422, 'INVOICE_CANCELLED', 'A cancelled invoice cannot be sent.');
+
+  let recipients = parseEmails(input.to);
+  if (recipients.length === 0) { const email = await customerEmailFor(org, invoice); if (email) recipients = [email]; }
+  if (recipients.length === 0) throw new AppError(422, 'RECIPIENT_REQUIRED', 'Type the email address to send to, or save an email address on the customer first.');
+
+  const { data: organization } = await supabaseAdmin.from('organizations').select('name').eq('id', org).maybeSingle();
+  const result = await sendCustomerInvoiceEmail({
+    invoice, recipients,
+    companyName: (organization as { name?: string | null } | null)?.name ?? 'Our company',
+    note: typeof input.message === 'string' ? input.message.trim().slice(0, 1000) : undefined,
+  });
+
+  // Mail was accepted by SMTP: only now does a Draft invoice become "Sent" (overdue/partly-paid rules still apply).
+  if (asText(invoice.status) === 'Draft') {
+    const { status } = computeInvoiceTotals({ ...invoice, status: 'Sent' });
+    const { error: updateError } = await supabaseAdmin.from('trading_customer_invoices').update({ status }).eq('organization_id', org).eq('id', id);
+    if (updateError) logger.warn({ err: updateError }, 'Invoice email sent but status could not be updated');
+  }
+  return { invoice_number: asText(invoice.invoice_number), sent_to: recipients, message_id: result.messageId };
 }

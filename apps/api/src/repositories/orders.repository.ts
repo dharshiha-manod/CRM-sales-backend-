@@ -7,7 +7,7 @@ import { assertWithinCreditLimit } from '../lib/credit.js';
 import { documentCurrencyForClient, isFmcgIndustry, toBase, type DocumentCurrency } from '../lib/fmcg-market.js';
 import { bestSchemeFor, loadLiveSchemes, type LiveScheme } from '../lib/fmcg-schemes.js';
 import { applyAllocations, planAllocations, readAllocation, releaseStockForOrder, takeStockForOrder, type Allocation } from '../lib/stock.js';
-
+import { billedTotalsForCoreOrders } from './trading.repository.js';
 const fail = (error: unknown): never => { throw error; };
 type OrderItem = { productId: string; quantity: number; discountPercent: number; freeQuantity?: number };
 
@@ -161,7 +161,9 @@ export async function listOrders(organizationId: string, representativeId?: stri
   const orders = (data ?? []) as unknown as Array<Record<string, unknown> & { id: string }>;
   // Approved returns / damage are credit notes: the order keeps its total, but the client owes that much less.
   const credits = await approvedReturnCredits(organizationId, orders.map((o) => o.id));
-  return orders.map((o) => ({ ...o, returns_credit: credits.get(o.id)?.credit ?? 0, returns_credit_base: credits.get(o.id)?.base ?? 0 }));
+  // Trading orders: what their final (Sent / Paid) invoices add up to. 0 for every other order.
+  const billed = await billedTotalsForCoreOrders(organizationId, orders.map((o) => o.id));
+  return orders.map((o) => ({ ...o, returns_credit: credits.get(o.id)?.credit ?? 0, returns_credit_base: credits.get(o.id)?.base ?? 0, billed_total: billed.get(o.id) ?? 0 }));
 }
 
 /** order id -> total approved return/damage credit (in the order's currency and in INR). */

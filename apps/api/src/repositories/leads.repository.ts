@@ -155,7 +155,7 @@ export async function continueLeadChain(organizationId: string, leadId: string, 
     }
   }
   let expectedValue = Number(meta.expectedOrderValue) || 0;
-  // An international FMCG lead states its expected value in the client's currency; product prices are rupees,
+  // An international (FMCG or Trading) lead states its expected value in the client's currency; product prices are rupees,
   // so convert to INR before working out the quantity. No rate yet -> quantity 1 and a note in the lead's activity.
   const leadCurrency = String(lead.currency_code ?? '').toUpperCase();
   if (expectedValue > 0 && leadCurrency && leadCurrency !== 'INR') {
@@ -163,7 +163,7 @@ export async function continueLeadChain(organizationId: string, leadId: string, 
     if (rate) expectedValue *= rate;
     else {
       expectedValue = 0;
-      await logLeadNote(organizationId, leadId, actorId, `Expected order value is in ${leadCurrency} but there is no ${leadCurrency} to INR rate in FMCG Currency Rates yet, so the quantity was set to 1. Add the rate and adjust the quantity on the Requirement.`);
+      await logLeadNote(organizationId, leadId, actorId, `Expected order value is in ${leadCurrency} but there is no ${leadCurrency} to INR rate in Currency Rates yet, so the quantity was set to 1. Add the rate and adjust the quantity on the Requirement.`);
     }
   }
    const quantity = matchedProduct && matchedProduct.selling_price > 0 ? Math.max(1, Math.round(expectedValue / matchedProduct.selling_price)) : 1;

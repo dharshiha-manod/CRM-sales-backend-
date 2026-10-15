@@ -5,6 +5,7 @@ import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, View } f
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { FieldVisitPanel } from '../src/components/FieldVisitPanel';
+import { StockRequestPanel } from '../src/components/StockRequestPanel';
 import { AppButton } from '../src/components/AppButton';
 import { SignInScreen } from '../src/components/SignInScreen';
 import { api } from '../src/lib/api';
@@ -101,6 +102,7 @@ export default function HomeScreen() {
               <Metric label="Follow-ups" value={summary?.upcomingFollowUps ?? 0} />
             </View>
             <FieldVisitPanel clients={dashboard?.clients ?? []} />
+            <StockRequestPanel />
             <Text style={styles.sectionTitle}>Assigned clients</Text>
             {error ? <Text style={styles.error}>{error}</Text> : null}
           </>

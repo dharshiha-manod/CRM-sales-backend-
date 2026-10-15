@@ -24,11 +24,11 @@ function cleanIndustryDetails(code: string | null, details: unknown) {
 
 export const representativeService = { list(org: string, search: string | undefined, status: string | undefined, industryTypeId: string | undefined, scope: IndustryScope) { return repo.listRepresentatives(org, search, status, resolveIndustryTypeId(scope, industryTypeId) ?? undefined); }, get: repo.getRepresentative, async create(org: string, input: Record<string, unknown>) { await repo.assertRepresentativeUserMembership(org, input.userId as string); return repo.createRepresentative(org, input); }, update: repo.updateRepresentative };
 
-/** Multi-country fields (countryCode / currencyCode) are an FMCG-only feature.
+/** Multi-country fields (countryCode / currencyCode) are an FMCG + Trading feature.
  *  For every other industry they are dropped server-side, so those industries behave exactly as before. */
 function applyMultiCountryRule(code: string | null, input: Record<string, unknown>): Record<string, unknown> {
   const next = { ...input };
-  if ((code ?? '').toLowerCase() !== 'fmcg') {
+  if (!['fmcg', 'trading'].includes((code ?? '').toLowerCase())) {
     delete next.countryCode;
     delete next.currencyCode;
     return next;

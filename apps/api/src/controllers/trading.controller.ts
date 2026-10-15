@@ -2,6 +2,10 @@ import type { RequestHandler } from 'express';
 import { AppError } from '../errors/app-error.js';
 import { tradingService } from '../services/trading.service.js';
 import type { TradingResource } from '../lib/trading-resources.js';
+import { actorFromAuth } from '../lib/trade-verification.js';
+
+type Req = Parameters<RequestHandler>[0];
+type Res = Parameters<RequestHandler>[1];
 
 const org = (req: Parameters<RequestHandler>[0]) => {
   const value = req.header('x-organization-id');
@@ -48,7 +52,21 @@ export const trading = {
   remove: (resource: TradingResource): RequestHandler => async (req, res) => {
     res.json({ data: await tradingService.remove(resource, org(req), idParam(req.params.id), req.industryScope!) });
   },
-  sendPurchaseEnquiry: async (req, res) => {
+  sendPurchaseEnquiry: async (req: Req, res: Res) => {
     res.json({ data: await tradingService.sendPurchaseEnquiry(org(req), idParam(req.params.id), req.industryScope!) });
+  },
+  // Submit / approve / reject a trade document (records who did it; see lib/trade-verification.ts).
+  reviewDocument: async (req: Req, res: Res) => {
+    const body = asBody(req);
+    const action = String(body.action ?? '');
+    if (!['submit', 'approve', 'reject'].includes(action)) throw new AppError(400, 'VALIDATION_ERROR', 'action must be submit, approve or reject.');
+    const actor = actorFromAuth((req.auth ?? {}) as Record<string, unknown>, req.organizationRole ?? '');
+    res.json({ data: await tradingService.reviewDocument(org(req), idParam(req.params.id), action, body, req.industryScope!, actor) });
+  },
+   sendShipmentDocuments: async (req: Req, res: Res) => {
+    res.json({ data: await tradingService.sendShipmentDocuments(org(req), idParam(req.params.id), req.body ?? {}, req.industryScope!) });
+  },
+  sendCustomerInvoice: async (req: Req, res: Res) => {
+    res.json({ data: await tradingService.sendCustomerInvoice(org(req), idParam(req.params.id), req.body ?? {}, req.industryScope!) });
   },
 };

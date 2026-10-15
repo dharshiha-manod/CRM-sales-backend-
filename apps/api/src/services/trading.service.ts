@@ -9,4 +9,7 @@ export const tradingService = {
   update: repository.updateTradingRecord,
   remove: repository.deleteTradingRecord,
   sendPurchaseEnquiry: repository.sendPurchaseEnquiry,
+  sendShipmentDocuments: repository.sendShipmentDocuments,
+   sendCustomerInvoice: repository.sendCustomerInvoice,
+  reviewDocument: repository.reviewTradeDocument,
 };
