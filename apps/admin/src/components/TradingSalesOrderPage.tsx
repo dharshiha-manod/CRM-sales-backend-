@@ -10,6 +10,7 @@ import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { GenerateDocumentButton } from './GenerateDocumentButton';
 import { buildDraftFromDeal } from '../lib/tradeDocumentHandoff';
 import { api } from '../lib/api';
+import { formatMoneyWithBase, sumMoneyWithBase } from '../lib/currencyFormat';
 
 const STATUSES = ['Confirmed', 'In Production', 'Ready to Ship', 'Shipped', 'Completed', 'Cancelled'];
 const ORDER_DOC_TYPES = ['Sales Order', 'Proforma Invoice', 'Commercial Invoice', 'Packing List', 'Other'];
@@ -118,7 +119,7 @@ const config: TradingModuleConfig = {
       type: 'text',
       readOnly: true,
       listColumn: true,
-      format: (_v, r) => `₹${orderValue(r).toLocaleString()}`,
+      format: (_v, r) => formatMoneyWithBase(orderValue(r), r.currency),
       group: 'Order details',
     },
     { key: 'order_date', label: 'Order date', type: 'date', listColumn: true, group: 'Schedule & terms' },
@@ -134,7 +135,7 @@ const config: TradingModuleConfig = {
     { icon: '🧾', iconClass: 'kpi-icon-ink', label: 'Total sales orders', value: (r) => String(r.length) },
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Open orders', value: (r) => String(r.filter((x) => !['Completed', 'Cancelled'].includes(String(x.status))).length) },
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Completed', value: (r) => String(r.filter((x) => x.status === 'Completed').length) },
-    { icon: '₹', iconClass: 'kpi-icon-school', label: 'Order value', value: (r) => `₹${r.reduce((sum, x) => sum + orderValue(x), 0).toLocaleString()}` },
+    { icon: '₹', iconClass: 'kpi-icon-school', label: 'Order value', value: (r) => sumMoneyWithBase(r, orderValue) },
   ],
   rowActions: (r) => (
     <GenerateDocumentButton docTypes={ORDER_DOC_TYPES} buildDraft={(documentType) => buildDraftFromDeal(r, documentType)} />

@@ -197,7 +197,11 @@ export function CollectionsPage() {
         const pays = paymentsByOrder.get(order.id) ?? paymentsByOrder.get(order.order_number) ?? [];
         // Approved returns / damage are credit notes, so the amount still to be collected is the order total minus them.
         const returnsCredit = Number((order as { returns_credit?: number | null }).returns_credit ?? 0);
-        const invoiceAmount = Number(order.total_amount || 0) - returnsCredit;
+        // Amount due = the larger of the order and its final (Sent / Paid) Trading invoices, minus returns credit.
+        // billed_total arrives in the company currency; the order total is in the order's own currency, so convert before comparing.
+        const orderRate = Number(order.exchange_rate) > 0 ? Number(order.exchange_rate) : 1;
+        const billedInOrderCurrency = Math.round((Number((order as { billed_total?: number | null }).billed_total ?? 0) / orderRate) * 100) / 100;
+        const invoiceAmount = Math.max(Number(order.total_amount || 0), billedInOrderCurrency) - returnsCredit;
         const paidAmount = pays.reduce((sum, p) => sum + Number(p.amount || 0), 0);
         const balance = Math.max(0, invoiceAmount - paidAmount);
              // Each client's own Credit days decides when their order is due; the Settings value is only the fallback for clients without one.

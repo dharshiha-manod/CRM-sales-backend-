@@ -35,6 +35,8 @@ export interface FieldDef {
   placeholder?: string;
   /** small grey hint shown under the field in the Add/Edit form (not in the list or detail view) */
   helpText?: string;
+  /** extra text added after the label in the Add/Edit form, worked out from the in-progress form (e.g. the currency symbol of the chosen currency) */
+  labelSuffix?: (form: Record<string, string>) => string;
   /** groups fields under a <fieldset> legend; omit for the ungrouped top section */
   group?: string;
   /** show this field as a column in the list table */
@@ -849,7 +851,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
               <div className="field-grid">
                           {ungrouped.map((f) => (
                   <label key={f.key}>
-                    {f.label}{f.required ? ' *' : ''}
+                    {f.label}{f.labelSuffix ? f.labelSuffix(form) : ''}{f.required ? ' *' : ''}
 
                     {renderInput(f, form, setForm, lookupData, fields, dynamicOptions, (key, options) => setDynamicOptions((prev) => ({ ...prev, [key]: options })), records)}
                     {f.helpText && <small style={{ display: 'block', marginTop: 4, fontSize: 12, fontWeight: 400, color: '#64748b' }}>{f.helpText}</small>}
@@ -862,7 +864,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
                   <div className="fieldset-grid">
                                  {groups.get(g)!.map((f) => (
                       <label key={f.key}>
-                        {f.label}{f.required ? ' *' : ''}
+                        {f.label}{f.labelSuffix ? f.labelSuffix(form) : ''}{f.required ? ' *' : ''}
                         {renderInput(f, form, setForm, lookupData, fields, dynamicOptions, (key, options) => setDynamicOptions((prev) => ({ ...prev, [key]: options })), records)}
                         {f.helpText && <small style={{ display: 'block', marginTop: 4, fontSize: 12, fontWeight: 400, color: '#64748b' }}>{f.helpText}</small>}
                       </label>

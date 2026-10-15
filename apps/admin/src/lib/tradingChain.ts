@@ -34,12 +34,13 @@ export interface ChainTables {
   commissions: ChainRow[];
   finance: ChainRow[];
   collections: ChainRow[];
+  customerInvoices: ChainRow[];
 }
 
 const EMPTY_TABLES: ChainTables = {
   deals: [], orders: [], enquiries: [], shipments: [], logistics: [],
   importExport: [], customs: [], documents: [], claims: [],
-  commissions: [], finance: [], collections: [],
+   commissions: [], finance: [], collections: [], customerInvoices: [],
 };
 
 const SOURCES: Array<[keyof ChainTables, string]> = [
@@ -54,6 +55,7 @@ const SOURCES: Array<[keyof ChainTables, string]> = [
   ['claims', '/trading/claims'],
   ['commissions', '/trading/commissions'],
   ['finance', '/trading/trade-finance'],
+  ['customerInvoices', '/trading/customer-invoices'],
   // Existing Collections/payment records — read, never written to from
   // here. The spec is explicit that Trade Finance must not become a
   // second Collections system.
@@ -117,8 +119,9 @@ export interface TradingChain {
   documents: ChainRow[];
   claims: ChainRow[];
   commissions: ChainRow[];
-  finance: ChainRow[];
+   finance: ChainRow[];
   collections: ChainRow[];
+  customerInvoices: ChainRow[];
 }
 
 const str = (v: unknown): string => (v == null ? '' : String(v));
@@ -178,6 +181,7 @@ export function buildChain(tables: ChainTables, anchor: ChainAnchor): TradingCha
     claims: byShipmentOrDeal(tables.claims),
     commissions: dealNumber ? tables.commissions.filter((c) => eq(c.deal_number, dealNumber)) : [],
     finance: byShipmentOrDeal(tables.finance),
+    customerInvoices: byShipmentOrDeal(tables.customerInvoices),
     // Step 4 of the Trading connectivity plan: Collections are recorded
     // against the core sales order, and that order's number is now saved
     // on the Deal (core_order_number) the moment the quotation is
@@ -462,10 +466,19 @@ export function chainStatus(chain: TradingChain): ChainStatus {
   const fullyCollected = collectedAmount != null && financials.revenue != null
     && collectedAmount + 0.00001 >= financials.revenue;
 
-  const paid = financePaid || fullyCollected;
+  // Customer invoices (Trading > Customer Invoices): the real bill to the customer. Newest live invoice gives the
+  // number; payment on them also counts as paid / partly paid.
+  const liveInvoices = chain.customerInvoices
+    .filter((i) => str(i.status) !== 'Cancelled')
+    .sort((a, b) => str(b.invoice_date).localeCompare(str(a.invoice_date)) || str(b.invoice_number).localeCompare(str(a.invoice_number)));
+  const invoicesPaid = liveInvoices.length > 0
+    && liveInvoices.every((i) => (num(i.total_amount) ?? 0) > 0 && (num(i.balance_amount) ?? 1) <= 0);
+  const invoicePaidSome = liveInvoices.some((i) => (num(i.paid_amount) ?? 0) > 0);
+
+  const paid = financePaid || fullyCollected || invoicesPaid;
   const paymentStatus = paid
     ? 'Paid'
-    : collectedAmount != null && collectedAmount > 0 ? 'Partially Paid'
+    : (collectedAmount != null && collectedAmount > 0) || invoicePaidSome ? 'Partially Paid'
       : chain.finance.some((f) => str(f.status) === 'Payment Pending') ? 'Payment Pending' : 'Pending';
 
   const invoice = chain.documents.find((d) => str(d.document_type).includes('Invoice'));
@@ -478,7 +491,7 @@ export function chainStatus(chain: TradingChain): ChainStatus {
     paymentStatus,
     paid,
     collectedAmount,
-    invoiceNumber: str(invoice?.document_number),
+    invoiceNumber: str(liveInvoices[0]?.invoice_number) || str(invoice?.document_number),
   };
 }
 

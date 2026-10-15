@@ -84,10 +84,13 @@ export function ClientsPage() {
     return result;
   }, [industryScoped, allOrders, allCollections]);
   const isFmcgView = activeIndustryType?.code?.toLowerCase() === 'fmcg';
+  const isTradingView = activeIndustryType?.code?.toLowerCase() === 'trading';
+  // FMCG and Trading both sell in more than one country: they get the Country / Currency fields and the Local / International filter + badge.
+  const isMarketView = isFmcgView || isTradingView;
   const marketOf = (item: Client) => ((item.country_code ?? '').toUpperCase() && (item.country_code ?? '').toUpperCase() !== 'IN' ? 'international' : 'local');
-  const filtered = industryScoped.filter((item) => (!type || item.client_type === type) && (!isFmcgView || market === 'all' || marketOf(item) === market) && (status === 'all' || item.status === status) && (!priority || item.priority === priority) && (!onlyOutstanding || (outstandingByClient[item.id] ?? 0) > 0));
+  const filtered = industryScoped.filter((item) => (!type || item.client_type === type || (isTradingView && type.toLowerCase() === 'buyer' && item.client_type?.toLowerCase() !== 'supplier')) && (!isMarketView || market === 'all' || marketOf(item) === market) && (status === 'all' || item.status === status) && (!priority || item.priority === priority) && (!onlyOutstanding || (outstandingByClient[item.id] ?? 0) > 0));
   const activeCount = industryScoped.filter((item) => item.status === 'active').length;
-  const buyersCount = industryScoped.filter((item) => item.client_type?.toLowerCase() === 'buyer').length;
+  const buyersCount = industryScoped.filter((item) => (isTradingView ? item.client_type?.toLowerCase() !== 'supplier' : item.client_type?.toLowerCase() === 'buyer')).length;
   const suppliersCount = industryScoped.filter((item) => item.client_type?.toLowerCase() === 'supplier').length;
   const nextFollowUpOf = (clientId: string): string | null => {
     const upcoming = allFollowUps.filter((f) => f.client_id === clientId && f.status === 'pending').sort((a, b) => new Date(a.due_at).getTime() - new Date(b.due_at).getTime())[0];
@@ -166,7 +169,7 @@ const stageOf = (clientId: string): string => {
 // NEW — only send industryTypeId on edit if it actually changed, so the
 // server doesn't needlessly re-run industry resolution/validation on every
 // unrelated field edit (this is what was tripping the 500).
-          const payload = { clientCode: form.clientCode, clientName: form.clientName, clientType: selectedIndustryCode === 'FMCG' ? (OUTLET_TYPES.find(([value]) => value === form.outletType)?.[1] ?? 'Retailer') : form.clientType, ...(editing &&form.industryTypeId === (editing.industry_type_id ?? '') ? {} : { industryTypeId: form.industryTypeId || null }), outletType: form.outletType || null, gstin: gstinValue || null, pan: panValue || null, address: form.streetAddress.trim() || null, city: form.city.trim() || null, state: form.state.trim() || null, creditLimit: form.creditLimit ? Number(form.creditLimit) : null, creditDays: form.creditDays ? Number(form.creditDays) : null, ...(selectedIndustryCode === 'FMCG' ? { countryCode: form.countryCode || null, currencyCode: form.currencyCode || null } : {}), industryDetails: Object.fromEntries(Object.entries(form.industryDetails).filter(([, v]) => v !== '')), priority: form.priority, status: form.status };
+          const payload = { clientCode: form.clientCode, clientName: form.clientName, clientType: selectedIndustryCode === 'FMCG' ? (OUTLET_TYPES.find(([value]) => value === form.outletType)?.[1] ?? 'Retailer') : form.clientType, ...(editing &&form.industryTypeId === (editing.industry_type_id ?? '') ? {} : { industryTypeId: form.industryTypeId || null }), outletType: form.outletType || null, gstin: gstinValue || null, pan: panValue || null, address: form.streetAddress.trim() || null, city: form.city.trim() || null, state: form.state.trim() || null, creditLimit: form.creditLimit ? Number(form.creditLimit) : null, creditDays: form.creditDays ? Number(form.creditDays) : null, ...(['FMCG', 'TRADING'].includes(selectedIndustryCode ?? '') ? { countryCode: form.countryCode || null, currencyCode: form.currencyCode || null } : {}), industryDetails: Object.fromEntries(Object.entries(form.industryDetails).filter(([, v]) => v !== '')), priority: form.priority, status: form.status };
        await api(editing ? `/clients/${editing.id}` : '/clients', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });      setModal(false); setEditing(null); setMessage(editing ? 'Client updated successfully.' : 'Client created successfully.'); await load();
     } catch (e) {
       const err = e as Error & { details?: { fieldErrors?: Record<string, string[]> } };
@@ -200,16 +203,21 @@ const stageOf = (clientId: string): string => {
   return <section className="page-panel master-page">
     <div className="page-panel-heading">
       <div>
-        <p className="eyebrow">{config.label.toUpperCase()} · {config.terms.partyLabelPlural.toUpperCase()}</p>
-        <h2>{config.terms.partyLabelPlural}</h2>
+        <p className="eyebrow">{config.label.toUpperCase()} · {(isTradingView ? 'Buyers' : config.terms.partyLabelPlural).toUpperCase()}</p>
+        <h2>{isTradingView ? 'Buyers' : config.terms.partyLabelPlural}</h2>
         <p>Manage your business relationships</p>
       </div>
     </div>
     <div className="kpi-grid client-kpi-grid">
       <div className="kpi-card" data-tone="ink" {...kpiClick(!type && status === 'all' && !priority && !onlyOutstanding, () => showOnly({}))}><div className="kpi-icon kpi-icon-ink">◧</div><div><span>Total Clients</span><strong>{industryScoped.length}</strong></div></div>
       <div className="kpi-card" data-tone="green" {...kpiClick(status === 'active' && !type && !onlyOutstanding, () => showOnly({ status: 'active' }))}><div className="kpi-icon kpi-icon-green">✓</div><div><span>Active</span><strong>{activeCount}</strong></div></div>
+      {isTradingView ? (<>
+        <div className="kpi-card" data-tone="blue" {...kpiClick(market === 'local', () => setMarket('local'))}><div className="kpi-icon kpi-icon-school">◐</div><div><span>Local (India)</span><strong>{industryScoped.filter((item) => marketOf(item) === 'local').length}</strong></div></div>
+        <div className="kpi-card" data-tone="amber" {...kpiClick(market === 'international', () => setMarket('international'))}><div className="kpi-icon kpi-icon-amber">◑</div><div><span>International</span><strong>{industryScoped.filter((item) => marketOf(item) === 'international').length}</strong></div></div>
+      </>) : (<>
       <div className="kpi-card" data-tone="blue" {...kpiClick(type.toLowerCase() === 'buyer' && status === 'all' && !onlyOutstanding, () => showOnly({ type: typeValue('buyer') }))}><div className="kpi-icon kpi-icon-school">◐</div><div><span>Buyers</span><strong>{buyersCount}</strong></div></div>
       <div className="kpi-card" data-tone="amber" {...kpiClick(type.toLowerCase() === 'supplier' && status === 'all' && !onlyOutstanding, () => showOnly({ type: typeValue('supplier') }))}><div className="kpi-icon kpi-icon-amber">◑</div><div><span>Suppliers</span><strong>{suppliersCount}</strong></div></div>
+      </>)}
       <div className="kpi-card" data-tone="red" {...kpiClick(onlyOutstanding, () => showOnly({ outstanding: true }))}><div className="kpi-icon kpi-icon-red">₹</div><div><span>Outstanding</span><strong>{money(totalOutstanding)}</strong></div></div>
     </div>
 
@@ -228,7 +236,7 @@ const stageOf = (clientId: string): string => {
         <select value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
           <option value="all">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option>
         </select>
-        {isFmcgView && (
+        {isMarketView && (
           <select value={market} onChange={(e) => setMarket(e.target.value as typeof market)}>
             <option value="all">Local + International</option><option value="local">Local (India)</option><option value="international">International</option>
           </select>
@@ -247,7 +255,7 @@ const stageOf = (clientId: string): string => {
             <tr key={item.id}>
               <td><strong>{item.client_name}</strong><br /><small className="lead-code">{item.client_code}</small></td>
               <td>{item.industry_types?.name ?? <span className="empty-row">Not set</span>}</td>
-              <td>{item.client_type}{isFmcgView && <><br /><span className={`status-badge ${marketOf(item) === 'international' ? 'status-pending' : 'status-completed'}`}>{marketOf(item) === 'international' ? `International${item.country_code ? ` · ${item.country_code}` : ''}` : 'Local'}</span></>}</td>
+              <td>{item.client_type}{isMarketView && <><br /><span className={`status-badge ${marketOf(item) === 'international' ? 'status-pending' : 'status-completed'}`}>{marketOf(item) === 'international' ? `International${item.country_code ? ` · ${item.country_code}` : ''}` : 'Local'}</span></>}</td>
               <td><span className={`status-badge stage-${stageOf(item.id).toLowerCase()}`}>{stageOf(item.id)}</span></td>
               <td>{item.client_contacts?.find((c) => c.is_primary)?.email || item.client_contacts?.[0]?.email || <small className="lead-code">No email</small>}<br /><small className="lead-code">{item.client_contacts?.find((c) => c.is_primary)?.phone || item.client_contacts?.[0]?.phone || '—'}</small></td>
               <td>{item.created_at ? new Intl.DateTimeFormat(undefined, { dateStyle: 'short' }).format(new Date(item.created_at)) : '—'}</td>
@@ -342,7 +350,7 @@ const stageOf = (clientId: string): string => {
           <label>State<input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} /></label>
 
               {selectedIndustryCode !== 'FMCG' && (
-            <label>Client type<select value={form.clientType} onChange={(e) => setForm({ ...form, clientType: e.target.value })}>{[...new Set(['School', ...clientTypes])].map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label>Client type<select value={form.clientType} onChange={(e) => setForm({ ...form, clientType: e.target.value })}>{(selectedIndustryCode === 'TRADING' ? [...new Set(['Buyer', 'Supplier', form.clientType].filter(Boolean))] : [...new Set(['School', ...clientTypes])]).map((value) => <option key={value}>{value}</option>)}</select></label>
           )}
           <label>GSTIN<input value={form.gstin} maxLength={15} placeholder="22AAAAA0000A1Z5" onChange={(e) => setForm({ ...form, gstin: e.target.value.toUpperCase() })} />
             {form.gstin.trim() && !GSTIN_RE.test(form.gstin.trim()) && <small className="field-hint field-hint-error">Enter a full 15-character GSTIN, or clear this field.</small>}
@@ -363,7 +371,7 @@ const stageOf = (clientId: string): string => {
   {selectedIndustryCode !== 'TRADING' && (
               <label>Outlet type<select value={form.outletType} onChange={(e) => setForm({ ...form, outletType: e.target.value })}><option value="">Not set</option>{OUTLET_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             )}
-                   {selectedIndustryCode === 'FMCG' && (
+                   {['FMCG', 'TRADING'].includes(selectedIndustryCode ?? '') && (
               <FmcgMarketFields
                 countryCode={form.countryCode}
                 currencyCode={form.currencyCode}

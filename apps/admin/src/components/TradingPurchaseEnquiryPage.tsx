@@ -1,5 +1,6 @@
 import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { api } from '../lib/api';
+import { formatMoneyWithBase } from '../lib/currencyFormat';
 import { applyPriceListRates } from '../lib/priceListLookup';
 import { SendPurchaseEnquiryButton, SendAllUnsentBar } from './SendPurchaseEnquiryButton';
 import { CompareSuppliersBar } from './EnquiryComparison';
@@ -157,7 +158,8 @@ const config: TradingModuleConfig = {
      required: true,
      lookupResource: '/products?status=active',
   industryScoped: true,
-     lookupLabelKey: 'product_code',
+         lookupLabelKey: 'product_code',
+     lookupSecondaryLabelKey: 'product_name',
      listColumn: true,
      group: 'Requirement',
      autoFillMap: { unit: 'unit' },
@@ -220,7 +222,7 @@ lookupSecondaryLabelKey: 'client_code',
         const afterDiscount = gross - gross * ((Number(r.discount_percent) || 0) / 100);
         const net = afterDiscount + afterDiscount * ((Number(r.tax_percent) || 0) / 100);
         if (!gross) return '—'; // no quoted rate yet
-        return `₹${net.toLocaleString()}`;
+        return formatMoneyWithBase(net, r.currency);
       },
       group: 'Supplier response',
     },

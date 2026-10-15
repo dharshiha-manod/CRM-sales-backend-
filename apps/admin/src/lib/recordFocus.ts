@@ -81,4 +81,6 @@ export const TRADING_HASH = {
   profitability: 'industry:trading:trade-profitability',
   tradeCompliance: 'industry:trading:trade-compliance',
   tradeFinance: 'industry:trading:trade-finance-lc',
+  shipmentCharges: 'industry:trading:shipment-charges',
+  customerInvoices: 'industry:trading:customer-invoices',
 } as const;

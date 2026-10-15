@@ -4,6 +4,8 @@ import { GenerateDocumentButton } from './GenerateDocumentButton';
 import { ShipmentDocumentsChecklist } from './ShipmentDocumentsChecklist';
 import { buildDraftFromShipment } from '../lib/tradeDocumentHandoff';
 import { LinkedRecords } from './LinkedRecords';
+import { useEffect, useState } from 'react';
+import { SendShipmentDocumentsButton, SendShipmentDocumentsMenuItem, SEND_SHIPMENT_DOCS_EVENT } from './SendShipmentDocumentsButton';
 import { TRADING_HASH } from '../lib/recordFocus';
 
 const STATUSES = ['Planned', 'Ready to Ship', 'Dispatched', 'In Transit', 'At Destination', 'Delivered', 'Delayed', 'Cancelled'];
@@ -93,13 +95,21 @@ const config: TradingModuleConfig = {
     },
   ],
   rowActions: (r) => (
-    <GenerateDocumentButton docTypes={SHIPMENT_DOC_TYPES} buildDraft={(documentType) => buildDraftFromShipment(r, documentType)} />
+    <>
+      <GenerateDocumentButton docTypes={SHIPMENT_DOC_TYPES} buildDraft={(documentType) => buildDraftFromShipment(r, documentType)} />
+      <SendShipmentDocumentsMenuItem shipment={r} />
+    </>
   ),
   // Documents remain a manual action. They become available on the detail
   // view once delivery is confirmed; no document is generated automatically.
-  detailActions: (r) => r.status === 'Delivered' ? (
-    <GenerateDocumentButton label="Generate delivery document" docTypes={SHIPMENT_DOC_TYPES} buildDraft={(documentType) => buildDraftFromShipment(r, documentType)} />
-  ) : null,
+  detailActions: (r) => (
+    <>
+      {r.status === 'Delivered' && (
+        <GenerateDocumentButton label="Generate delivery document" docTypes={SHIPMENT_DOC_TYPES} buildDraft={(documentType) => buildDraftFromShipment(r, documentType)} />
+      )}
+      <SendShipmentDocumentsButton shipment={r} />
+    </>
+  ),
   // The documents checklist stays as-is; the chain panel below it is new —
   // a shipment is the hub of the Trading flow, so its logistics, trade
   // transaction, customs clearance and any claims should be reachable from
@@ -122,5 +132,16 @@ const config: TradingModuleConfig = {
 };
 
 export function TradingShipmentPage() {
-  return <TradingMasterPage config={config} />;
+  const [sendFor, setSendFor] = useState<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    const onOpen = (e: Event) => setSendFor((e as CustomEvent<Record<string, unknown>>).detail);
+    window.addEventListener(SEND_SHIPMENT_DOCS_EVENT, onOpen);
+    return () => window.removeEventListener(SEND_SHIPMENT_DOCS_EVENT, onOpen);
+  }, []);
+  return (
+    <>
+      <TradingMasterPage config={config} />
+      {sendFor && <SendShipmentDocumentsButton key={String(sendFor.id)} shipment={sendFor} autoOpen onClose={() => setSendFor(null)} />}
+    </>
+  );
 }

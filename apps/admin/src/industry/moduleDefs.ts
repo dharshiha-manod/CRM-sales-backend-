@@ -34,6 +34,8 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'trade-profitability', label: 'Trade Profitability', icon: '↗' },
     { id: 'trade-compliance', label: 'Trade Compliance Management', icon: '✔' },
     { id: 'trade-finance-lc', label: 'Trade Finance / LC Management', icon: '₹' },
+    { id: 'shipment-charges', label: 'Shipment Charges', icon: '₹' },
+    { id: 'customer-invoices', label: 'Customer Invoices', icon: '🧾' },
   ],
   textile: [
     { id: 'design-pattern', label: 'Design / Pattern Management', icon: '✎' },

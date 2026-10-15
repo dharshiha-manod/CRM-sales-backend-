@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
@@ -153,10 +153,14 @@ function slugPart(text: string, length: number): string {
   const cleaned = text.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   return cleaned.slice(0, length) || 'GEN';
 }
-function generateProductCode(category: string, productName: string): string {
+function newCodeSuffix(): number {
+  return Math.floor(100 + Math.random() * 900); // random 3-digit number lowers collision risk
+}
+// The suffix is passed in (and kept for the whole form session) so the code
+// does not change its number on every keystroke, only when Category/Name change.
+function generateProductCode(category: string, productName: string, suffix: number): string {
   const catPart = slugPart(category, 3);
   const namePart = slugPart(productName, 4);
-  const suffix = Math.floor(100 + Math.random() * 900); // random 3-digit number lowers collision risk
   return `${catPart}-${namePart}-${suffix}`;
 }
 
@@ -215,6 +219,10 @@ export function ProductsPage() {
   const [industryTypes, setIndustryTypes] = useState<{ id: string; name: string }[]>([]);
   const [allOrders, setAllOrders] = useState<RelatedOrder[]>([]);
   const [form, setForm] = useState<ProductForm>(blankForm);
+  // Auto-SKU bookkeeping: one stable random suffix per "Add product" session,
+  // and a flag so a SKU the person typed by hand is never overwritten.
+  const codeSuffixRef = useRef(newCodeSuffix());
+  const codeTouchedRef = useRef(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [viewing, setViewing] = useState<Product | null>(null);
   const [search, setSearch] = useState('');
@@ -395,7 +403,12 @@ export function ProductsPage() {
     // Automation: default to whichever Industry Type tab is already open —
     // that's the overwhelmingly common case, and it's still editable below
     // for the rare product that belongs to a different industry.
-    setForm({ ...blankForm, category: categoryOptions[0] ?? '', industryTypeId: activeIndustryTypeId ?? '', trackBatch: BATCH_DEFAULT_INDUSTRIES.includes(activeIndustry) });
+    codeSuffixRef.current = newCodeSuffix();
+    codeTouchedRef.current = false;
+    // Category starts empty on purpose: defaulting to the first saved category
+    // (e.g. "Hardware" from an old product) silently put wrong categories and
+    // SKU prefixes on new products.
+    setForm({ ...blankForm, category: '', industryTypeId: activeIndustryTypeId ?? '', trackBatch: BATCH_DEFAULT_INDUSTRIES.includes(activeIndustry) });
     setMessage('');
     setModalOpen(true);
   }
@@ -404,7 +417,8 @@ export function ProductsPage() {
     setForm({
       productCode: product.product_code,
       productName: product.product_name,
-      category: product.category ?? categoryOptions[0] ?? '',
+      // No category stays blank — never silently default to the first one in the list.
+      category: product.category ?? '',
      sellingPrice: String(product.selling_price),
       costPrice: product.cost_price == null ? '' : String(product.cost_price),
       stockQuantity: product.stock_quantity == null ? '' : String(product.stock_quantity),
@@ -609,7 +623,7 @@ export function ProductsPage() {
         <div className="data-table-wrap">
           <table>
             <thead>
-<tr><th>Product</th><th>SKU / Barcode</th><th>Brand</th><th>Category</th>{isTrading && <th>HSN</th>}<th>Unit Price</th><th>Selling Price</th><th>GST</th><th>Final Price</th><th>Stock</th>{showBatchUi && <th>Batch / Expiry</th>}<th>Status</th><th>Actions</th></tr>
+<tr><th>Product</th><th>SKU / Barcode</th><th>Brand</th><th>Category</th>{isTrading && <th>HSN</th>}<th>{isTrading ? 'Purchase Price' : 'Unit Price'}</th><th>Selling Price</th><th>GST</th><th>Final Price</th><th>Stock</th>{showBatchUi && <th>Batch / Expiry</th>}<th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {filteredItems.map((item) => {
@@ -629,7 +643,7 @@ export function ProductsPage() {
                     <td>{meta.brand || '—'}</td>
                     <td>{item.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</td>
                                           {isTrading && <td>{item.hsn_code || '—'}</td>}
-                    <td>{formatMoney(Number(meta.mrp || item.selling_price))}</td>
+                    <td>{isTrading ? (item.cost_price == null ? '—' : formatMoney(Number(item.cost_price))) : formatMoney(Number(meta.mrp || item.selling_price))}</td>
                     <td>
                       {formatMoney(Number(item.selling_price))}
                       {Number(meta.discountPercent) > 0 && <><br /><small className="text-faint-inline">{meta.discountPercent}% off</small></>}
@@ -711,8 +725,8 @@ export function ProductsPage() {
             </div>
             <form className="master-modal-form" onSubmit={submit}>
               <div className="field-grid">
-                                           <label>SKU / product code (auto-suggested)<input required readOnly={!editing} placeholder="Auto-generated" value={form.productCode} onChange={(event) => setForm({ ...form, productCode: event.target.value })} /></label>
-                <label>Product name<input required value={form.productName} onChange={(event) => { const productName = event.target.value; setForm((current) => ({ ...current, productName, productCode: !editing ? generateProductCode(current.category, productName) : current.productCode })); }} /></label>
+                                           <label>SKU / product code (auto-suggested)<input required placeholder="Auto-generated" value={form.productCode} onChange={(event) => { codeTouchedRef.current = true; setForm({ ...form, productCode: event.target.value }); }} /></label>
+                <label>Product name<input required value={form.productName} onChange={(event) => { const productName = event.target.value; setForm((current) => ({ ...current, productName, productCode: !editing && !codeTouchedRef.current ? generateProductCode(current.category, productName, codeSuffixRef.current) : current.productCode })); }} /></label>
                 <label>
                              {/* Industry Type field removed — it's set globally via the
                       sidebar Industry Type picker, so every product created
@@ -728,7 +742,8 @@ export function ProductsPage() {
                 </label>
                 <label>
                   Category
-                  <select required value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}>
+                  <select value={form.category} onChange={(event) => { const category = event.target.value; setForm((current) => ({ ...current, category, productCode: !editing && !codeTouchedRef.current && current.productName ? generateProductCode(category, current.productName, codeSuffixRef.current) : current.productCode })); }}>
+                    <option value="">No category</option>
                     {categoryOptions.map((category) => <option key={category} value={category}>{category}</option>)}
                   </select>
                 </label>
@@ -745,6 +760,7 @@ export function ProductsPage() {
                     <option value="box">Box</option>
                     <option value="kg">Kg</option>
                     <option value="litre">Litre</option>
+                    {isTrading && <option value="mt">MT (metric tonne)</option>}
                     {savedUnits.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
                   </select>
                 </label>  

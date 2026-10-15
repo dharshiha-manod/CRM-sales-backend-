@@ -41,7 +41,8 @@ const AUTO_MANAGED = new Set(['', 'Not Started', 'Documentation Pending', 'Decla
 
 function deriveClearance(form: Record<string, string>): Record<string, string> | void {
   if (!AUTO_MANAGED.has(form.clearance_status ?? '')) return;
-  if (form.clearance_date) return { clearance_status: 'Cleared', status: 'Cleared' };
+  // "Cleared" needs the proof, not just a date: declared value, shipping bill / GD number and the stamped copy.
+  if (form.clearance_date && form.declaration_number && form.clearance_document && Number(form.declared_value) > 0) return { clearance_status: 'Cleared', status: 'Cleared' };
   if (form.duty_paid_date) return { clearance_status: 'Duty Paid', status: 'Duty Paid' };
   if (form.declaration_date) return { clearance_status: 'Declaration Submitted', status: 'Declaration Submitted' };
   return;
@@ -160,13 +161,15 @@ const config: TradingModuleConfig = {
       key: 'required_documents', label: 'Customs documents', type: 'multi-lookup',
       lookupResource: '/trading/documents', lookupValueKey: 'document_number', lookupLabelKey: 'document_type', lookupSecondaryLabelKey: 'shipment_number',
       lookupFilter: documentsForShipment,
-      group: 'Clearance',
+       group: 'Clearance',
     },
+    { key: 'declaration_number', label: 'Shipping bill / GD number', type: 'text', group: 'Clearance', placeholder: 'Number given by the customs portal (ICEGATE / WeBOC)', onValueChange: (v, f) => deriveClearance({ ...f, declaration_number: String(v ?? '') }) },
     { key: 'declaration_date', label: 'Declaration date', type: 'date', group: 'Clearance', onValueChange: (_v, f) => deriveClearance(f), onValueChangeAsync: convertDeclared },
     { key: 'assessment_date', label: 'Assessment date', type: 'date', group: 'Clearance' },
     { key: 'duty_paid_date', label: 'Duty paid date', type: 'date', group: 'Clearance', onValueChange: (_v, f) => deriveClearance(f) },
     { key: 'inspection_status', label: 'Inspection status', type: 'select', options: INSPECTION_STATUSES, group: 'Clearance' },
-    { key: 'clearance_date', label: 'Clearance date', type: 'date', group: 'Clearance', onValueChange: (_v, f) => deriveClearance(f) },
+    { key: 'clearance_date', label: 'Clearance date (LEO / out-of-charge)', type: 'date', group: 'Clearance', onValueChange: (_v, f) => deriveClearance(f) },
+    { key: 'clearance_document', label: 'Stamped clearance copy', type: 'file', fileBucket: 'trade-documents', group: 'Clearance', onValueChange: (v, f) => deriveClearance({ ...f, clearance_document: String(v ?? '') }) },
         {
       key: 'clearance_status', label: 'Clearance status', type: 'select', options: CLEARANCE_STATUSES, listColumn: true, group: 'Clearance',
       // Mirror into the generic `status` column so the toolbar's "All

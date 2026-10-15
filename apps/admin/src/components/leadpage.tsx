@@ -3,11 +3,18 @@ import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
 import { FmcgMarketFields } from './FmcgMarketFields';
+import { marketName } from '../lib/markets';
 import type { IndustryKey } from '../industry/types';
 import { LeadPipelineStepper } from './LeadPipelineStepper';
 import { loadNameList, saveNameList } from './BrandsCategoriesPage';
 import './MasterDataPages.css';
 import './LeadsPage.css';
+
+const leadCurrencyNames = (() => {
+  try { return new Intl.DisplayNames(['en'], { type: 'currency' }); } catch { return null; }
+})();
+const leadCurrencyLabel = (code?: string | null) => (code ? `${code} — ${leadCurrencyNames?.of(code) ?? code}` : '');
+
 
 const PENDING_REQUIREMENT_CLIENT_KEY = 'fs-pending-requirement-client';
 type IndustryOption = { id: string; code: string; name: string };
@@ -816,7 +823,7 @@ function openCreate() {
         streetAddress: form.streetAddress.trim() || null,
         city: form.city.trim() || null,
         state: form.state.trim() || null,
-        ...(String(activeIndustry).toLowerCase() === 'fmcg' ? { countryCode: form.countryCode || null, currencyCode: form.currencyCode || null } : {}),
+        ...(['fmcg', 'trading'].includes(String(activeIndustry).toLowerCase()) ? { countryCode: form.countryCode || null, currencyCode: form.currencyCode || null } : {}),
                source: form.source,
         priority: form.priority,
         notes: packFmcgMeta(form.notes.trim(), { 
@@ -1434,6 +1441,14 @@ async function suggestRep() {
               <dd>{selected.email ?? '—'}</dd>
               <dt>Location</dt>
               <dd>{[selected.street_address, selected.city, selected.state].filter(Boolean).join(', ') || '—'}</dd>
+              {(selected.country_code || selected.currency_code) && (
+                <>
+                  <dt>Country</dt>
+                  <dd>{selected.country_code ? marketName(selected.country_code) || selected.country_code : '—'}</dd>
+                  <dt>Currency</dt>
+                  <dd>{leadCurrencyLabel(selected.currency_code) || '—'}</dd>
+                </>
+              )}
               <dt>Source</dt>
               <dd>{sourceLabels[selected.source] ?? selected.source}</dd>
               <dt>Status</dt>
@@ -1767,7 +1782,7 @@ async function suggestRep() {
                     State
                     <input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
                   </label>
-                  {String(activeIndustry).toLowerCase() === 'fmcg' && (
+                  {['fmcg', 'trading'].includes(String(activeIndustry).toLowerCase()) && (
                     <FmcgMarketFields
                       countryCode={form.countryCode}
                       currencyCode={form.currencyCode}
@@ -1805,7 +1820,7 @@ async function suggestRep() {
                     </select>
                   </label>
                   <label>
-                    Expected order value ({String(activeIndustry).toLowerCase() === 'fmcg' && form.currencyCode && form.currencyCode !== 'INR' ? form.currencyCode : '₹'})
+                    Expected order value ({['fmcg', 'trading'].includes(String(activeIndustry).toLowerCase()) && form.currencyCode && form.currencyCode !== 'INR' ? form.currencyCode : '₹'})
                     <input type="number" min="0" value={form.expectedOrderValue} onChange={(e) => setForm({ ...form, expectedOrderValue: e.target.value })} />
                   </label>
                             <label>
@@ -1898,4 +1913,4 @@ async function suggestRep() {
       )}
     </section>
   );
-} 
+}

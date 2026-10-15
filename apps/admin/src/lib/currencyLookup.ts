@@ -100,6 +100,9 @@ export async function loadCurrencyRates(force = false): Promise<CurrencyRate[]> 
   return cache.rows;
 }
 
+/** Last loaded rates (any age), or [] if none have been loaded yet. Lets plain formatting code show "≈ company currency" without being async. */
+export function getCachedCurrencyRates(): CurrencyRate[] { return cache?.rows ?? []; }
+
 /** Currency options for a form's currency dropdown, sourced from Currency Management. */
 export async function listCurrencyCodes(): Promise<string[]> {
   try {

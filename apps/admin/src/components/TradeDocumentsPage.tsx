@@ -8,7 +8,7 @@ import { supabase } from '../lib/supabase';
 const DOC_TYPES = [
   'Proforma Invoice', 'Commercial Invoice', 'Purchase Order', 'Sales Order', 'Packing List',
   'Delivery Note', 'Bill of Lading', 'Airway Bill', 'Certificate of Origin', 'Insurance Certificate',
-  'Inspection Certificate', 'Shipping Instructions', 'Transport Document', 'Other',
+  'Inspection Certificate', 'Quality Certificate', 'Shipping Bill', 'Shipping Instructions', 'Transport Document', 'Other',
 ];
 const VERIFICATION_STATUSES = ['Pending Verification', 'Verified', 'Rejected'];
 const STATUSES = ['Draft', 'Uploaded', 'Pending Verification', 'Verified', 'Rejected', 'Expired', 'Archived'];
@@ -29,6 +29,8 @@ const DOC_TYPE_PREFIXES: Record<string, string> = {
   'Certificate of Origin': 'COO',
   'Insurance Certificate': 'INSC',
   'Inspection Certificate': 'INSP',
+  'Quality Certificate': 'QC',
+  'Shipping Bill': 'SB',
   'Shipping Instructions': 'SI',
   'Transport Document': 'TD',
   'Other': 'DOC',
@@ -67,6 +69,49 @@ async function transitionStatus(record: Record<string, unknown>, patch: Record<s
   reloadDocuments();
 }
 
+// Submit / approve / reject go through the review endpoint, which checks the rules and records who did it.
+async function reviewDocument(record: Record<string, unknown>, action: 'submit' | 'approve' | 'reject') {
+  const body: Record<string, string> = { action };
+  if (action === 'reject') {
+    const reason = window.prompt('Reason for rejecting this document (the uploader will see it):');
+    if (!reason || !reason.trim()) return;
+    body.reason = reason.trim();
+  }
+  const send = (payload: Record<string, string>) => api(`/trading/documents/${record.id}/review`, { method: 'POST', body: JSON.stringify(payload) });
+  try {
+    await send(body);
+  } catch (err) {
+    const e = err as Error & { details?: { selfApproval?: boolean; canOverride?: boolean } };
+    if (action === 'approve' && e.details?.selfApproval && e.details.canOverride) {
+      const why = window.prompt(`${e.message}\n\nType the override reason to approve anyway (it is kept in the audit trail):`);
+      if (why && why.trim()) {
+        try { await send({ ...body, override_reason: why.trim() }); } catch (second) { window.alert((second as Error).message); }
+      }
+    } else {
+      window.alert(e.message);
+    }
+  }
+  reloadDocuments();
+}
+
+// Who verified / rejected it, when, and why — shown beside the action buttons.
+function ReviewNote({ record }: { record: Record<string, unknown> }) {
+  const by = record.verified_by ? String(record.verified_by) : '';
+  const at = record.verified_at ? new Date(String(record.verified_at)).toLocaleString() : '';
+  const rejected = record.status === 'Rejected' || record.verification_status === 'Rejected';
+  if (!by && !record.submitted_by) return null;
+  const line = by
+    ? `${rejected ? 'Rejected' : 'Verified'} by ${by}${at ? ` on ${at}` : ''}`
+    : `Submitted by ${String(record.submitted_by)} — waiting for a different person to verify`;
+  return (
+    <span style={{ display: 'inline-flex', flexDirection: 'column', fontSize: '.78rem', color: rejected ? '#b91c1c' : '#475569', marginLeft: 8 }}>
+      <span>{line}</span>
+      {rejected && record.rejection_reason ? <span>Reason: {String(record.rejection_reason)}</span> : null}
+      {record.verification_note ? <span>{String(record.verification_note)}</span> : null}
+    </span>
+  );
+}
+
 function DetailActions({ record }: { record: Record<string, unknown> }) {
   const status = String(record.status ?? 'Draft');
   const verification = String(record.verification_status ?? '');
@@ -85,26 +130,38 @@ function DetailActions({ record }: { record: Record<string, unknown> }) {
       </button>
     );
   }
-  if (status === 'Uploaded') {
+   if (status === 'Uploaded') {
     return (
-      <button type="button" className="quiet-button" onClick={() => void transitionStatus(record, { status: 'Pending Verification', verification_status: 'Pending Verification' })}>
+      <button type="button" className="quiet-button" onClick={() => void reviewDocument(record, 'submit')}>
         Submit for verification
       </button>
     );
   }
   if (status === 'Pending Verification' || verification === 'Pending Verification') {
-    return (
+     return (
       <>
-        <button type="button" className="quiet-button" onClick={() => void transitionStatus(record, { status: 'Verified', verification_status: 'Verified' })}>
+        <button type="button" className="quiet-button" onClick={() => void reviewDocument(record, 'approve')}>
           Approve
         </button>
-        <button type="button" className="quiet-button icon-action--danger" onClick={() => void transitionStatus(record, { status: 'Rejected', verification_status: 'Rejected' })}>
+        <button type="button" className="quiet-button icon-action--danger" onClick={() => void reviewDocument(record, 'reject')}>
           Reject
+        </button>
+      </>
+      );
+  }
+  if (status === 'Rejected') {
+    return (
+      <>
+        <button type="button" className="quiet-button" title="Replace the file first if the reason needs a corrected document" onClick={() => void reviewDocument(record, 'submit')}>
+          Resubmit for verification
+        </button>
+        <button type="button" className="quiet-button" onClick={() => void transitionStatus(record, { status: 'Archived' })}>
+          Archive
         </button>
       </>
     );
   }
-  if (status === 'Verified' || status === 'Rejected') {
+  if (status === 'Verified') {
     return (
       <button type="button" className="quiet-button" onClick={() => void transitionStatus(record, { status: 'Archived' })}>
         Archive
@@ -208,7 +265,7 @@ const config: TradingModuleConfig = {
           const rate = Number(isPO ? matched.purchase_rate : matched.selling_rate);
           const qty = Number(matched.quantity);
           if (!Number.isFinite(rate) || rate === 0) return prev;
-          const next = { ...prev, unit_price: String(rate) };
+          const next: Record<string, string> = { ...prev, unit_price: String(rate) };
           if (Number.isFinite(qty) && qty > 0) next.total_value = String(rate * qty);
           return next;
         });
@@ -262,8 +319,11 @@ const config: TradingModuleConfig = {
     void stampUploader(setForm);
   },
 },
-    { key: 'verification_status', label: 'Verification status', type: 'select', options: VERIFICATION_STATUSES, listColumn: true, readOnly: true, group: 'Status' },
+      { key: 'verification_status', label: 'Verification status', type: 'select', options: VERIFICATION_STATUSES, listColumn: true, readOnly: true, group: 'Status' },
     { key: 'status', label: 'Document status', type: 'select', options: STATUSES, listColumn: true, readOnly: true, autoGenerate: () => 'Draft', group: 'Status' },
+    { key: 'verified_by', label: 'Verified / rejected by', type: 'text', readOnly: true, group: 'Status' },
+    { key: 'verified_at', label: 'Verified / rejected at', type: 'text', readOnly: true, group: 'Status' },
+    { key: 'rejection_reason', label: 'Rejection reason', type: 'text', readOnly: true, group: 'Status' },
     { key: 'notes', label: 'Remarks', type: 'textarea', group: 'Status' },
   ],
   kpis: [
@@ -283,7 +343,7 @@ const config: TradingModuleConfig = {
     },
   ],
   renderInsights: (rows) => <TradeDocumentInsights rows={rows} />,
-  detailActions: (record) => <DetailActions record={record} />,
+  detailActions: (record) => <><DetailActions record={record} /><ReviewNote record={record} /></>,
   consumePendingDraft: () => consumeTradeDocumentDraft(),
   onRecordsLoaded: (rows) => reconcileExpiry(rows),
   registerReload: (reload) => { reloadDocuments = reload; },

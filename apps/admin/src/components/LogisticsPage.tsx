@@ -16,6 +16,7 @@ import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { LinkedRecords } from './LinkedRecords';
 import { TRADING_HASH } from '../lib/recordFocus';
 import { applyCurrencyConversion, formatConverted } from '../lib/currencyLookup';
+import { currencyLabelSuffix } from '../lib/currencyFormat';
 
 const SHIPPING_MODES = ['Road', 'Air', 'Sea', 'Rail', 'Courier', 'Multimodal'];
 const STATUSES = [
@@ -55,7 +56,8 @@ function deriveStatus(form: Record<string, string>): Record<string, string> | vo
     if (form.estimated_arrival_date && new Date() > new Date(form.estimated_arrival_date)) return { status: 'Delayed' };
     return { status: 'In Transit' };
   }
-  if (form.pickup_date) return { status: 'Picked Up' };
+  // A pickup date in the future is only a plan: it must not mark the goods as already picked up.
+  if (form.pickup_date) return { status: isFutureDate(form.pickup_date) ? 'Pickup Scheduled' : 'Picked Up' };
   return;
 }
 
@@ -147,8 +149,8 @@ const config: TradingModuleConfig = {
     { key: 'actual_delivery_date', label: 'Actual delivery', type: 'date', group: 'Movement', helpText: 'The date the goods were really delivered - it cannot be in the future.', onValueChange: (_v, f) => deriveStatus(f) },
     { key: 'status', label: 'Delivery status', type: 'select', options: STATUSES, listColumn: true, group: 'Movement' },
 
-    { key: 'freight_cost', label: 'Freight charges', type: 'number', group: 'Charges', onValueChangeAsync: convertFreight },
-    { key: 'other_charges', label: 'Other transport charges', type: 'number', group: 'Charges' },
+    { key: 'freight_cost', label: 'Freight charges', type: 'number', group: 'Charges', onValueChangeAsync: convertFreight, labelSuffix: (f) => currencyLabelSuffix(f.currency) },
+    { key: 'other_charges', label: 'Other transport charges', type: 'number', group: 'Charges', labelSuffix: (f) => currencyLabelSuffix(f.currency) },
     {
       key: 'currency', label: 'Currency', type: 'lookup', group: 'Charges',
       lookupResource: '/trading/currency-rates', lookupValueKey: 'currency_code', lookupLabelKey: 'currency_name',
@@ -158,7 +160,7 @@ const config: TradingModuleConfig = {
     // was actually costed at instead of silently re-pricing itself.
     { key: 'exchange_rate', label: 'Exchange rate applied', type: 'number', readOnly: true, group: 'Charges' },
     { key: 'base_currency', label: 'Company currency', type: 'text', readOnly: true, group: 'Charges' },
-    { key: 'base_value', label: 'Freight in company currency', type: 'number', readOnly: true, group: 'Charges' },
+    { key: 'base_value', label: 'Freight in company currency', type: 'number', readOnly: true, group: 'Charges', labelSuffix: (f) => currencyLabelSuffix(f.base_currency) },
     {
       key: 'total_cost', label: 'Total logistics cost', type: 'text', readOnly: true, listColumn: true,
       render: (_v, r) => {
@@ -167,7 +169,7 @@ const config: TradingModuleConfig = {
         return (
           <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.25 }}>
             <strong style={{ fontWeight: 600 }}>{own}</strong>
-            {converted && <span style={{ color: '#64748b', fontSize: '.74rem' }}>{`${String(r.base_currency)} ${totalInCompanyCurrency(r).toLocaleString()}`}</span>}
+            {converted ? <span style={{ color: '#64748b', fontSize: '.74rem' }}>{`${String(r.base_currency)} ${totalInCompanyCurrency(r).toLocaleString()}`}</span> : null}
           </span>
         );
       },
