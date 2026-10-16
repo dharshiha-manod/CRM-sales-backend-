@@ -6,6 +6,8 @@ import { FmcgMarketFields } from './FmcgMarketFields';
 import { marketName } from '../lib/markets';
 import type { IndustryKey } from '../industry/types';
 import { LeadPipelineStepper } from './LeadPipelineStepper';
+import { formatMoneyWithBase } from '../lib/currencyFormat';
+import { loadCurrencyRates } from '../lib/currencyLookup';
 import { loadNameList, saveNameList } from './BrandsCategoriesPage';
 import './MasterDataPages.css';
 import './LeadsPage.css';
@@ -472,7 +474,9 @@ const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
  const { matchesActiveIndustry, activeIndustryTypeId } = useIndustryScope();
-  const { activeIndustry, config } = useIndustry();
+   const { activeIndustry, config } = useIndustry();
+  const [, setRatesTick] = useState(0);
+  useEffect(() => { void loadCurrencyRates().then(() => setRatesTick((t) => t + 1)).catch(() => undefined); }, [activeIndustry]);
 
  const [industryOptions, setIndustryOptions] = useState<IndustryOption[]>([]);
   const [representativeOptions, setRepresentativeOptions] = useState<RepresentativeOption[]>([]);
@@ -1255,7 +1259,7 @@ async function suggestRep() {
                       {lead.phone && <small>{lead.phone}</small>}
                     </td>
                     <td>{lead.email ? <span className="lp-email" title={lead.email}>{lead.email}</span> : <span className="lp-muted">No email</span>}</td>
-                    <td className="lp-num">{meta.expectedOrderValue && Number.isFinite(Number(meta.expectedOrderValue)) ? new Intl.NumberFormat(!lead.currency_code || lead.currency_code === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: lead.currency_code || 'INR', maximumFractionDigits: 0 }).format(Number(meta.expectedOrderValue)) : '—'}</td>
+<td className="lp-num">{meta.expectedOrderValue && Number.isFinite(Number(meta.expectedOrderValue)) ? (['fmcg', 'trading'].includes(String(activeIndustry).toLowerCase()) ? formatMoneyWithBase(Number(meta.expectedOrderValue), lead.currency_code) : new Intl.NumberFormat(!lead.currency_code || lead.currency_code === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: lead.currency_code || 'INR', maximumFractionDigits: 0 }).format(Number(meta.expectedOrderValue))) : '—'}</td>
                     <td>
                       <span className={`status-badge status-${lead.priority} lp-pill`}>{priorityLabels[lead.priority] ?? lead.priority}</span>
                     </td>
@@ -1412,7 +1416,7 @@ async function suggestRep() {
                 </>
               )}
               <dt>Expected value</dt>
-              <dd>{unpackFmcgMeta(selected.notes).meta.expectedOrderValue ? `${selected.currency_code && selected.currency_code !== 'INR' ? selected.currency_code + ' ' : '₹'}${unpackFmcgMeta(selected.notes).meta.expectedOrderValue}` : '—'}</dd>
+<dd>{(() => { const v = unpackFmcgMeta(selected.notes).meta.expectedOrderValue; if (!v) return '—'; const n = Number(v); if (['fmcg', 'trading'].includes(String(activeIndustry).toLowerCase()) && Number.isFinite(n)) return formatMoneyWithBase(n, selected.currency_code); return `${selected.currency_code && selected.currency_code !== 'INR' ? selected.currency_code + ' ' : '₹'}${v}`; })()}</dd>
               <dt>Contact</dt>
               <dd>{selected.contact_name ?? '—'}</dd>
            <dt>Phone</dt>

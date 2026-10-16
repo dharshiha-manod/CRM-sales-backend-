@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
 import { api } from '../lib/api';
 import { formatMoneyWithBase } from '../lib/currencyFormat';
@@ -127,7 +128,31 @@ async function convertEnquiryToDeal(enquiry: Record<string, unknown>, reload: ()
   }
 }
 
-function handleAfterSave(saved: Record<string, unknown>, reload: () => Promise<void>) {
+// Picking status "Sent" in the form used to only save the word "Sent". Now it
+// really emails the supplier, the same call the "Send to supplier" button makes.
+// If the email fails (e.g. supplier has no email saved), the status is put back
+// so the list never shows "Sent" for an email that was not delivered.
+async function sendOnStatusSent(saved: Record<string, unknown>, previous: Record<string, unknown> | null | undefined, reload: () => Promise<void>) {
+  const revertTo = previous?.status && previous.status !== 'Sent' ? String(previous.status) : 'Draft';
+  try {
+    const res = await api<{ data: { sent_to?: string } }>(`/trading/purchase-enquiries/${saved.id}/send`, { method: 'POST' });
+    window.alert(`Enquiry ${String(saved.enquiry_number ?? '')} sent to ${String(saved.supplier_name ?? 'the supplier')} (${res.data?.sent_to ?? 'email'}).`);
+  } catch (caught) {
+    try {
+      await api(`/trading/purchase-enquiries/${saved.id}`, { method: 'PATCH', body: JSON.stringify({ status: revertTo }) });
+    } catch { /* leave as is; the alert below still tells the user */ }
+    window.alert(`Could not send ${String(saved.enquiry_number ?? '')}: ${caught instanceof Error ? caught.message : 'unknown error'}\n\nStatus was set back to "${revertTo}".`);
+  }
+  await reload();
+}
+
+function handleAfterSave(saved: Record<string, unknown>, reload: () => Promise<void>, previous?: Record<string, unknown> | null) {
+  // Only email the moment status BECOMES "Sent", not on every later save of an
+  // already-sent enquiry, so the supplier never gets a duplicate email.
+  if (saved.status === 'Sent' && previous?.status !== 'Sent') {
+    void sendOnStatusSent(saved, previous, reload);
+    return;
+  }
   // Only fire the moment status BECOMES "Converted to Deal" — not on every
   // later save of an already-converted enquiry — so we never create a
   // second Deal for the same enquiry.
@@ -208,7 +233,7 @@ lookupSecondaryLabelKey: 'client_code',
     // last matched Price List purchase rate so the team can compare it with the
     // rate the supplier tells them.
     { key: 'price_list_rate', label: 'Last price list rate (reference only)', type: 'number', readOnly: true, group: 'Supplier response', placeholder: 'Shows after you pick a product' },
-    { key: 'requested_rate', label: 'Quoted rate (from supplier)', type: 'number', group: 'Supplier response', placeholder: 'Type the rate the supplier tells you' },
+    { key: 'requested_rate', label: 'Quoted rate per unit (from supplier)', type: 'number', group: 'Supplier response', placeholder: 'Type the per-unit rate the supplier tells you' },
     { key: 'discount_percent', label: 'Discount from supplier (%)', type: 'number', group: 'Supplier response', placeholder: 'Type the discount % the supplier gives' },
     { key: 'tax_percent', label: 'Tax (%)', type: 'number', group: 'Supplier response', placeholder: 'Type the tax % the supplier charges' },
     {
@@ -286,7 +311,11 @@ lookupSecondaryLabelKey: 'client_code',
   ],
  
 };
-
 export function TradingPurchaseEnquiryPage() {
+  // Re-read the list every 60 seconds so a supplier's reply shows up without a manual refresh.
+  useEffect(() => {
+    const timer = setInterval(() => { if (!document.hidden) reloadPurchaseEnquiries(); }, 60000);
+    return () => clearInterval(timer);
+  }, []);
   return <TradingMasterPage config={config} />;
 }

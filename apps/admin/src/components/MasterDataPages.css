@@ -2498,3 +2498,13 @@
   
   .master-search-oneline > * { flex: 1 1 160px; }
 }
+/* Products list: fit the screen so Product ... Actions are all visible without sideways scrolling. */
+.products-page > .data-table-wrap { overflow-x: auto; width: 100%; max-width: 100%; }
+.products-page > .data-table-wrap table { width: 100%; max-width: 100%; font-size: .8rem; }
+.products-page > .data-table-wrap table th { white-space: normal; padding: .7rem .5rem; font-size: .68rem; letter-spacing: 0; line-height: 1.25; }
+.products-page > .data-table-wrap table td { padding: .75rem .5rem; }
+.products-page > .data-table-wrap table th:first-child,
+.products-page > .data-table-wrap table td:first-child { padding-left: .9rem; }
+.products-page > .data-table-wrap table th:last-child,
+.products-page > .data-table-wrap table td:last-child { padding-right: .9rem; }
+.products-page > .data-table-wrap table td:nth-child(-n+4) { white-space: normal; overflow-wrap: anywhere; }

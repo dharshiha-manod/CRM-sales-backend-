@@ -33,8 +33,8 @@ export function SendPurchaseEnquiryButton({ enquiry, onSent }: { enquiry: Record
     setMessage(null);
     setConfirmingResend(false);
     try {
-      await api(`/trading/purchase-enquiries/${enquiry.id}/send`, { method: 'POST' });
-      setMessage(`Sent to ${String(enquiry.supplier_name ?? 'the supplier')}.`);
+          const res = await api<{ data: { sent_to?: string } }>(`/trading/purchase-enquiries/${enquiry.id}/send`, { method: 'POST' });
+      setMessage(`Sent to ${String(enquiry.supplier_name ?? 'the supplier')} (${res.data?.sent_to ?? 'email'}).`);
       setIsError(false);
       // Give the person a moment to actually read the confirmation before
       // the parent's reload remounts this row and clears it.

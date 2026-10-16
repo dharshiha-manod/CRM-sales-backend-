@@ -623,7 +623,7 @@ export function ProductsPage() {
         <div className="data-table-wrap">
           <table>
             <thead>
-<tr><th>Product</th><th>SKU / Barcode</th><th>Brand</th><th>Category</th>{isTrading && <th>HSN</th>}<th>{isTrading ? 'Purchase Price' : 'Unit Price'}</th><th>Selling Price</th><th>GST</th><th>Final Price</th><th>Stock</th>{showBatchUi && <th>Batch / Expiry</th>}<th>Status</th><th>Actions</th></tr>
+<tr><th>Product</th><th>SKU / Barcode</th><th>Brand</th><th>Category</th>{isTrading && <th>HSN</th>}<th>{isTrading ? 'Purchase Price' : 'MRP'}</th>{activeIndustry === 'fmcg' && <th>Purchase Price</th>}<th>Selling Price</th><th>GST</th><th>Final Price</th><th>Stock</th>{showBatchUi && <th>Batch / Expiry</th>}<th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {filteredItems.map((item) => {
@@ -643,12 +643,13 @@ export function ProductsPage() {
                     <td>{meta.brand || '—'}</td>
                     <td>{item.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</td>
                                           {isTrading && <td>{item.hsn_code || '—'}</td>}
-                    <td>{isTrading ? (item.cost_price == null ? '—' : formatMoney(Number(item.cost_price))) : formatMoney(Number(meta.mrp || item.selling_price))}</td>
+<td>{isTrading ? (item.cost_price == null ? '—' : formatMoney(Number(item.cost_price))) : formatMoney(Number(meta.mrp || item.selling_price))}</td>
+                    {activeIndustry === 'fmcg' && <td>{item.cost_price == null ? '—' : formatMoney(Number(item.cost_price))}</td>}
                     <td>
                       {formatMoney(Number(item.selling_price))}
                       {Number(meta.discountPercent) > 0 && <><br /><small className="text-faint-inline">{meta.discountPercent}% off</small></>}
                     </td>
-                    <td>{Number(item.tax_percent || 0)}%</td>
+                                   <td>{Number(item.tax_percent || 0)}%</td>
                     <td><strong>{formatMoney(Number(item.selling_price) + (Number(item.selling_price) * Number(item.tax_percent || 0)) / 100)}</strong></td>
                                       <td>
                       {item.stock_quantity ?? '—'}{item.stock_quantity != null && meta.unit ? ` ${meta.unit}` : ''}
@@ -844,6 +845,13 @@ export function ProductsPage() {
                 <dt>Unit / Pack size</dt><dd>{meta.unit}{meta.packSize ? ` · ${meta.packSize}` : ''}</dd>
              <dt>Selling price</dt><dd>{formatMoney(Number(viewing.selling_price))}</dd>
                 <dt>Purchase price</dt><dd>{viewing.cost_price == null ? 'Not recorded' : formatMoney(Number(viewing.cost_price))}</dd>
+                {activeIndustry === 'fmcg' && (() => {
+                  const cost = viewing.cost_price == null ? null : Number(viewing.cost_price);
+                  const sell = Number(viewing.selling_price);
+                  if (cost == null || !Number.isFinite(cost) || !(sell > 0)) return <><dt>Profit / unit</dt><dd>Not recorded</dd></>;
+                  const profit = sell - cost;
+                  return <><dt>Profit / unit</dt><dd><strong style={{ color: profit < 0 ? '#b91c1c' : '#15803d' }}>{formatMoney(profit)}</strong> ({((profit / sell) * 100).toFixed(1)}% margin)</dd></>;
+                })()}
                 {!isTrading && <><dt>MRP</dt><dd>{meta.mrp ? formatMoney(Number(meta.mrp)) : 'Not recorded'}</dd></>}
                 <dt>{isTrading ? 'Tax' : 'Discount / Tax'}</dt><dd>{isTrading ? `${viewing.tax_percent || 0}%` : `${meta.discountPercent || 0}% / ${viewing.tax_percent || 0}%`}</dd>
                 <dt>Price incl. GST</dt><dd>{formatMoney(Number(viewing.selling_price) + (Number(viewing.selling_price) * Number(viewing.tax_percent || 0)) / 100)}</dd>

@@ -2,9 +2,10 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { useIndustry } from '../industry/IndustryContext';
 import type { TextileRecord } from './TextileMasterPage';
 
-type ShipmentRow = { shipment_number?: string; status?: string };
+type ShipmentRow = { shipment_number?: string; status?: string; market?: string };
 
 function daysUntil(dateStr: unknown): number | null {
   if (!dateStr || typeof dateStr !== 'string') return null;
@@ -14,6 +15,8 @@ function daysUntil(dateStr: unknown): number | null {
 
 export function TradeDocumentInsights({ rows }: { rows: TextileRecord[] }) {
   const { activeIndustryTypeId } = useIndustryScope();
+  const { activeIndustry } = useIndustry();
+  const isFmcg = String(activeIndustry).toLowerCase() === 'fmcg';
   const [shipments, setShipments] = useState<ShipmentRow[] | null>(null);
 
   useEffect(() => {
@@ -40,10 +43,12 @@ export function TradeDocumentInsights({ rows }: { rows: TextileRecord[] }) {
     return d != null && d >= 0 && d <= 30;
   });
 
-  const activeShipments = (shipments ?? []).filter((s) => !['Delivered', 'Cancelled'].includes(String(s.status)));
+  // FMCG: only international shipments carry export paperwork — local deliveries are not "missing" anything.
+  const needsPaperwork = (shipments ?? []).filter((s) => !isFmcg || s.market === 'international');
+  const activeShipments = needsPaperwork.filter((s) => !['Delivered', 'Cancelled'].includes(String(s.status)));
   const linkedActiveShipments = activeShipments.filter((s) => rows.some((d) => d.shipment_number === s.shipment_number));
 
-  const REQUIRED = ['Commercial Invoice', 'Packing List', 'Delivery Note', 'Bill of Lading', 'Certificate of Origin'];
+  const REQUIRED = isFmcg ? ['Commercial Invoice', 'Packing List', 'Bill of Lading'] : ['Commercial Invoice', 'Packing List', 'Delivery Note', 'Bill of Lading', 'Certificate of Origin'];
   const shipmentsMissingDocs = activeShipments.filter((s) => {
     const docsForShipment = rows.filter((d) => d.shipment_number === s.shipment_number).map((d) => d.document_type);
     return REQUIRED.some((t) => !docsForShipment.includes(t));

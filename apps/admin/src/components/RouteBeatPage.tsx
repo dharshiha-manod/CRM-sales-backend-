@@ -65,6 +65,8 @@ export function RouteBeatPage() {
   const [clientSearch, setClientSearch] = useState('');
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
   const [kpiView, setKpiView] = useState<null | 'outlets' | 'covered' | 'checkins'>(null);
+  const [summary, setSummary] = useState<Record<string, { total: number; visited: number; missed: number; productive?: number }>>({});
+  const [autoBusy, setAutoBusy] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -94,11 +96,40 @@ export function RouteBeatPage() {
       setError(caught instanceof Error ? caught.message : 'Unable to load routes.');
     }
   }
+  // One grouped server query for today's planned / visited / missed per beat (refreshes every minute).
+  async function loadSummary() {
+    try {
+      const res = await api<{ data: { beats: Record<string, { total: number; visited: number; missed: number; productive?: number }> } }>('/fmcg/beats/summary');
+      setSummary(res.data?.beats ?? {});
+    } catch { /* falls back to the browser-side coverage below */ }
+  }
   useEffect(() => {
     void load();
     void loadBeats();
+    void loadSummary();
+    const timer = window.setInterval(() => void loadSummary(), 60_000);
+    return () => window.clearInterval(timer);
   }, []);
 
+  /** Builds beats from outlets that are not on a beat yet (grouped by pincode / city, nearest-first order, balanced days and reps). */
+  async function autoCreateBeats() {
+    setAutoBusy(true);
+    setMessage('');
+    try {
+      const representativeIds = reps.filter((r) => r.status === 'active').map((r) => r.id);
+      const post = (preview: boolean) => api<{ data: { beats: { name: string }[]; outletsCovered: number } }>('/fmcg/beats/auto-generate', { method: 'POST', body: JSON.stringify({ preview, representativeIds }) });
+      const plan = (await post(true)).data;
+      if (!plan.beats.length) { setMessage('No outlets left to plan. Add FMCG clients first (or they are already on beats).'); return; }
+      if (!window.confirm(`Create ${plan.beats.length} beats covering ${plan.outletsCovered} outlets, shared across ${representativeIds.length} representative(s)?`)) return;
+      await post(false);
+      await Promise.all([loadBeats(), loadSummary()]);
+      setMessage(`${plan.beats.length} beats created successfully.`);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : 'Unable to auto-create beats.');
+    } finally {
+      setAutoBusy(false);
+    }
+  }
   /** Creates (no id) or updates one beat on the server, then reloads so every admin sees the same thing. */
   async function pushBeat(beat: Omit<Beat, 'id'> & { id?: string }, clientIds: string[]) {
     const body = JSON.stringify({ name: beat.name, area: beat.area || null, representativeId: beat.repId || null, days: toServerDays(beat.days), status: beat.status, clientIds });
@@ -113,6 +144,8 @@ export function RouteBeatPage() {
   };
 
   function coverage(beat: Beat) {
+    const s = summary[beat.id];
+    if (s) return { assigned: s.total, done: s.visited };
     const assigned = assignments[beat.id] ?? [];
     const visitedToday = new Set(visits.filter((v) => v.client_id && isToday(v.check_in_time)).map((v) => v.client_id));
     const done = assigned.filter((id) => visitedToday.has(id)).length;
@@ -289,9 +322,14 @@ export function RouteBeatPage() {
             <option value="inactive">Inactive</option>
           </select>
         </div>
-        <button className="primary-action" type="button" onClick={openCreate}>
-          + Add beat / route
-        </button>
+        <div style={{ display: 'flex', gap: '.6rem' }}>
+          <button className="primary-action" type="button" disabled={autoBusy} onClick={() => void autoCreateBeats()} style={{ background: '#fff', color: 'inherit', border: '1px solid #cfcfcf' }}>
+            {autoBusy ? 'Building…' : 'Auto-create beats'}
+          </button>
+          <button className="primary-action" type="button" onClick={openCreate}>
+            + Add beat / route
+          </button>
+        </div>
       </div>
 
       {error && <p className="error-message">{error}</p>}
@@ -384,8 +422,10 @@ export function RouteBeatPage() {
                           <span className={`status-badge ${
                             cov.assigned > 0 && cov.done >= cov.assigned ? 'status-completed' : cov.done > 0 ? 'status-quoted' : 'status-pending'
                           }`}>
-                            {cov.done} / {cov.assigned}
+                                                       {cov.done} / {cov.assigned}
                           </span>
+                          {(summary[beat.id]?.missed ?? 0) > 0 && <span className="status-badge status-pending">{summary[beat.id].missed} missed</span>}
+                          {(summary[beat.id]?.productive ?? 0) > 0 && <span className="status-badge status-completed" title="Visited outlets where an order was taken today">{summary[beat.id].productive} ordered</span>}
                         </div>
                       ) : (
                         <span className="status-badge">Not scheduled today</span>

@@ -38,6 +38,7 @@ const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'curren
 // calls, just fetched once for the whole list instead of per-row.
 type RepSummary = { clientCount: number; visitsToday: number; ordersToday: number; collectionsToday: number };
 const blankSummary: RepSummary = { clientCount: 0, visitsToday: 0, ordersToday: 0, collectionsToday: 0 };
+type RepEnquiry = { id: string; enquiry_number?: string | null; product_name?: string | null; supplier_name?: string | null; status?: string | null; procurement_person?: string | null };
 
 export function RepresentativesPage() {
   const { activeIndustry, activeIndustryTypeId, clientMatchesActiveIndustry, matchesActiveIndustry } = useIndustryScope();
@@ -72,6 +73,8 @@ export function RepresentativesPage() {
   const [allVisits, setAllVisits] = useState<RepVisit[]>([]);
   const [allOrders, setAllOrders] = useState<RepOrder[]>([]);
   const [allCollections, setAllCollections] = useState<RepCollection[]>([]);
+  // Purchase enquiries store the rep's employee_code in "procurement_person" (the "Handled by" field).
+  const [allEnquiries, setAllEnquiries] = useState<RepEnquiry[]>([]);
 
   const designations = useMemo(() => [...new Set(items.map((item) => item.designation).filter((item): item is string => Boolean(item)))].sort(), [items]);
   // Only users that belong to the ACTIVE Industry Type can be added as a representative here.
@@ -119,20 +122,22 @@ export function RepresentativesPage() {
       setLoading(true);
       setMessage('');
       const query = new URLSearchParams(search.trim() ? { search: search.trim() } : {});
-      const [representatives, organizationUsers, clients, visits, orders, collections] = await Promise.all([
+           const [representatives, organizationUsers, clients, visits, orders, collections, enquiries] = await Promise.all([
         api<{ data: Representative[] }>(`/sales-representatives?${query}`),
         api<{ data: OrganizationUser[] }>('/users'),
         api<{ data: RepClient[] }>('/clients').catch(() => ({ data: [] })),
         api<{ data: RepVisit[] }>('/field-visits').catch(() => ({ data: [] })),
         api<{ data: RepOrder[] }>('/orders').catch(() => ({ data: [] })),
         api<{ data: RepCollection[] }>('/collections').catch(() => ({ data: [] })),
+        api<{ data: RepEnquiry[] }>('/trading/purchase-enquiries').catch(() => ({ data: [] })),
       ]);
       setItems(representatives.data ?? []);
       setUsers(organizationUsers.data ?? []);
       setAllClients(clients.data ?? []);
       setAllVisits(visits.data ?? []);
       setAllOrders(orders.data ?? []);
-      setAllCollections(collections.data ?? []);
+         setAllCollections(collections.data ?? []);
+      setAllEnquiries(enquiries.data ?? []);
     } catch (error) { setMessage((error as Error).message); } finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, []);
@@ -290,7 +295,7 @@ export function RepresentativesPage() {
             <thead>
               <tr>
                 <th>Representative</th><th>Employee Code</th><th>Designation</th>
-                <th>Clients</th><th>Visits</th><th>Orders</th><th>Status</th><th>Actions</th>
+                            <th>Clients</th><th>Visits</th><th>Orders</th>{activeIndustry === 'trading' && <th>Enquiries</th>}<th>Status</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -303,7 +308,8 @@ export function RepresentativesPage() {
                     <td>{item.designation ?? '—'}</td>
                     <td>{summary.clientCount}</td>
                     <td>{summary.visitsToday}</td>
-                    <td>{summary.ordersToday}</td>
+                                   <td>{summary.ordersToday}</td>
+                   {activeIndustry === 'trading' && <td>{allEnquiries.filter((e) => e.procurement_person === item.employee_code).length}</td>}
                     <td><span className={`status-badge ${item.status}`}>{item.status}</span></td>
                                      <td className="master-actions">
                       <button type="button" className="icon-action row-menu-trigger" title="More actions" aria-label="More actions" onClick={(e) => toggleMenu(e, item.id)}>
@@ -389,7 +395,7 @@ export function RepresentativesPage() {
           <div className="modal-backdrop" onMouseDown={() => setAssigning(null)}>
             <div className="master-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
               <div className="modal-heading">
-                <div>
+               <div style={activeIndustry === 'trading' ? undefined : { display: 'none' }}>
                   <p className="eyebrow">FIELD TEAM</p>
                   <h3>Assign clients — {assigning.user_profiles?.display_name ?? assigning.employee_code}</h3>
                 </div>
@@ -520,6 +526,18 @@ export function RepresentativesPage() {
                           <span className="rp-chips">
                             {shownClients.map((c) => <span key={c.id} className="rp-chip">{c.client_name}</span>)}
                             {dashboard.clients.length > shownClients.length && <span className="rp-chip rp-chip--more">+{dashboard.clients.length - shownClients.length} more</span>}
+                          </span>
+                        )}
+                      </dd>
+                    </div>
+                               <div>
+                      <dt>Purchase enquiries ({allEnquiries.filter((e) => e.procurement_person === viewing.employee_code).length})</dt>
+                      <dd>
+                        {allEnquiries.filter((e) => e.procurement_person === viewing.employee_code).length === 0 ? 'None' : (
+                          <span className="rp-chips">
+                            {allEnquiries.filter((e) => e.procurement_person === viewing.employee_code).slice(0, 6).map((e) => (
+                                                           <span key={e.id} className="rp-chip">{e.enquiry_number} · {e.product_name} · {e.status || 'Draft'}</span>
+                            ))}
                           </span>
                         )}
                       </dd>

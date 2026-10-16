@@ -14,7 +14,10 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'distributor', label: 'Distributor Management', icon: '▤' },
     { id: 'sales-return-damage', label: 'Sales Return & Damage Management', icon: '↩' },
      { id: 'batch-expiry', label: 'Batch & Expiry Management', icon: '⏱' },
-    { id: 'currency-rates', label: 'Currency Rates', icon: '¤' },
+      { id: 'currency-rates', label: 'Currency Rates', icon: '¤' },
+    { id: 'trade-documents', label: 'Trade Documents', icon: '📄' },
+    { id: 'import-export', label: 'Import / Export Management', icon: '⇄' },
+    { id: 'customs-clearance', label: 'Customs & Clearance', icon: '🛃' },
   ],
   trading: [
     { id: 'deal', label: 'Deal Management', icon: '◆' },

@@ -244,7 +244,7 @@ statusFilterable?: boolean;
    * creates the matching Deal automatically instead of the dropdown
    * option silently doing nothing.
    */
-  afterSave?: (saved: TextileRecord, reload: () => Promise<void>) => void;
+  afterSave?: (saved: TextileRecord, reload: () => Promise<void>, previous?: TextileRecord | null) => void;
   /**
    * Checked once, right after the first successful load — lets another page
    * hand this page a set of values to open the Add form pre-filled with
@@ -567,14 +567,14 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
             : `${created.length} ${title.toLowerCase()} records added successfully.`,
         );
         await load();
-        for (const rec of created) afterSave?.(rec, load);
+               for (const rec of created) afterSave?.(rec, load, null);
         return;
       }
       const res = lastRes;
       setModal(false);
       setMessage(editing ? `${title} record updated successfully.` : `${title} record added successfully.`);
       await load();
-      afterSave?.(res!.data, load);
+      afterSave?.(res!.data, load, editing);
     } catch (caught) {
       setFormMessage(caught instanceof Error ? caught.message : 'Unable to save this record.');
     } finally {
@@ -593,7 +593,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
       const res = await api<{ data: TextileRecord }>(`${resource}/${record.id}`, { method: 'PATCH', body: JSON.stringify(body) });
       setMessage(`${title} status changed to ${next} successfully.`);
       await load();
-      afterSave?.(res.data, load);
+         afterSave?.(res.data, load, record);
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : 'Unable to change the status.');
     } finally {

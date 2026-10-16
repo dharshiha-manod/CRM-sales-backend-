@@ -5,8 +5,9 @@
 // marks the lowest one; a person still types the quoted rates in, because free-form
 // supplier emails are not read for prices. "Select this supplier" approves the chosen
 // enquiry and rejects the others in the same group.
-import { ReactNode, useMemo, useState } from 'react';
-import { api } from '../lib/api';
+import { ReactNode, useEffect, useMemo, useState } from 'react';import { api } from '../lib/api';
+import { findRate, getBaseCurrency, getCachedCurrencyRates, loadCurrencyRates } from '../lib/currencyLookup';
+import { formatMoneyWithBase } from '../lib/currencyFormat';
 
 type Row = Record<string, unknown>;
 
@@ -22,6 +23,24 @@ function unitNet(r: Row): number {
   const rate = num(r.requested_rate);
   if (!rate) return 0;
   return rate * (1 - num(r.discount_percent) / 100) * (1 + num(r.tax_percent) / 100);
+}
+
+/** Rate from this enquiry's currency to the company currency: 1 if same/blank, null if no rate is known. */
+function rateToBase(r: Row): number | null {
+  const rates = getCachedCurrencyRates();
+  const base = getBaseCurrency(rates);
+  const code = text(r.currency).toUpperCase();
+  if (!code || code === base) return 1;
+  const rate = Number(findRate(rates, code, base));
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
+/** Net rate per unit in company currency (0 = no quote yet, null = no exchange rate known). */
+function baseUnitNet(r: Row): number | null {
+  const u = unitNet(r);
+  if (!u) return 0;
+  const k = rateToBase(r);
+  return k == null ? null : u * k;
 }
 
 const money = (currency: string, n: number): string =>
@@ -70,14 +89,28 @@ export function CompareSuppliersBar({ rows, onChanged }: { rows: Row[]; onChange
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
 
+  const [, setRatesTick] = useState(0);
+  useEffect(() => {
+    if (open) void loadCurrencyRates().then(() => setRatesTick((t) => t + 1)).catch(() => undefined);
+  }, [open]);
+
   const groups = useMemo(() => buildGroups(rows), [rows]);
   if (groups.length === 0 && !open) return null;
 
   const active = groups.find((g) => g.key === selectedKey) ?? groups[0];
-  const items = active?.items ?? [];
+  // cheapest first, compared in company currency (INR); suppliers still to quote go last
+  const sortKey = (r: Row): number => baseUnitNet(r) ?? unitNet(r);
+  const items = [...(active?.items ?? [])].sort((a, b) => {
+    const ka = sortKey(a); const kb = sortKey(b);
+    if (ka && kb) return ka - kb;
+    if (ka) return -1;
+    if (kb) return 1;
+    return text(a.enquiry_number).localeCompare(text(b.enquiry_number));
+  });
   const rated = items.filter((r) => unitNet(r) > 0);
   const warnings: string[] = [];
-  if (new Set(rated.map((r) => text(r.currency).toUpperCase())).size > 1) warnings.push('Suppliers quoted in different currencies. Amounts are not converted, so no best price is marked.');
+  const noRate = Array.from(new Set(rated.filter((r) => rateToBase(r) == null).map((r) => text(r.currency).toUpperCase())));
+  if (noRate.length > 0) warnings.push(`No exchange rate found for ${noRate.join(', ')}. Add it in Currency Management so prices can be compared.`);
   if (new Set(rated.map((r) => text(r.unit).toLowerCase())).size > 1) warnings.push('Suppliers quoted in different units, so no best price is marked.');
   const best = rated.length >= 2 && warnings.length === 0 ? rated[0] : null;
 
@@ -109,8 +142,8 @@ export function CompareSuppliersBar({ rows, onChanged }: { rows: Row[]; onChange
     { label: 'Quoted rate', cell: (r) => (num(r.requested_rate) ? money(text(r.currency), num(r.requested_rate)) : 'Waiting for quote') },
     { label: 'Discount (%)', cell: (r) => (text(r.discount_percent) || '—') },
     { label: 'Tax (%)', cell: (r) => (text(r.tax_percent) || '—') },
-    { label: 'Net rate per unit', strong: true, cell: (r) => (unitNet(r) > 0 ? money(text(r.currency), unitNet(r)) : '—') },
-    { label: 'Net amount', strong: true, cell: (r) => (unitNet(r) > 0 && num(r.quantity) > 0 ? money(text(r.currency), unitNet(r) * num(r.quantity)) : '—') },
+    { label: 'Net rate per unit', strong: true, cell: (r) => (unitNet(r) > 0 ? formatMoneyWithBase(unitNet(r), r.currency) : '—') },
+    { label: 'Net amount', strong: true, cell: (r) => (unitNet(r) > 0 && num(r.quantity) > 0 ? formatMoneyWithBase(unitNet(r) * num(r.quantity), r.currency) : '—') },
     { label: 'Delivery terms', cell: (r) => (text(r.delivery_terms) || '—') },
     { label: 'Payment terms', cell: (r) => (text(r.payment_terms) || '—') },
     { label: 'Delivery location', cell: (r) => (text(r.delivery_location) || '—') },
