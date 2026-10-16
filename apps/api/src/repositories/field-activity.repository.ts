@@ -1,6 +1,7 @@
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
+import { markBeatVisitDone } from '../services/beat-automation.service.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { getVisitConfig, getGpsConfig, getFollowUpConfig, loadSettingsSnapshot, industryTypeIdOfClient, industryTypeIdOfVisit } from '../lib/settings.js';
 const fail = (error: unknown): never => { throw error; };
@@ -62,8 +63,10 @@ export async function checkIn(organizationId: string, representativeId: string, 
     // Settings → Visit Configuration → Mandatory GPS verification
     if (visitConfig.mandatoryGpsVerification && withinGeofence === false) throw new AppError(422, 'OUTSIDE_GEOFENCE', `You are ${distance} m from the client, outside the allowed ${client.gps_radius_meters ?? visitConfig.radiusMeters} m radius. Move closer to check in.`);
   }
-  const { data, error } = await supabaseAdmin.from('field_visits').insert({ organization_id: organizationId, representative_id: representativeId, client_id: input.clientId, unlisted_client_name: input.unlistedClientName, notes: input.notes, check_in_lat: location.latitude, check_in_lng: location.longitude, check_in_accuracy_meters: location.accuracyMeters, check_in_distance_meters: distance, check_in_within_geofence: withinGeofence, status: 'checked_in' }).select('*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))').single();
-  return error ? fail(error) : data;
+   const { data, error } = await supabaseAdmin.from('field_visits').insert({ organization_id: organizationId, representative_id: representativeId, client_id: input.clientId, unlisted_client_name: input.unlistedClientName, notes: input.notes, check_in_lat: location.latitude, check_in_lng: location.longitude, check_in_accuracy_meters: location.accuracyMeters, check_in_distance_meters: distance, check_in_within_geofence: withinGeofence, status: 'checked_in' }).select('*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))').single();
+  if (error) return fail(error);
+  if (input.clientId) void markBeatVisitDone(organizationId, representativeId, input.clientId as string, data.id);
+  return data;
 }
 
 export async function addPing(organizationId: string, representativeId: string, visitId: string, input: Record<string, unknown>) {

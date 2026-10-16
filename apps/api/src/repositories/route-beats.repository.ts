@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
+import { replanBeatToday, syncAssignments, type BeatRow } from '../services/beat-automation.service.js';
 
 const fail = (error: unknown): never => { throw error; };
 const COLS = '*, sales_representatives(employee_code, user_profiles(display_name))';
@@ -43,13 +44,18 @@ export async function listBeats(org: string, industryTypeId: string, representat
 export async function createBeat(org: string, userId: string, industryTypeId: string, input: BeatInput) {
   const ids = await validate(org, industryTypeId, input);
   const { data, error } = await supabaseAdmin.from('route_beats').insert({ ...row(input, ids), organization_id: org, industry_type_id: industryTypeId, created_by: userId }).select(COLS).single();
-  return error ? fail(error) : data;
+  if (error) return fail(error);
+  if (input.representativeId && ids.length) await syncAssignments(org, input.representativeId, ids);
+  await replanBeatToday(data as BeatRow);
+  return data;
 }
 export async function updateBeat(org: string, industryTypeId: string, id: string, input: BeatInput) {
   const ids = await validate(org, industryTypeId, input);
   const { data, error } = await supabaseAdmin.from('route_beats').update({ ...row(input, ids), updated_at: new Date().toISOString() }).eq('id', id).eq('organization_id', org).eq('industry_type_id', industryTypeId).select(COLS).maybeSingle();
   if (error) fail(error);
   if (!data) throw notFound();
+  if (input.representativeId && ids.length) await syncAssignments(org, input.representativeId, ids);
+  await replanBeatToday(data as BeatRow);
   return data;
 }
 export async function deleteBeat(org: string, industryTypeId: string, id: string) {

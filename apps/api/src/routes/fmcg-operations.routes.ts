@@ -9,6 +9,7 @@ import { representativeForUser } from '../repositories/stock-requests.repository
 import { batchSchema, createBatch, deleteBatch, listBatches, updateBatch, writeOffBatch, writeOffSchema } from '../repositories/product-batches.repository.js';
 import { createReturn, decideReturn, deleteReturn, listReturns, returnSchema } from '../repositories/sales-returns.repository.js';
 import { beatSchema, createBeat, deleteBeat, listBeats, updateBeat } from '../repositories/route-beats.repository.js';
+import { autoGenerateBeats, autoGenerateSchema, beatSummary, generateDailyPlan, localNow, myBeatToday } from '../services/beat-automation.service.js';
 
 type Req = Parameters<RequestHandler>[0];
 const org = (req: Req) => { const v = req.header('x-organization-id'); if (!v) throw new AppError(400, 'ORGANIZATION_CONTEXT_REQUIRED', 'x-organization-id is required'); return v; };
@@ -63,6 +64,16 @@ fmcgOperationsRouter.get('/fmcg/beats', authenticate, requireRoles('super_admin'
   const rep = req.organizationRole === 'sales_representative' ? await representativeForUser(organizationId, req.auth!.sub as string) : null;
   res.json({ data: await listBeats(organizationId, await fmcgId(req), rep?.id) });
 });
-fmcgOperationsRouter.post('/fmcg/beats', authenticate, staff, async (req, res) => res.status(201).json({ data: await createBeat(org(req), req.auth!.sub as string, await fmcgId(req), beatSchema.parse(req.body ?? {})) }));
+// Automation: summary (one grouped query), rep's list for today, auto-create beats, plan today now.
+fmcgOperationsRouter.get('/fmcg/beats/summary', authenticate, staff, async (req, res) => res.json({ data: await beatSummary(org(req), await fmcgId(req), typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined) }));
+fmcgOperationsRouter.get('/fmcg/beats/my-today', authenticate, requireRoles('sales_representative'), async (req, res) => {
+  const organizationId = org(req);
+  await fmcgId(req);
+  const rep = await representativeForUser(organizationId, req.auth!.sub as string);
+  res.json({ data: rep ? await myBeatToday(organizationId, rep.id) : [] });
+});
+fmcgOperationsRouter.post('/fmcg/beats/auto-generate', authenticate, staff, async (req, res) => res.json({ data: await autoGenerateBeats(org(req), req.auth!.sub as string, await fmcgId(req), autoGenerateSchema.parse(req.body ?? {})) }));
+fmcgOperationsRouter.post('/fmcg/beats/plan-today', authenticate, staff, async (req, res) => { const t = localNow(); res.json({ data: { date: t.date, visitsPlanned: await generateDailyPlan(t.date, t.day, { org: org(req), industryTypeId: await fmcgId(req) }) } }); });
+fmcgOperationsRouter.post('/fmcg/beats', authenticate, staff,async (req, res) => res.status(201).json({ data: await createBeat(org(req), req.auth!.sub as string, await fmcgId(req), beatSchema.parse(req.body ?? {})) }));
 fmcgOperationsRouter.put('/fmcg/beats/:id', authenticate, staff, async (req, res) => res.json({ data: await updateBeat(org(req), await fmcgId(req), paramId(req), beatSchema.parse(req.body ?? {})) }));
 fmcgOperationsRouter.delete('/fmcg/beats/:id', authenticate, staff, async (req, res) => { await deleteBeat(org(req), await fmcgId(req), paramId(req)); res.status(204).send(); });

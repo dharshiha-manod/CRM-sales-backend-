@@ -7,6 +7,8 @@ import {
   assertPlanReady, ensureLogisticsPlan, nextShipmentStatus, syncLogisticsFromShipment,
 } from '../lib/logistics-plan.js';
 import { resolveIndustryTypeId, assertRecordInScope } from '../lib/industry-scope.js';
+import { isFmcgIndustry } from '../lib/fmcg-market.js';
+import { fmcgShipmentsAsTradingRows, syncFmcgExportDocFlag } from '../lib/fmcg-paperwork.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { logger } from '../lib/logger.js';
 import { sumInCurrency } from '../lib/currency-sum.js';
@@ -31,12 +33,39 @@ const fail = (error: unknown): never => { throw error; };
 // is_base_currency in Currency Management, INR when none is). Same rule as findRate() in
 // admin/src/lib/currencyLookup.ts: the newest rate in force today, a direct pair or its inverse.
 // rate === null means "no usable rate", which callers must treat as an error, never as 1.
-async function baseRateFor(org: string, industryTypeId: unknown, currency: string): Promise<{ base: string; rate: number | null }> {
-  let query = supabaseAdmin.from('trading_currency_rates').select('*').eq('organization_id', org);
-  if (typeof industryTypeId === 'string' && industryTypeId) query = query.eq('industry_type_id', industryTypeId);
-  const { data, error } = await query;
+/** FMCG keeps its exchange rates in fmcg_currency_rates. This shows them in Trading's shape (X -> INR) so the shared Trade pages can use them. */
+async function fmcgRatesAsTradingRows(org: string, industryTypeId: string): Promise<Array<Record<string, unknown>>> {
+  const { data, error } = await supabaseAdmin.from('fmcg_currency_rates').select('*')
+    .eq('organization_id', org).eq('industry_type_id', industryTypeId)
+    .order('effective_from', { ascending: false }).order('created_at', { ascending: false });
   if (error) throw error;
-  const rows = (data ?? []) as Array<Record<string, unknown>>;
+  const rows = ((data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+    id: r.id, organization_id: org, industry_type_id: industryTypeId,
+    currency_code: r.currency_code, currency_name: r.currency_code,
+    base_currency: r.currency_code, target_currency: 'INR',
+    exchange_rate: r.rate_to_inr, effective_date: r.effective_from, expiry_date: null,
+    is_base_currency: 'No', created_at: r.created_at,
+  }));
+  // The company currency itself, so "base currency" resolves to INR.
+  rows.push({
+    id: 'fmcg-base-inr', organization_id: org, industry_type_id: industryTypeId,
+    currency_code: 'INR', currency_name: 'Indian rupee', base_currency: 'INR', target_currency: 'INR',
+    exchange_rate: 1, effective_date: null, expiry_date: null, is_base_currency: 'Yes', created_at: null,
+  });
+  return rows;
+}
+
+async function baseRateFor(org: string, industryTypeId: unknown, currency: string): Promise<{ base: string; rate: number | null }> {
+  let rows: Array<Record<string, unknown>>;
+  if (typeof industryTypeId === 'string' && industryTypeId && await isFmcgIndustry(org, industryTypeId)) {
+    rows = await fmcgRatesAsTradingRows(org, industryTypeId);
+  } else {
+    let query = supabaseAdmin.from('trading_currency_rates').select('*').eq('organization_id', org);
+    if (typeof industryTypeId === 'string' && industryTypeId) query = query.eq('industry_type_id', industryTypeId);
+    const { data, error } = await query;
+    if (error) throw error;
+    rows = (data ?? []) as Array<Record<string, unknown>>;
+  }
   const base = String(rows.find((r) => String(r.is_base_currency).toLowerCase() === 'yes')?.currency_code ?? 'INR').toUpperCase();
   const code = currency.trim().toUpperCase();
   if (!code || code === base) return { base, rate: 1 };
@@ -1378,6 +1407,9 @@ function sanitizePayload(resource: TradingResource, input: Record<string, unknow
 
 export async function listTradingRecords(resource: TradingResource, org: string, scope: IndustryScope, requestedIndustryTypeId?: string) {
   const industryTypeId = resolveIndustryTypeId(scope, requestedIndustryTypeId);
+  // FMCG rates live in fmcg_currency_rates; give the shared Trade pages those rows.
+  if (resource.table === 'trading_currency_rates' && industryTypeId && await isFmcgIndustry(org, industryTypeId)) return fmcgRatesAsTradingRows(org, industryTypeId);
+  if (resource.table === 'trading_shipments' && industryTypeId && await isFmcgIndustry(org, industryTypeId)) return fmcgShipmentsAsTradingRows(org, industryTypeId);
   let query = supabaseAdmin.from(resource.table).select('*').eq('organization_id', org).order('created_at', { ascending: false });
   if (industryTypeId) query = query.eq('industry_type_id', industryTypeId);
   const { data, error } = await query;
@@ -1762,7 +1794,7 @@ export async function updateTradingRecord(resource: TradingResource, org: string
     // Every shipment has a Logistics plan; keep its status/dates in step with the shipment.
     await syncLogisticsFromShipment(org, shipment);
     // Only on the actual transition INTO Delivered — never re-fires on a
-    // later, unrelated save of an already-delivered shipment.
+    // later, unrelated save of an already-delivered shipment.     
     if (status === 'Delivered' && previousStatus !== 'Delivered') {
       await autoUpdateInventoryOnDelivery(org, shipment);
       await autoCloseEnquiryOnInboundDelivery(org, shipment);
@@ -1772,8 +1804,7 @@ export async function updateTradingRecord(resource: TradingResource, org: string
     if (status === 'Cancelled' && previousStatus !== 'Cancelled') await autoCancelInvoiceOnShipmentCancel(org, shipment);
   }
   if (resource.table === 'trading_logistics') await syncShipmentFromLogistics(org, data as Record<string, unknown>, scope);
-  if (resource.table === 'trading_logistics') await syncFreightChargeFromLogistics(org, data as Record<string, unknown>);  if (resource.table === 'trading_logistics') await syncShipmentFromLogistics(org, data as Record<string, unknown>, scope);
-  if (resource.table === 'trading_shipment_charges') await rebuildDraftInvoiceFromCharges(org, String((data as Record<string, unknown>).shipment_number ?? ''));
+  if (resource.table === 'trading_logistics') await syncFreightChargeFromLogistics(org, data as Record<string, unknown>);  if (resource.table === 'trading_shipment_charges') await rebuildDraftInvoiceFromCharges(org, String((data as Record<string, unknown>).shipment_number ?? ''));
   if (resource.table === 'trading_deals') await runDealSideEffects(org, data as Record<string, unknown>);
   // A cost changed on a linked record: keep the deal's live profit row up to date.
   await refreshProfitabilityForRecord(org, resource.table, data as Record<string, unknown>);
@@ -1890,6 +1921,9 @@ export async function reviewTradeDocument(org: string, id: string, action: strin
   if (!data) throw new AppError(409, 'DOCUMENT_CHANGED', 'This document was changed by someone else. Refresh and try again.');
   await refreshProfitabilityForRecord(org, 'trading_documents', data as Record<string, unknown>);
   await runTradeLinks(org, 'trading_documents', data as Record<string, unknown>, false);
+  await syncFmcgExportDocFlag(org, data as Record<string, unknown>);
+  return data;
+  await runTradeLinks(org, 'trading_documents', data as Record<string, unknown>, false);
   return data;
 }
 
@@ -1932,7 +1966,7 @@ export async function sendPurchaseEnquiry(org: string, id: string, scope: Indust
     .eq('organization_id', org).eq('id', id).select().maybeSingle();
   if (updateError) fail(updateError);
   if (!updated) throw notFound;
-  return updated;
+  return { ...updated, sent_to: String(supplier.email).trim() };
 }
 
 // "Send documents": emails the shipment's Verified documents (download links) to the customer, or to the address typed.

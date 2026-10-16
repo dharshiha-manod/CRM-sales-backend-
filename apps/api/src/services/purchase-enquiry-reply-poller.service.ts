@@ -62,6 +62,26 @@ function stripQuotedReplyTail(text: string): string {
   return out.trim();
 }
 
+// Reads the labelled lines from the email's quote form ("Quoted rate: 500").
+// Only exact labels are read, so a free-text reply is never guessed at.
+function parseQuoteFromReply(text: string) {
+  const line = (label: string) => text.match(new RegExp(`^[ \\t]*${label}[ \\t]*[:=][ \\t]*(.+)$`, 'im'))?.[1]?.trim() ?? '';
+  const num = (label: string) => {
+    const n = Number(line(label).replace(/,/g, '').match(/\d+(\.\d+)?/)?.[0]);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const currency = line('Currency').match(/\b[A-Za-z]{3}\b/)?.[0]?.toUpperCase() ?? '';
+  return {
+    requested_rate: num('Quoted rate'),
+       discount_percent: num('Discount %'),
+    discount_amount: num('Discount amount'),
+    tax_percent: num('Tax %'),
+    currency,
+    delivery_terms: line('Delivery terms'),
+    payment_terms: line('Payment terms'),
+  };
+}
+
 async function processMessage(uid: number, client: ImapFlow, org: string | null): Promise<void> {
   const { content } = await client.download(String(uid), undefined, { uid: true });
   const parsed = await simpleParser(content);
@@ -74,7 +94,10 @@ async function processMessage(uid: number, client: ImapFlow, org: string | null)
   // supplier replies should be filed.
   const senderAddress = parsed.from?.value?.[0]?.address?.toLowerCase();
   const ownAddresses = [env.SUPPLIER_REPLY_IMAP_USER, env.SMTP_USER, env.MAIL_FROM].filter(Boolean).map((a) => String(a).toLowerCase());
-  if (senderAddress && ownAddresses.some((own) => own === senderAddress || own.includes(`<${senderAddress}>`))) return;
+  // Skip our own outgoing enquiry, but not a reply that merely comes from the same mailbox
+  // (e.g. when a supplier's saved email is the company mailbox, as in testing).
+  const isReply = Boolean(parsed.inReplyTo) || /^\s*re:/i.test(subject);
+  if (senderAddress && !isReply && ownAddresses.some((own) => own === senderAddress || own.includes(`<${senderAddress}>`))) return;     
   const messageRef = parsed.messageId ?? `${senderAddress ?? 'unknown'}|${parsed.date?.toISOString() ?? ''}`;
 
   // No organization_id filter here: this mailbox is configured once per
@@ -102,6 +125,26 @@ async function processMessage(uid: number, client: ImapFlow, org: string | null)
 
   const patch: Record<string, unknown> = { notes: nextNotes };
   if (enquiry.status === 'Sent') patch.status = 'Supplier Responded';
+
+    // The supplier's reply is the source of truth for what they quoted, so it replaces the
+  // Price List defaults. Once the enquiry reaches Negotiation or later, it is left alone.
+  const currentStatus = String(enquiry.status || 'Draft');
+  if (['Draft', 'Sent', 'Supplier Responded', 'Under Comparison'].includes(currentStatus)) {
+    const quote = parseQuoteFromReply(bodyText);
+    if (quote.requested_rate !== null && quote.requested_rate > 0) patch.requested_rate = quote.requested_rate;
+    if (quote.discount_percent !== null) {
+      patch.discount_percent = quote.discount_percent;
+    } else if (quote.discount_amount !== null && quote.discount_amount > 0) {
+      // Supplier gave an amount: convert to % of (rate x quantity).
+      const rate = Number(patch.requested_rate ?? enquiry.requested_rate);
+      const gross = rate * Number(enquiry.quantity);
+      if (gross > 0) patch.discount_percent = Math.round((quote.discount_amount / gross) * 10000) / 100;
+    }
+    if (quote.tax_percent !== null) patch.tax_percent = quote.tax_percent;
+    if (quote.currency) patch.currency = quote.currency;
+    if (quote.delivery_terms) patch.delivery_terms = quote.delivery_terms;
+    if (quote.payment_terms) patch.payment_terms = quote.payment_terms;
+  }
 
   const { error: updateError } = await supabaseAdmin.from('trading_purchase_enquiries').update(patch).eq('id', enquiry.id);
   if (updateError) { logger.error({ err: updateError, enquiryNumber }, 'Failed to save supplier reply onto enquiry'); return; }

@@ -5,6 +5,7 @@ import { AppError } from '../errors/app-error.js';
 import { assertRecordInScope, resolveIndustryTypeId, type IndustryScope } from '../lib/industry-scope.js';
 import { isFmcgIndustry, marketScopeOf } from '../lib/fmcg-market.js';
 import { supabaseAdmin } from '../lib/supabase.js';
+import { dispatchBlockMessage, ensureFmcgExportPaperwork, fmcgCustomsDispatchProblems, syncFmcgPaperworkOnStatus } from '../lib/fmcg-paperwork.js';
 
 const CORE_EXPORT_DOCS: Array<[string, string]> = [['commercial_invoice', 'Commercial invoice'], ['packing_list', 'Packing list'], ['bill_of_lading', 'Bill of lading / airway bill']];
 const bad = (message: string) => new AppError(422, 'INVALID_SHIPMENT', message);
@@ -124,20 +125,20 @@ export async function createShipment(org: string, scope: IndustryScope, userId: 
   const { error: itemError } = await supabaseAdmin.from('fmcg_shipment_items').insert(items.map((i) => ({ ...i, shipment_id: created!.id })));
   if (itemError) {
     await supabaseAdmin.from('fmcg_shipments').delete().eq('id', created.id);
-    throw new AppError(500, 'SHIPMENT_ITEMS_FAILED', itemError.message, itemError);
+       throw new AppError(500, 'SHIPMENT_ITEMS_FAILED', itemError.message, itemError);
   }
+  await ensureFmcgExportPaperwork(org, created.id); // international shipments only; never throws
   return syncAndView(org, order);
 }
-
 type UpdateInput = { status?: unknown; transportRef?: unknown; shippedAt?: unknown; expectedArrival?: unknown; deliveredAt?: unknown; notes?: unknown };
 const NEXT: Record<string, string[]> = { packed: ['packed', 'dispatched', 'cancelled'], dispatched: ['dispatched', 'delivered'], delivered: ['delivered'], cancelled: [] };
 
 export async function updateShipment(org: string, scope: IndustryScope, shipmentId: string, input: UpdateInput) {
   const { data, error } = await supabaseAdmin.from('fmcg_shipments')
-    .select('id, order_id, status, transport_ref, shipped_at, expected_arrival, delivered_at, notes').eq('id', shipmentId).eq('organization_id', org).maybeSingle();
+    .select('id, order_id, shipment_no, status, transport_ref, shipped_at, expected_arrival, delivered_at, notes').eq('id', shipmentId).eq('organization_id', org).maybeSingle();
   if (error) throw new AppError(500, 'SHIPMENT_LOOKUP_FAILED', error.message, error);
   if (!data) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found.');
-  const row = data as unknown as { id: string; order_id: string; status: string; transport_ref: string | null; shipped_at: string | null; expected_arrival: string | null; delivered_at: string | null; notes: string | null };
+  const row = data as unknown as { id: string; order_id: string; shipment_no: string; status: string; transport_ref: string | null; shipped_at: string | null; expected_arrival: string | null; delivered_at: string | null; notes: string | null };
   const order = await loadOrder(org, scope, row.order_id);
 
   const target = String(input.status ?? row.status);
@@ -163,18 +164,23 @@ export async function updateShipment(org: string, scope: IndustryScope, shipment
 
   // International shipments need their export paperwork before the goods leave.
   if (target === 'dispatched' && row.status === 'packed' && marketScopeOf(order.clients?.country_code) === 'international') {
+    await ensureFmcgExportPaperwork(org, shipmentId); // older shipments get their paperwork now; never throws
     const missing: string[] = [];
     if (!order.incoterm) missing.push('Incoterm');
     if (!order.port_of_loading) missing.push('Port of loading');
     if (!order.port_of_discharge) missing.push('Port of discharge');
     for (const [key, label] of CORE_EXPORT_DOCS) if (!order.export_docs?.[key]) missing.push(label);
     if (missing.length) throw new AppError(422, 'EXPORT_DOCS_INCOMPLETE', `Complete the export details before dispatch. Missing: ${missing.join(', ')}.`);
+    // Export customs must be Cleared (Customs & Clearance) before the goods leave.
+    const customsIssues = await fmcgCustomsDispatchProblems(org, row.shipment_no);
+    if (customsIssues.length) throw new AppError(422, 'EXPORT_CUSTOMS_NOT_CLEARED', dispatchBlockMessage(row.shipment_no, customsIssues));
   }
 
   const { error: updateError } = await supabaseAdmin.from('fmcg_shipments')
     .update({ status: target, transport_ref: transport, shipped_at: shipped, expected_arrival: expected, delivered_at: delivered, notes })
     .eq('id', shipmentId).eq('organization_id', org);
   if (updateError) throw new AppError(500, 'SHIPMENT_SAVE_FAILED', updateError.message, updateError);
+  if (target !== row.status) await syncFmcgPaperworkOnStatus(org, shipmentId, target, { shippedAt: shipped, deliveredAt: delivered }); // Import/Export, Trade Documents, Customs follow the shipment
   return syncAndView(org, order);
 }
 
@@ -214,14 +220,39 @@ export async function listAllShipments(org: string, scope: IndustryScope) {
     fmcg_shipment_items: Array<{ order_item_id: string; quantity: number }>;
     sale_orders: { order_number: string; status: string; clients: { client_code: string | null; client_name: string; country_code: string | null }; sale_order_items: Array<{ id: string; products: { product_name?: string | null; product_code?: string | null } | null }> };
   };
-  return ((data ?? []) as unknown as Row[]).map((s) => {
+  const listed = (data ?? []) as unknown as Row[];
+  // Export paperwork (international only): verified core documents + customs status, so the page shows what blocks a dispatch.
+  const paperwork = new Map<string, { docs_verified: number; docs_required: number; customs: string }>();
+  try {
+    const CORE: Record<string, string> = { 'Commercial Invoice': 'ci', 'Packing List': 'pl', 'Bill of Lading': 'bl', 'Airway Bill': 'bl' };
+    const intl = listed.filter((s) => marketScopeOf(s.sale_orders.clients.country_code) === 'international').map((s) => s.shipment_no);
+    for (let i = 0; i < intl.length; i += 100) {
+      const part = intl.slice(i, i + 100);
+      const [docs, customs] = await Promise.all([
+        supabaseAdmin.from('trading_documents').select('shipment_number, document_type, verification_status, status').eq('organization_id', org).in('shipment_number', part),
+        supabaseAdmin.from('trading_customs').select('shipment_number, clearance_status, status').eq('organization_id', org).in('shipment_number', part),
+      ]);
+      if (docs.error) throw docs.error;
+      if (customs.error) throw customs.error;
+      const verified = new Map<string, Set<string>>();
+      for (const d of (docs.data ?? []) as Array<{ shipment_number: string; document_type: string; verification_status: string | null; status: string | null }>) {
+        const key = CORE[d.document_type];
+        if (!key || (d.verification_status !== 'Verified' && d.status !== 'Verified')) continue;
+        verified.set(d.shipment_number, (verified.get(d.shipment_number) ?? new Set()).add(key));
+      }
+      const customsOf = new Map<string, string>();
+      for (const c of (customs.data ?? []) as Array<{ shipment_number: string; clearance_status: string | null; status: string | null }>) if (c.status !== 'Cancelled') customsOf.set(c.shipment_number, c.clearance_status || 'Not Started');
+      for (const no of part) paperwork.set(no, { docs_verified: verified.get(no)?.size ?? 0, docs_required: 3, customs: customsOf.get(no) ?? 'Not Started' });
+    }
+  } catch { /* the list still loads without the paperwork summary */ }
+  return listed.map((s) => {
     const names = new Map(s.sale_orders.sale_order_items.map((i) => [i.id, i.products?.product_name ?? 'Product']));
     const items = s.fmcg_shipment_items.map((i) => ({ product_name: names.get(i.order_item_id) ?? 'Product', quantity: Number(i.quantity) }));
     return {
       id: s.id, order_id: s.order_id, shipment_no: s.shipment_no, status: s.status, transport_ref: s.transport_ref, shipped_at: s.shipped_at, expected_arrival: s.expected_arrival, delivered_at: s.delivered_at, notes: s.notes, created_at: s.created_at,
       order_number: s.sale_orders.order_number, order_status: s.sale_orders.status,
       client_code: s.sale_orders.clients.client_code, client_name: s.sale_orders.clients.client_name,
-      market: marketScopeOf(s.sale_orders.clients.country_code),
+      market: marketScopeOf(s.sale_orders.clients.country_code), paperwork: paperwork.get(s.shipment_no) ?? null,
       total_quantity: round3(items.reduce((a, i) => a + i.quantity, 0)), items,
     };
   });
