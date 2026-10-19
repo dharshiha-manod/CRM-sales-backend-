@@ -140,8 +140,10 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
 
   await assertWithinCreditLimit(organizationId, client.id as string, totalInr);
 
-  const orderNumber = formatOrderNumber(orderConfig.numberingFormat);
+  const orderNumber = await uniqueOrderNumber(organizationId, orderConfig.numberingFormat);
   const initialStatus = orderConfig.approvalRequired ? 'pending_approval' : 'confirmed';
+  // Check stock BEFORE saving anything, so a short-stock order never gets created (same as the visit path).
+  if (doc && initialStatus === 'confirmed') await planAllocations(organizationId, lines.map((l) => ({ product_id: l.product_id, quantity: l.quantity, free_quantity: (l as { free_quantity?: number }).free_quantity ?? 0 })));
 
   const { data: order, error: orderError } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: orderNumber, visit_id: null, client_id: client.id, representative_id: rep.id, discount_amount: discount, total_amount: total, notes: input.notes, status: initialStatus, ...(doc ? { ...doc, base_total: totalInr } : {}) }).select().single();
   if (orderError) fail(orderError);

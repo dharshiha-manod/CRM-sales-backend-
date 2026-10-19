@@ -9,6 +9,8 @@ export type ClientCredit = {
   creditDays: number | null;
   /** Unpaid balance today: all non-cancelled orders minus everything the client has paid. */
   outstanding: number;
+  /** Part of the unpaid balance that belongs to orders older than the client's credit days (payments and credit notes are applied to the oldest orders first). */
+  overdue: number;
 };
 
 const rupees = (value: number) => `₹${Math.round(value).toLocaleString('en-IN')}`;
@@ -28,7 +30,7 @@ export async function getClientCredit(organizationId: string, clientId: string):
   if (!client) return null;
 
   const [{ data: orders, error: ordersError }, { data: collections, error: collectionsError }, returnsRes] = await Promise.all([
-    supabaseAdmin.from('sale_orders').select('total_amount, base_total').eq('organization_id', organizationId).eq('client_id', clientId).neq('status', 'cancelled'),
+    supabaseAdmin.from('sale_orders').select('total_amount, base_total, created_at').eq('organization_id', organizationId).eq('client_id', clientId).neq('status', 'cancelled'),
     supabaseAdmin.from('sales_collections').select('amount, sale_orders(exchange_rate)').eq('organization_id', organizationId).eq('client_id', clientId),
     supabaseAdmin.from('sales_returns').select('base_credit, sale_orders!inner(status)').eq('organization_id', organizationId).eq('client_id', clientId).eq('status', 'approved').neq('sale_orders.status', 'cancelled'),
   ]);
@@ -39,7 +41,22 @@ export async function getClientCredit(organizationId: string, clientId: string):
   const credited = returnsRes.error ? 0 : (returnsRes.data ?? []).reduce((sum, row) => sum + Number((row as { base_credit?: unknown }).base_credit ?? 0), 0);
   const sales = (orders ?? []).reduce((sum, row) => sum + orderBase(row), 0);
   const paid = (collections ?? []).reduce((sum, row) => sum + collectionBase(row), 0);
+  const creditDays = client.credit_days == null ? null : Number(client.credit_days);
+  let overdue = 0;
+  if (creditDays != null && creditDays > 0) {
+    // First-in-first-out: payments and credit notes clear the oldest orders first; what is left of orders past their due date is overdue.
+    const cutoff = Date.now() - creditDays * 86_400_000;
+    let settled = paid + credited;
+    const dated = (orders ?? []).filter((o) => (o as { created_at?: string }).created_at).sort((a, b) => Date.parse(String((a as { created_at: string }).created_at)) - Date.parse(String((b as { created_at: string }).created_at)));
+    for (const row of dated) {
+      const value = orderBase(row);
+      const cleared = Math.min(value, settled);
+      settled -= cleared;
+      if (Date.parse(String((row as { created_at: string }).created_at)) <= cutoff) overdue += value - cleared;
+    }
+  }
   return {
+    overdue: Math.round(overdue * 100) / 100,
     clientName: String(client.client_name ?? 'This client'),
     creditLimit: client.credit_limit == null ? null : Number(client.credit_limit),
     creditDays: client.credit_days == null ? null : Number(client.credit_days),
@@ -55,7 +72,11 @@ export async function getClientCredit(organizationId: string, clientId: string):
 export async function assertWithinCreditLimit(organizationId: string, clientId: string | null | undefined, additionalAmount: number) {
   if (!clientId || !(additionalAmount > 0)) return;
   const credit = await getClientCredit(organizationId, clientId);
-  if (!credit || credit.creditLimit == null) return;
+  if (!credit) return;
+  if (credit.overdue > 0.005) {
+    throw new AppError(422, 'CREDIT_OVERDUE', `${credit.clientName} has ${rupees(credit.overdue)} overdue beyond ${credit.creditDays} credit day(s). Collect the overdue payment before taking a new order.`);
+  }
+  if (credit.creditLimit == null) return;
   const after = credit.outstanding + additionalAmount;
   if (after > credit.creditLimit + 0.005) {
     const available = Math.max(0, credit.creditLimit - credit.outstanding);
@@ -65,4 +86,4 @@ export async function assertWithinCreditLimit(organizationId: string, clientId: 
       `Credit limit exceeded for ${credit.clientName}: limit ${rupees(credit.creditLimit)}, already unpaid ${rupees(credit.outstanding)}, this order ${rupees(additionalAmount)} (available credit ${rupees(available)}). Collect a payment or raise the client's credit limit first.`,
     );
   }
-} 
+}
