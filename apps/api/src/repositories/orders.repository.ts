@@ -3,7 +3,7 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { getOrderConfig, industryTypeIdOfClient } from '../lib/settings.js';
 import { assertRecordInScope, type IndustryScope } from '../lib/industry-scope.js';
-import { assertWithinCreditLimit } from '../lib/credit.js';
+import { assertCreditOnApproval, assertWithinCreditLimit } from '../lib/credit.js'; // <-- NEW (assertCreditOnApproval added)
 import { documentCurrencyForClient, isFmcgIndustry, toBase, type DocumentCurrency } from '../lib/fmcg-market.js';
 import { bestSchemeFor, loadLiveSchemes, type LiveScheme } from '../lib/fmcg-schemes.js';
 import { applyAllocations, planAllocations, readAllocation, releaseStockForOrder, takeStockForOrder, type Allocation } from '../lib/stock.js';
@@ -156,8 +156,7 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
 }
 
 export async function listOrders(organizationId: string, representativeId?: string, industryTypeId?: string | null) {
-  let query = supabaseAdmin.from('sale_orders').select('*, clients!inner(client_code, client_name, industry_type_id, country_code, credit_limit, credit_days, industry_types(name)), sales_representatives(employee_code, user_profiles(display_name)), sale_order_items(quantity, free_quantity, scheme_id, unit_price, discount_amount, subtotal, products(id, product_code, product_name, mrp, discount_percent))').eq('organization_id', organizationId).order('created_at', { ascending: false }).limit(100);
-  if (representativeId) query = query.eq('representative_id', representativeId);
+  let query = supabaseAdmin.from('sale_orders').select('*, clients!inner(client_code, client_name, industry_type_id, country_code, credit_limit, credit_days, industry_types(name)), sales_representatives(employee_code, user_profiles(display_name)), sale_order_items(quantity, free_quantity, scheme_id, unit_price, discount_amount, subtotal, tax_amount, products(id, product_code, product_name, mrp, discount_percent))').eq('organization_id', organizationId).order('created_at', { ascending: false }).limit(100);
   if (industryTypeId) query = query.eq('clients.industry_type_id', industryTypeId);
   const { data, error } = await query; if (error) return fail(error);
   const orders = (data ?? []) as unknown as Array<Record<string, unknown> & { id: string }>;
@@ -206,12 +205,13 @@ export async function cancelOrder(organizationId: string, scope: IndustryScope, 
 }
 
 export async function approveOrder(organizationId: string, scope: IndustryScope, id: string) {
-  const { data: order, error: fetchError } = await supabaseAdmin.from('sale_orders').select('id, status, clients!inner(industry_type_id)').eq('id', id).eq('organization_id', organizationId).maybeSingle();
+  const { data: order, error: fetchError } = await supabaseAdmin.from('sale_orders').select('id, status, client_id, clients!inner(industry_type_id)').eq('id', id).eq('organization_id', organizationId).maybeSingle(); // <-- NEW (client_id added)
   if (fetchError) fail(fetchError);
   const notFound = new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
   if (!order) throw notFound;
   assertRecordInScope(scope, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null, notFound);
   if (order.status !== 'pending_approval') throw new AppError(422, 'ORDER_NOT_PENDING_APPROVAL', `A ${order.status} order is not awaiting approval.`);
+  await assertCreditOnApproval(organizationId, order.client_id as string | null); // <-- NEW: credit may have changed while the order waited
 
   const { data, error } = await supabaseAdmin.from('sale_orders').update({ status: 'confirmed' }).eq('id', id).eq('organization_id', organizationId).eq('status', 'pending_approval').select().single();
   if (error) return fail(error);

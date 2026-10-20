@@ -5,14 +5,16 @@ import { AppError } from '../errors/app-error.js';
 import { assertRecordInScope, resolveIndustryTypeId, type IndustryScope } from '../lib/industry-scope.js';
 import { isFmcgIndustry, marketScopeOf } from '../lib/fmcg-market.js';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { dispatchBlockMessage, ensureFmcgExportPaperwork, fmcgCustomsDispatchProblems, syncFmcgPaperworkOnStatus } from '../lib/fmcg-paperwork.js';
+import { completeOrderIfSettled } from '../lib/order-completion.js';
+import { assertAdvanceReceived, collectCodOnDelivery } from '../lib/payment-terms.js'; // <-- NEW
+import { dispatchBlockMessage,ensureFmcgExportPaperwork, ensureFmcgFreightCharge, fmcgCustomsDispatchProblems, fmcgDocumentDispatchProblems, syncFmcgExportInvoice, syncFmcgPaperworkOnStatus } from '../lib/fmcg-paperwork.js';
 
-const CORE_EXPORT_DOCS: Array<[string, string]> = [['commercial_invoice', 'Commercial invoice'], ['packing_list', 'Packing list'], ['bill_of_lading', 'Bill of lading / airway bill']];
+
 const bad = (message: string) => new AppError(422, 'INVALID_SHIPMENT', message);
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
 
 type OrderRow = {
-  id: string; status: string; incoterm: string | null; port_of_loading: string | null; port_of_discharge: string | null; export_docs: Record<string, boolean> | null;
+  id: string; status: string; payment_type?: string | null; incoterm: string | null; port_of_loading: string | null; port_of_discharge: string | null; export_docs: Record<string, boolean> | null; // <-- NEW: payment_type
   clients: { industry_type_id?: string | null; country_code?: string | null };
   sale_order_items: Array<{ id: string; quantity: number; free_quantity: number | null; products: { product_name?: string | null; product_code?: string | null } | null }>;
 };
@@ -35,7 +37,7 @@ const textOrNull = (v: unknown, label: string, max: number): string | null => {
 
 async function loadOrder(org: string, scope: IndustryScope, orderId: string): Promise<OrderRow> {
   const { data, error } = await supabaseAdmin.from('sale_orders')
-    .select('id, status, incoterm, port_of_loading, port_of_discharge, export_docs, clients!inner(industry_type_id, country_code), sale_order_items(id, quantity, free_quantity, products(product_name, product_code))')
+    .select('id, status, payment_type, incoterm, port_of_loading, port_of_discharge, export_docs, clients!inner(industry_type_id, country_code), sale_order_items(id, quantity, free_quantity, products(product_name, product_code))') // <-- NEW: payment_type
     .eq('id', orderId).eq('organization_id', org).maybeSingle();
   if (error) throw new AppError(500, 'SHIPMENT_LOOKUP_FAILED', error.message, error);
   const notFound = new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
@@ -130,15 +132,23 @@ export async function createShipment(org: string, scope: IndustryScope, userId: 
   await ensureFmcgExportPaperwork(org, created.id); // international shipments only; never throws
   return syncAndView(org, order);
 }
-type UpdateInput = { status?: unknown; transportRef?: unknown; shippedAt?: unknown; expectedArrival?: unknown; deliveredAt?: unknown; notes?: unknown };
+type UpdateInput = { status?: unknown; transportRef?: unknown; shippedAt?: unknown; expectedArrival?: unknown; deliveredAt?: unknown; notes?: unknown;
+  transporterName?: unknown; driverName?: unknown; driverPhone?: unknown; ewayBillNo?: unknown; ewayBillValidUntil?: unknown; invoiceNo?: unknown;
+  receivedBy?: unknown; podFileUrl?: unknown; receipt?: unknown };
+/** Optional text that must match a pattern (digits only etc.); blank clears it. */
+function patternOrNull(value: unknown, label: string, pattern: RegExp, hint: string, max: number): string | null {
+  const v = textOrNull(value, label, max);
+  if (v && !pattern.test(v)) throw bad(`${label} ${hint}`);
+  return v;
+}
 const NEXT: Record<string, string[]> = { packed: ['packed', 'dispatched', 'cancelled'], dispatched: ['dispatched', 'delivered'], delivered: ['delivered'], cancelled: [] };
 
 export async function updateShipment(org: string, scope: IndustryScope, shipmentId: string, input: UpdateInput) {
   const { data, error } = await supabaseAdmin.from('fmcg_shipments')
-    .select('id, order_id, shipment_no, status, transport_ref, shipped_at, expected_arrival, delivered_at, notes').eq('id', shipmentId).eq('organization_id', org).maybeSingle();
+    .select('id, order_id, shipment_no, status, transport_ref, shipped_at, expected_arrival, delivered_at, notes, transporter_name, driver_name, driver_phone, eway_bill_no, eway_bill_valid_until, invoice_no, received_by, pod_file_url').eq('id', shipmentId).eq('organization_id', org).maybeSingle();
   if (error) throw new AppError(500, 'SHIPMENT_LOOKUP_FAILED', error.message, error);
   if (!data) throw new AppError(404, 'SHIPMENT_NOT_FOUND', 'Shipment not found.');
-  const row = data as unknown as { id: string; order_id: string; shipment_no: string; status: string; transport_ref: string | null; shipped_at: string | null; expected_arrival: string | null; delivered_at: string | null; notes: string | null };
+  const row = data as unknown as { id: string; order_id: string; shipment_no: string; status: string; transport_ref: string | null; shipped_at: string | null; expected_arrival: string | null; delivered_at: string | null; notes: string | null; transporter_name: string | null; driver_name: string | null; driver_phone: string | null; eway_bill_no: string | null; eway_bill_valid_until: string | null; invoice_no: string | null; received_by: string | null; pod_file_url: string | null };
   const order = await loadOrder(org, scope, row.order_id);
 
   const target = String(input.status ?? row.status);
@@ -152,6 +162,33 @@ export async function updateShipment(org: string, scope: IndustryScope, shipment
   let delivered = input.deliveredAt !== undefined ? dateOrNull(input.deliveredAt, 'Delivered date') : row.delivered_at;
   const transport = input.transportRef !== undefined ? textOrNull(input.transportRef, 'Vehicle / container number', 80) : row.transport_ref;
   const notes = input.notes !== undefined ? textOrNull(input.notes, 'Notes', 500) : row.notes;
+  // Carrier / driver / tax-invoice details (local deliveries mainly; the e-way bill is the GST transit document for goods moving inside India).
+  const transporter = input.transporterName !== undefined ? textOrNull(input.transporterName, 'Transporter', 120) : row.transporter_name;
+  const driverName = input.driverName !== undefined ? textOrNull(input.driverName, 'Driver name', 80) : row.driver_name;
+  const driverPhone = input.driverPhone !== undefined ? patternOrNull(input.driverPhone, 'Driver phone', /^\+?[0-9 -]{7,16}$/, 'must be a valid phone number.', 20) : row.driver_phone;
+  const ewayNo = input.ewayBillNo !== undefined ? patternOrNull(input.ewayBillNo, 'E-way bill number', /^[0-9]{12}$/, 'must be exactly 12 digits.', 12) : row.eway_bill_no;
+  const ewayValid = input.ewayBillValidUntil !== undefined ? dateOrNull(input.ewayBillValidUntil, 'E-way bill valid until') : row.eway_bill_valid_until;
+  const invoiceNo = input.invoiceNo !== undefined ? textOrNull(input.invoiceNo, 'Invoice number', 60) : row.invoice_no;
+  if (ewayValid && !ewayNo) throw bad('Enter the e-way bill number for the validity date.');
+  // Proof of delivery: who received the goods, the signed challan / photo, and short / damaged quantities per product line.
+  const receivedBy = input.receivedBy !== undefined ? textOrNull(input.receivedBy, 'Received by', 120) : row.received_by;
+  const podFileUrl = input.podFileUrl !== undefined ? textOrNull(input.podFileUrl, 'Proof of delivery file', 1000) : row.pod_file_url;
+  const receiptRows: Array<{ id: string; short: number; damaged: number }> = [];
+  if (Array.isArray(input.receipt) && input.receipt.length > 0) {
+    if (target !== 'delivered') throw bad('Short and damaged quantities can only be recorded for a delivered shipment.');
+    const { data: lines, error: linesError } = await supabaseAdmin.from('fmcg_shipment_items').select('id, quantity').eq('shipment_id', shipmentId);
+    if (linesError) throw new AppError(500, 'SHIPMENT_LOOKUP_FAILED', linesError.message, linesError);
+    const shippedOf = new Map(((lines ?? []) as Array<{ id: string; quantity: number }>).map((l) => [l.id, Number(l.quantity)]));
+    for (const raw of input.receipt as Array<{ itemId?: unknown; shortQuantity?: unknown; damagedQuantity?: unknown }>) {
+      const itemId = String(raw.itemId ?? '');
+      if (!shippedOf.has(itemId)) throw bad('A product in the delivery receipt does not belong to this shipment.');
+      const short = round3(Number(raw.shortQuantity ?? 0) || 0);
+      const damaged = round3(Number(raw.damagedQuantity ?? 0) || 0);
+      if (short < 0 || damaged < 0) throw bad('Short and damaged quantities cannot be negative.');
+      if (short + damaged > (shippedOf.get(itemId) as number) + 1e-9) throw bad('Short plus damaged quantity cannot be more than the quantity shipped.');
+      receiptRows.push({ id: itemId, short, damaged });
+    }
+  }
 
   if (target === 'packed') { shipped = null; delivered = null; }
   if (target === 'dispatched') delivered = null;
@@ -159,6 +196,7 @@ export async function updateShipment(org: string, scope: IndustryScope, shipment
   if (target === 'delivered' && !delivered) throw bad('Enter the delivered date.');
   if (shipped && delivered && delivered < shipped) throw bad('Delivered date cannot be before the ship date.');
   if (shipped && expected && expected < shipped) throw bad('Expected arrival cannot be before the ship date.');
+  if (shipped && ewayValid && ewayValid < shipped) throw bad('The e-way bill expires before the ship date. Generate a fresh e-way bill.');
   const tomorrow = new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 10);
   if ((shipped && shipped > tomorrow) || (delivered && delivered > tomorrow)) throw bad('Ship and delivered dates cannot be in the future.');
 
@@ -169,19 +207,32 @@ export async function updateShipment(org: string, scope: IndustryScope, shipment
     if (!order.incoterm) missing.push('Incoterm');
     if (!order.port_of_loading) missing.push('Port of loading');
     if (!order.port_of_discharge) missing.push('Port of discharge');
-    for (const [key, label] of CORE_EXPORT_DOCS) if (!order.export_docs?.[key]) missing.push(label);
+
     if (missing.length) throw new AppError(422, 'EXPORT_DOCS_INCOMPLETE', `Complete the export details before dispatch. Missing: ${missing.join(', ')}.`);
-    // Export customs must be Cleared (Customs & Clearance) before the goods leave.
-    const customsIssues = await fmcgCustomsDispatchProblems(org, row.shipment_no);
-    if (customsIssues.length) throw new AppError(422, 'EXPORT_CUSTOMS_NOT_CLEARED', dispatchBlockMessage(row.shipment_no, customsIssues));
+    // This shipment's Commercial Invoice, Packing List and Bill of Lading must be Verified (Trade Documents) and its export customs Cleared (Customs & Clearance).
+    const blockers = [...(await fmcgDocumentDispatchProblems(org, row.shipment_no)), ...(await fmcgCustomsDispatchProblems(org, row.shipment_no))];
+    if (blockers.length) throw new AppError(422, 'EXPORT_NOT_READY', dispatchBlockMessage(row.shipment_no, blockers));
   }
 
+  // Advance-payment orders cannot leave before the advance is collected.                                  // <-- NEW
+  if (target === 'dispatched' && row.status === 'packed') await assertAdvanceReceived(org, order);         // <-- NEW
+
   const { error: updateError } = await supabaseAdmin.from('fmcg_shipments')
-    .update({ status: target, transport_ref: transport, shipped_at: shipped, expected_arrival: expected, delivered_at: delivered, notes })
+    .update({ status: target, transport_ref: transport, shipped_at: shipped, expected_arrival: expected, delivered_at: delivered, notes, transporter_name: transporter, driver_name: driverName, driver_phone: driverPhone, eway_bill_no: ewayNo, eway_bill_valid_until: ewayValid, invoice_no: invoiceNo, received_by: receivedBy, pod_file_url: podFileUrl })
     .eq('id', shipmentId).eq('organization_id', org);
   if (updateError) throw new AppError(500, 'SHIPMENT_SAVE_FAILED', updateError.message, updateError);
-  if (target !== row.status) await syncFmcgPaperworkOnStatus(org, shipmentId, target, { shippedAt: shipped, deliveredAt: delivered }); // Import/Export, Trade Documents, Customs follow the shipment
-  return syncAndView(org, order);
+  for (const r of receiptRows) {
+    const { error: receiptError } = await supabaseAdmin.from('fmcg_shipment_items').update({ short_quantity: r.short, damaged_quantity: r.damaged }).eq('id', r.id).eq('shipment_id', shipmentId);
+    if (receiptError) throw new AppError(500, 'SHIPMENT_RECEIPT_FAILED', receiptError.message, receiptError);
+  }
+   if (target !== row.status) await syncFmcgPaperworkOnStatus(org, shipmentId, target, { shippedAt: shipped, deliveredAt: delivered }); // Import/Export, Trade Documents, Customs follow the shipment
+  // FMCG: dispatching (or entering freight on a dispatched/delivered shipment) makes/updates the shipment's freight charge line.
+  if (target === 'dispatched' || target === 'delivered') await ensureFmcgFreightCharge(org, row.shipment_no, { cost: input.freightCost !== undefined ? Number(input.freightCost) : null, sell: input.freightSell !== undefined ? Number(input.freightSell) : null });
+  const view = await syncAndView(org, order);
+    if (target === 'delivered' && row.status !== 'delivered') await syncFmcgExportInvoice(org, row.shipment_no, true); // international: customer invoice = goods + freight + clearance + other charges
+  if (target === 'delivered' && row.status !== 'delivered' && view.dispatch_status === 'delivered') await collectCodOnDelivery(org, scope, order); // <-- NEW: cash on delivery -> payment recorded automatically
+  if (target === 'delivered') await completeOrderIfSettled(org, order.id); // delivered + fully paid -> order completed
+  return view;
 }
 
 /** Used by order cancel / order-item edit: an order that has live shipments must not lose its lines or stock. */
@@ -210,15 +261,16 @@ export async function updatePaymentType(org: string, scope: IndustryScope, id: s
 export async function listAllShipments(org: string, scope: IndustryScope) {
   const industryId = resolveIndustryTypeId(scope, null);
   let query = supabaseAdmin.from('fmcg_shipments')
-    .select('id, order_id, shipment_no, status, transport_ref, shipped_at, expected_arrival, delivered_at, notes, created_at, fmcg_shipment_items(order_item_id, quantity), sale_orders!inner(order_number, status, clients!inner(client_code, client_name, country_code, industry_type_id), sale_order_items(id, products(product_name, product_code)))')
+    .select('id, order_id, shipment_no, status, transport_ref, shipped_at, expected_arrival, delivered_at, notes, created_at, transporter_name, driver_name, driver_phone, eway_bill_no, eway_bill_valid_until, invoice_no, received_by, pod_file_url, fmcg_shipment_items(id, order_item_id, quantity, short_quantity, damaged_quantity), sale_orders!inner(order_number, status, incoterm, port_of_loading, port_of_discharge, clients!inner(client_code, client_name, country_code, industry_type_id), sale_order_items(id, products(product_name, product_code)))')
     .eq('organization_id', org).order('created_at', { ascending: false }).limit(2000);
   if (industryId) query = query.eq('sale_orders.clients.industry_type_id', industryId);
   const { data, error } = await query;
   if (error) throw new AppError(500, 'SHIPMENT_LIST_FAILED', error.message, error);
   type Row = {
     id: string; order_id: string; shipment_no: string; status: string; transport_ref: string | null; shipped_at: string | null; expected_arrival: string | null; delivered_at: string | null; notes: string | null; created_at: string;
-    fmcg_shipment_items: Array<{ order_item_id: string; quantity: number }>;
-    sale_orders: { order_number: string; status: string; clients: { client_code: string | null; client_name: string; country_code: string | null }; sale_order_items: Array<{ id: string; products: { product_name?: string | null; product_code?: string | null } | null }> };
+    transporter_name: string | null; driver_name: string | null; driver_phone: string | null; eway_bill_no: string | null; eway_bill_valid_until: string | null; invoice_no: string | null; received_by: string | null; pod_file_url: string | null;
+    fmcg_shipment_items: Array<{ id: string; order_item_id: string; quantity: number; short_quantity: number | null; damaged_quantity: number | null }>;
+    sale_orders: { order_number: string; status: string; incoterm: string | null; port_of_loading: string | null; port_of_discharge: string | null; clients: { client_code: string | null; client_name: string; country_code: string | null }; sale_order_items: Array<{ id: string; products: { product_name?: string | null; product_code?: string | null } | null }> };
   };
   const listed = (data ?? []) as unknown as Row[];
   // Export paperwork (international only): verified core documents + customs status, so the page shows what blocks a dispatch.
@@ -247,12 +299,14 @@ export async function listAllShipments(org: string, scope: IndustryScope) {
   } catch { /* the list still loads without the paperwork summary */ }
   return listed.map((s) => {
     const names = new Map(s.sale_orders.sale_order_items.map((i) => [i.id, i.products?.product_name ?? 'Product']));
-    const items = s.fmcg_shipment_items.map((i) => ({ product_name: names.get(i.order_item_id) ?? 'Product', quantity: Number(i.quantity) }));
+    const items = s.fmcg_shipment_items.map((i) => ({ item_id: i.id, product_name: names.get(i.order_item_id) ?? 'Product', quantity: Number(i.quantity), short_quantity: Number(i.short_quantity ?? 0), damaged_quantity: Number(i.damaged_quantity ?? 0) }));
     return {
       id: s.id, order_id: s.order_id, shipment_no: s.shipment_no, status: s.status, transport_ref: s.transport_ref, shipped_at: s.shipped_at, expected_arrival: s.expected_arrival, delivered_at: s.delivered_at, notes: s.notes, created_at: s.created_at,
+      transporter_name: s.transporter_name, driver_name: s.driver_name, driver_phone: s.driver_phone, eway_bill_no: s.eway_bill_no, eway_bill_valid_until: s.eway_bill_valid_until, invoice_no: s.invoice_no, received_by: s.received_by, pod_file_url: s.pod_file_url,
       order_number: s.sale_orders.order_number, order_status: s.sale_orders.status,
       client_code: s.sale_orders.clients.client_code, client_name: s.sale_orders.clients.client_name,
       market: marketScopeOf(s.sale_orders.clients.country_code), paperwork: paperwork.get(s.shipment_no) ?? null,
+      terms: { incoterm: s.sale_orders.incoterm, port_of_loading: s.sale_orders.port_of_loading, port_of_discharge: s.sale_orders.port_of_discharge },
       total_quantity: round3(items.reduce((a, i) => a + i.quantity, 0)), items,
     };
   });

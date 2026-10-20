@@ -79,7 +79,7 @@ export async function createForOrder(organizationId: string, orderId: string, in
 //    stays fast as orders grow.
 // This codebase has no background job runner, so "automatic" means it runs when
 // the follow-ups list is fetched.
-async function syncOverdueCollectionFollowUps(organizationId: string) {
+export async function syncOverdueCollectionFollowUps(organizationId: string) {
   // "Overdue alerts" (Follow-up Configuration) and the overdue threshold
   // (Collection Configuration) are PER-INDUSTRY settings, so every order is
   // judged by the rules of its own client's industry. One definition of

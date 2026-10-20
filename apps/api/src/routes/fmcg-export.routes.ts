@@ -24,7 +24,7 @@ fmcgExportRouter.get('/fmcg/shipments', authenticate, staff, async (req, res) =>
   res.json({ data: await listAllShipments(org(req), req.industryScope!) });
 });
 fmcgExportRouter.patch('/fmcg/shipments/:id', authenticate, staff, async (req, res) => {
-  res.json({ data: await updateShipment(org(req), req.industryScope!, pid(req), req.body ?? {}) });
+  res.json({ data: await updateShipment(org(req), req.industryScope!, pid(req), req.body ?? {}, req.auth!.sub as string) });
 });
 fmcgExportRouter.patch('/orders/:id/payment-type', authenticate, staff, async (req, res) => {
   res.json({ data: await updatePaymentType(org(req), req.industryScope!, pid(req), (req.body ?? {}).paymentType) });

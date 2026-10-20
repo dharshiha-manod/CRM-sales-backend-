@@ -8,7 +8,7 @@ import {
 } from '../lib/logistics-plan.js';
 import { resolveIndustryTypeId, assertRecordInScope } from '../lib/industry-scope.js';
 import { isFmcgIndustry } from '../lib/fmcg-market.js';
-import { fmcgShipmentsAsTradingRows, syncFmcgExportDocFlag } from '../lib/fmcg-paperwork.js';
+import { fmcgInvoicedByOrder, fmcgShipmentsAsTradingRows, syncFmcgExportDocFlag, syncFmcgExportInvoice, syncFmcgInvoicePayments } from '../lib/fmcg-paperwork.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { logger } from '../lib/logger.js';
 import { sumInCurrency } from '../lib/currency-sum.js';
@@ -116,8 +116,13 @@ async function assertTypeMatchesShipment(org: string, payload: Record<string, un
   const shipmentNumber = String(('shipment_number' in payload ? payload.shipment_number : existing.shipment_number) ?? '').trim();
   if (!shipmentNumber || (type !== 'Import' && type !== 'Export')) return;
   const { data } = await supabaseAdmin.from('trading_shipments').select('direction').eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
-  const direction = String((data as { direction?: string | null } | null)?.direction ?? '').toLowerCase();
-  const expected = direction === 'outbound' ? 'Export' : direction === 'inbound' ? 'Import' : '';
+   let direction = String((data as { direction?: string | null } | null)?.direction ?? '').toLowerCase();
+  if (!direction) {
+    // FMCG shipments live in fmcg_shipments and always carry goods out to a customer.
+    const { data: fmcgShipment } = await supabaseAdmin.from('fmcg_shipments').select('id').eq('organization_id', org).eq('shipment_no', shipmentNumber).limit(1).maybeSingle();
+    if (fmcgShipment) direction = 'outbound';
+  }
+  const expected = direction === 'outbound'? 'Export' : direction === 'inbound' ? 'Import' : '';
   if (expected && expected !== type) {
     throw new AppError(422, 'TRANSACTION_TYPE_MISMATCH', `Shipment ${shipmentNumber} is ${direction} (goods ${direction === 'outbound' ? 'going out to the customer' : 'coming in from the supplier'}), so this must be an ${expected}, not an ${type}.`);
   }
@@ -567,6 +572,7 @@ async function syncInvoicePaymentsForDeal(org: string, dealNumber: string) {
 export async function syncInvoicePaymentsForSaleOrder(org: string, saleOrderId: string | null | undefined) {
   try {
     if (!saleOrderId) return;
+    await syncFmcgInvoicePayments(org, saleOrderId); // FMCG orders: their invoices are found through the shipment (no-op for other industries)
     const { data, error } = await supabaseAdmin.from('trading_deals').select('deal_number')
       .eq('organization_id', org).eq('core_order_id', saleOrderId).maybeSingle();
     if (error) throw error;
@@ -621,7 +627,7 @@ async function rebuildDraftInvoiceFromCharges(org: string, shipmentNumber: strin
     const { data: shipmentRow, error: shipmentError } = await supabaseAdmin.from('trading_shipments').select('*')
       .eq('organization_id', org).eq('shipment_number', shipmentNumber).maybeSingle();
     if (shipmentError) throw shipmentError;
-    if (!shipmentRow) return;
+     if (!shipmentRow) { await syncFmcgExportInvoice(org, shipmentNumber, false); return; } // FMCG export shipments live in fmcg_shipments
     const basis = await invoiceBasisForShipment(org, shipmentRow as Row);
     const { data: chargeRows, error: chargeError } = await supabaseAdmin.from('trading_shipment_charges')
       .select('id, currency, sell_amount, status, invoice_number').eq('organization_id', org).eq('shipment_number', shipmentNumber);
@@ -653,6 +659,15 @@ export async function billedTotalsForCoreOrders(org: string, orderIds: string[])
   try {
     if (!orderIds.length) return result;
     const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
+    // FMCG orders have no Trading deal: their invoices are found through the shipment. Result is in base currency like the deal path below.
+    const fmcgInvoiced = await fmcgInvoicedByOrder(org, orderIds);
+    if (fmcgInvoiced.size) {
+      const { data: rateRows } = await supabaseAdmin.from('sale_orders').select('id, exchange_rate').eq('organization_id', org).in('id', [...fmcgInvoiced.keys()]);
+      for (const o of (rateRows ?? []) as Row[]) {
+        const rate = Number(o.exchange_rate) > 0 ? Number(o.exchange_rate) : 1;
+        result.set(String(o.id), round2((fmcgInvoiced.get(String(o.id)) ?? 0) * rate));
+      }
+    }
     const deals: Row[] = [];
     for (let i = 0; i < orderIds.length; i += 100) {
       const { data, error } = await supabaseAdmin.from('trading_deals').select('deal_number, currency, industry_type_id, core_order_id')
@@ -1921,9 +1936,7 @@ export async function reviewTradeDocument(org: string, id: string, action: strin
   if (!data) throw new AppError(409, 'DOCUMENT_CHANGED', 'This document was changed by someone else. Refresh and try again.');
   await refreshProfitabilityForRecord(org, 'trading_documents', data as Record<string, unknown>);
   await runTradeLinks(org, 'trading_documents', data as Record<string, unknown>, false);
-  await syncFmcgExportDocFlag(org, data as Record<string, unknown>);
-  return data;
-  await runTradeLinks(org, 'trading_documents', data as Record<string, unknown>, false);
+   await syncFmcgExportDocFlag(org, data as Record<string, unknown>);
   return data;
 }
 

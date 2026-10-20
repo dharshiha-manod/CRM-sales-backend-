@@ -4,7 +4,9 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { getCollectionConfig, industryTypeIdOfClient } from '../lib/settings.js';
-import { billedTotalsForCoreOrders, syncInvoicePaymentsForSaleOrder } from './trading.repository.js';
+import { completeOrderIfSettled } from '../lib/order-completion.js';
+import { refundedByOrder } from './fmcg-refunds.repository.js';
+import { billedTotalsForCoreOrders,syncInvoicePaymentsForSaleOrder } from './trading.repository.js';
 
 // Maps your app's internal mode codes to the labels shown in Settings →
 // Collection Configuration → Payment Methods, so we can check the right toggle.
@@ -39,7 +41,7 @@ export async function createFromVisit(organizationId: string, representativeId: 
     if (!order) throw new AppError(422, 'INVALID_COLLECTION_ORDER', 'The selected order does not belong to this active visit, client, and representative.');
     const { data: priorCollections, error: collectionError } = await supabaseAdmin.from('sales_collections').select('amount').eq('organization_id', organizationId).eq('sale_order_id', order.id);
     if (collectionError) throw collectionError;
-    const alreadyCollected = (priorCollections ?? []).reduce((sum, collection) => sum + Number(collection.amount), 0);
+    const alreadyCollected = (priorCollections ?? []).reduce((sum, collection) => sum + Number(collection.amount), 0) - ((await refundedByOrder(organizationId, [order.id as string])).get(order.id as string) ?? 0); // refunded money is no longer collected
     const visitCredit = (await approvedReturnCredits(organizationId, [order.id as string])).get(order.id as string)?.credit ?? 0;
     // A Trading order can be billed for more than it was quoted (extra shipment charges): the payable amount is the larger of the two.
     const visitRate = Number(order.exchange_rate) > 0 ? Number(order.exchange_rate) : 1;
@@ -51,6 +53,7 @@ export async function createFromVisit(organizationId: string, representativeId: 
   const { data, error } = await supabaseAdmin.from('sales_collections').insert({ organization_id: organizationId, client_id: visit.client_id, representative_id: representativeId, visit_id: visit.id, sale_order_id: input.saleOrderId ?? null, amount: input.amount, mode: input.mode, reference_no: input.referenceNo ?? null, notes: input.notes ?? null }).select().single();
   if (error) throw error;
   await syncInvoicePaymentsForSaleOrder(organizationId, input.saleOrderId ?? null);
+  if (input.saleOrderId) await completeOrderIfSettled(organizationId, input.saleOrderId);
   return data;
 }
 
@@ -74,7 +77,7 @@ assertRecordInScope(scope, (order.clients as unknown as { industry_type_id?: str
     .eq('organization_id', organizationId)
     .eq('sale_order_id', order.id);
   if (collectionsError) throw collectionsError;
-  const alreadyCollected = (priorCollections ?? []).reduce((sum, collection) => sum + Number(collection.amount), 0);
+  const alreadyCollected = (priorCollections ?? []).reduce((sum, collection) => sum + Number(collection.amount), 0) - ((await refundedByOrder(organizationId, [order.id as string])).get(order.id as string) ?? 0); // refunded money is no longer collected
   const credited = (await approvedReturnCredits(organizationId, [order.id as string])).get(order.id as string)?.credit ?? 0;
   // A Trading order can be billed for more than it was quoted (extra shipment charges): the payable amount is the larger of the two.
   const billed = (await billedTotalsForCoreOrders(organizationId, [order.id as string])).get(order.id as string) ?? 0;
@@ -107,6 +110,7 @@ assertRecordInScope(scope, (order.clients as unknown as { industry_type_id?: str
   }).select().single();
   if (error) throw error;
   await syncInvoicePaymentsForSaleOrder(organizationId, order.id as string);
+  await completeOrderIfSettled(organizationId, order.id as string);
   return data;
 }
 

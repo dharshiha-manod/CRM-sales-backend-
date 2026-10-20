@@ -5,6 +5,8 @@ import { isFmcgIndustry, marketScopeOf } from '../lib/fmcg-market.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 
 export const INCOTERMS = ['EXW', 'FCA', 'FAS', 'FOB', 'CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'] as const;
+// Commercial invoice, packing list and bill of lading are ticked ONLY by Trade Documents when the document is Verified; they cannot be ticked by hand.
+const SYSTEM_DOC_KEYS = new Set(['commercial_invoice', 'packing_list', 'bill_of_lading']);
 export const EXPORT_DOC_KEYS = ['commercial_invoice', 'packing_list', 'bill_of_lading', 'certificate_of_origin', 'health_certificate', 'shipping_bill', 'insurance_certificate'] as const;
 
 type Input = { incoterm?: unknown; portOfLoading?: unknown; portOfDischarge?: unknown; exportDocs?: unknown };
@@ -31,11 +33,23 @@ export async function updateExportDetails(org: string, scope: IndustryScope, id:
   if (input.exportDocs !== undefined) {
     const incoming = (input.exportDocs && typeof input.exportDocs === 'object' ? input.exportDocs : {}) as Record<string, unknown>;
     const docs: Record<string, boolean> = { ...((order.export_docs as Record<string, boolean> | null) ?? {}) };
-    for (const key of EXPORT_DOC_KEYS) if (key in incoming) docs[key] = incoming[key] === true;
+    for (const key of EXPORT_DOC_KEYS) if (key in incoming && !SYSTEM_DOC_KEYS.has(key)) docs[key] = incoming[key] === true;
     update.export_docs = docs;
   }
   if (Object.keys(update).length === 0) throw new AppError(422, 'NOTHING_TO_UPDATE', 'Provide export details to save.');
   const { data, error: updateError } = await supabaseAdmin.from('sale_orders').update(update).eq('id', id).eq('organization_id', org).select('id, incoterm, port_of_loading, port_of_discharge, export_docs').single();
   if (updateError) throw new AppError(500, 'EXPORT_SAVE_FAILED', updateError.message, updateError);
+  // Fill blank ports / incoterm on this order's existing Customs and Import/Export records. Best effort, never blocks the save.
+  try {
+    const { data: ships } = await supabaseAdmin.from('fmcg_shipments').select('shipment_no').eq('organization_id', org).eq('order_id', id);
+    const nos = (ships ?? []).map((s) => (s as { shipment_no: string }).shipment_no);
+    if (nos.length) {
+      for (const table of ['trading_customs', 'trading_import_export']) {
+        if (data.port_of_loading) await supabaseAdmin.from(table).update({ port_of_loading: data.port_of_loading }).eq('organization_id', org).in('shipment_number', nos).is('port_of_loading', null);
+        if (data.port_of_discharge) await supabaseAdmin.from(table).update({ port_of_discharge: data.port_of_discharge }).eq('organization_id', org).in('shipment_number', nos).is('port_of_discharge', null);
+      }
+      if (data.incoterm) await supabaseAdmin.from('trading_import_export').update({ incoterm: data.incoterm }).eq('organization_id', org).in('shipment_number', nos).is('incoterm', null);
+    }
+  } catch { /* the order is saved; the linked records can be edited by hand */ }
   return data;
 }

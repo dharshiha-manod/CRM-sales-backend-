@@ -6,6 +6,7 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope, type IndustryScope } from '../lib/industry-scope.js';
 import { isFmcgIndustry, toBase } from '../lib/fmcg-market.js';
 import { restockFromOrder } from '../lib/stock.js';
+import { completeOrderIfSettled } from '../lib/order-completion.js';
 
 const fail = (error: unknown): never => { throw error; };
 const SELECT = '*, sale_orders(order_number, currency_code), clients(client_code, client_name), products(product_code, product_name)';
@@ -38,7 +39,7 @@ export async function listReturns(org: string, opts: { industryTypeId?: string |
   return data ?? [];
 }
 
-export async function createReturn(org: string, userId: string, scope: IndustryScope, input: ReturnInput, representativeId?: string) {
+export async function createReturn(org: string, userId: string, scope: IndustryScope, input: ReturnInput, representativeId?: string, updateId?: string) {
   const notFound = new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
   const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, status, client_id, representative_id, currency_code, exchange_rate, clients!inner(industry_type_id)').eq('id', input.orderId).eq('organization_id', org).maybeSingle();
   if (error) fail(error);
@@ -49,20 +50,32 @@ export async function createReturn(org: string, userId: string, scope: IndustryS
   if (!(await isFmcgIndustry(org, industryTypeId))) throw new AppError(422, 'NOT_FMCG', 'Returns & damage are only available in the FMCG industry.');
   if (['cancelled', 'rejected', 'pending_approval'].includes(String(order.status))) throw new AppError(422, 'ORDER_NOT_RETURNABLE', `A ${String(order.status).replace('_', ' ')} order has nothing to return.`);
 
-  const { data: lines, error: lineError } = await supabaseAdmin.from('sale_order_items').select('quantity, free_quantity, subtotal').eq('order_id', order.id).eq('product_id', input.productId);
+  const { data: lines, error: lineError } = await supabaseAdmin.from('sale_order_items').select('id, quantity, free_quantity, subtotal, tax_amount').eq('order_id', order.id).eq('product_id', input.productId);
   if (lineError) fail(lineError);
   const paidQty = (lines ?? []).reduce((s, l) => s + Number(l.quantity ?? 0), 0);
   const freeQty = (lines ?? []).reduce((s, l) => s + Number(l.free_quantity ?? 0), 0);
   const sold = paidQty + freeQty; // free units can come back too, but earn no credit
   if (sold <= 0) throw new AppError(422, 'PRODUCT_NOT_ON_ORDER', 'That product is not on this order.');
   const paid = (lines ?? []).reduce((s, l) => s + Number(l.subtotal ?? 0), 0);
-
-  const { data: prior, error: priorError } = await supabaseAdmin.from('sales_returns').select('quantity, credit_client').eq('organization_id', org).eq('order_id', order.id).eq('product_id', input.productId).in('status', ['pending', 'approved']);
+  const paidTax = (lines ?? []).reduce((s, l) => s + Number(l.tax_amount ?? 0), 0);
+  let priorQuery = supabaseAdmin.from('sales_returns').select('quantity, credit_client').eq('organization_id', org).eq('order_id', order.id).eq('product_id', input.productId).in('status', ['pending', 'approved']);
+  if (updateId) priorQuery = priorQuery.neq('id', updateId);
+  const { data: prior, error: priorError } = await priorQuery;
   if (priorError) fail(priorError);
   const already = (prior ?? []).reduce((s, r) => s + Number(r.quantity ?? 0), 0);
   // Units from entries where the client bears the loss earn no credit, so they must not use up the free-unit allowance.
   const alreadyCredited = (prior ?? []).reduce((s, r) => s + (r.credit_client === false ? 0 : Number(r.quantity ?? 0)), 0);
-  if (input.quantity + already > sold + 1e-9) throw new AppError(422, 'RETURN_EXCEEDS_ORDER', `Only ${Math.max(0, sold - already)} unit(s) of this product can still be returned or written off on this order.`);
+  // When the order has shipments, only goods that were actually dispatched can come back. Orders with no shipments (local, delivered without a shipment record) keep the old rule.
+  const { data: ships, error: shipError } = await supabaseAdmin.from('fmcg_shipments').select('status, fmcg_shipment_items(order_item_id, quantity)').eq('organization_id', org).eq('order_id', order.id).neq('status', 'cancelled');
+  if (shipError) fail(shipError);
+  let returnable = sold;
+  if ((ships ?? []).length > 0) {
+    const itemIds = new Set((lines ?? []).map((l) => l.id as string));
+    returnable = Math.min(sold, (ships ?? []).filter((s) => s.status === 'dispatched' || s.status === 'delivered')
+      .reduce((sum, s) => sum + ((s.fmcg_shipment_items ?? []) as Array<{ order_item_id: string; quantity: number }>).filter((i) => itemIds.has(i.order_item_id)).reduce((a, i) => a + Number(i.quantity), 0), 0));
+    if (returnable <= 0) throw new AppError(422, 'NOT_DISPATCHED', 'These goods have not been dispatched yet, so there is nothing to return. Cancel the shipment instead.');
+  }
+  if (input.quantity + already > returnable + 1e-9) throw new AppError(422, 'RETURN_EXCEEDS_ORDER', `Only ${Math.max(0, returnable - already)} unit(s) of this product can still be returned or written off on this order.`);
 
   const rate = Number(order.exchange_rate ?? 1) || 1;
   // Free units are returned first and earn no credit; only paid units are credited, at what the client actually paid per unit.
@@ -70,12 +83,15 @@ const creditableNow = Math.max(0, alreadyCredited + input.quantity - freeQty) - 
   // Damage can be the client's own loss (e.g. damaged at their outlet): then no credit and the client pays for the goods.
   const creditClient = input.kind === 'damage' ? input.creditClient !== false : true;
   // what the client actually paid per unit (after discounts), in the order's currency
-  const credit = creditClient && paidQty > 0 ? round2((paid / paidQty) * creditableNow) : 0;
-  const { data, error: insertError } = await supabaseAdmin.from('sales_returns').insert({
+   const credit = creditClient && paidQty > 0 ? round2(((paid + paidTax) / paidQty) * creditableNow) : 0;
+  const row = {
     organization_id: org, order_id: order.id, client_id: order.client_id, product_id: input.productId, quantity: input.quantity,
     kind: input.kind, reason: input.reason || null, restock: input.kind === 'return' ? Boolean(input.restock) : false, credit_client: creditClient, status: 'pending',
-    currency_code: String(order.currency_code ?? 'INR'), exchange_rate: rate, credit_amount: credit, base_credit: toBase(credit, rate), created_by: userId,
-  }).select(SELECT).single();
+    currency_code: String(order.currency_code ?? 'INR'), exchange_rate: rate, credit_amount: credit, base_credit: toBase(credit, rate),
+  };
+  const { data, error: insertError } = updateId
+    ? await supabaseAdmin.from('sales_returns').update(row).eq('id', updateId).eq('organization_id', org).eq('status', 'pending').select(SELECT).single()
+    : await supabaseAdmin.from('sales_returns').insert({ ...row, created_by: userId }).select(SELECT).single();
   if (insertError) fail(insertError);
   return data;
 }
@@ -102,12 +118,18 @@ export async function decideReturn(org: string, userId: string, scope: IndustryS
       throw stockError;
     }
   }
+  if (status === 'approved') await completeOrderIfSettled(org, entry.order_id); // the credit may settle a delivered order
   const { data, error: readError } = await supabaseAdmin.from('sales_returns').select(SELECT).eq('id', id).single();
   return readError ? fail(readError) : data;
 }
 
-export async function deleteReturn(org: string, scope: IndustryScope, id: string) {
+export async function updateReturn(org: string, userId: string, scope: IndustryScope, id: string, input: ReturnInput) {
   const entry = await loadForDecision(org, scope, id);
+  if (entry.status !== 'pending') throw new AppError(422, 'RETURN_NOT_EDITABLE', 'Only pending entries can be edited. An approved or rejected entry is final.');
+  return createReturn(org, userId, scope, { ...input, orderId: entry.order_id, productId: entry.product_id }, undefined, id);
+}
+
+export async function deleteReturn(org: string, scope: IndustryScope, id: string) {  const entry = await loadForDecision(org, scope, id);
   if (entry.status === 'approved') throw new AppError(422, 'RETURN_APPROVED', 'An approved entry has already changed the client balance and stock, so it cannot be deleted.');
   const { error } = await supabaseAdmin.from('sales_returns').delete().eq('id', id).eq('organization_id', org).neq('status', 'approved');
   if (error) fail(error);

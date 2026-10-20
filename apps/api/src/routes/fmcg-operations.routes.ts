@@ -7,10 +7,11 @@ import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 import { isFmcgIndustry } from '../lib/fmcg-market.js';
 import { representativeForUser } from '../repositories/stock-requests.repository.js';
 import { batchSchema, createBatch, deleteBatch, listBatches, updateBatch, writeOffBatch, writeOffSchema } from '../repositories/product-batches.repository.js';
-import { createReturn, decideReturn, deleteReturn, listReturns, returnSchema } from '../repositories/sales-returns.repository.js';
+import { createReturn, decideReturn, deleteReturn, listReturns, returnSchema, updateReturn } from '../repositories/sales-returns.repository.js';
+import { createRefund, listRefunds, refundSchema } from '../repositories/fmcg-refunds.repository.js';
 import { beatSchema, createBeat, deleteBeat, listBeats, updateBeat } from '../repositories/route-beats.repository.js';
 import { autoGenerateBeats, autoGenerateSchema, beatSummary, generateDailyPlan, localNow, myBeatToday } from '../services/beat-automation.service.js';
-
+import { getFmcgAlerts } from '../lib/fmcg-alerts.js';
 type Req = Parameters<RequestHandler>[0];
 const org = (req: Req) => { const v = req.header('x-organization-id'); if (!v) throw new AppError(400, 'ORGANIZATION_CONTEXT_REQUIRED', 'x-organization-id is required'); return v; };
 const fmcgId = async (req: Req): Promise<string> => {
@@ -56,7 +57,12 @@ fmcgOperationsRouter.post('/fmcg/returns/:id/decision', authenticate, approvers,
   const { status } = z.object({ status: z.enum(['approved', 'rejected']) }).parse(req.body ?? {});
   res.json({ data: await decideReturn(org(req), req.auth!.sub as string, req.industryScope!, paramId(req), status) });
 });
-fmcgOperationsRouter.delete('/fmcg/returns/:id', authenticate, approvers, async (req, res) => { await deleteReturn(org(req), req.industryScope!, paramId(req)); res.status(204).send(); });
+fmcgOperationsRouter.patch('/fmcg/returns/:id', authenticate, approvers, async (req, res) => {
+  res.json({ data: await updateReturn(org(req), req.auth!.sub as string, req.industryScope!, paramId(req), returnSchema.parse(req.body ?? {})) });
+});fmcgOperationsRouter.patch('/fmcg/returns/:id', authenticate, approvers, async (req, res) => {
+  res.json({ data: await updateReturn(org(req), req.auth!.sub as string, req.industryScope!, paramId(req), returnSchema.parse(req.body ?? {})) });
+});
+fmcgOperationsRouter.delete('/fmcg/returns/:id', authenticate, approvers,async (req, res) => { await deleteReturn(org(req), req.industryScope!, paramId(req)); res.status(204).send(); });
 
 // ---------- Route / beat plans ----------
 fmcgOperationsRouter.get('/fmcg/beats', authenticate, requireRoles('super_admin', 'admin', 'sales_manager', 'sales_representative'), async (req, res) => {
@@ -77,3 +83,12 @@ fmcgOperationsRouter.post('/fmcg/beats/plan-today', authenticate, staff, async (
 fmcgOperationsRouter.post('/fmcg/beats', authenticate, staff,async (req, res) => res.status(201).json({ data: await createBeat(org(req), req.auth!.sub as string, await fmcgId(req), beatSchema.parse(req.body ?? {})) }));
 fmcgOperationsRouter.put('/fmcg/beats/:id', authenticate, staff, async (req, res) => res.json({ data: await updateBeat(org(req), await fmcgId(req), paramId(req), beatSchema.parse(req.body ?? {})) }));
 fmcgOperationsRouter.delete('/fmcg/beats/:id', authenticate, staff, async (req, res) => { await deleteBeat(org(req), await fmcgId(req), paramId(req)); res.status(204).send(); });
+
+// ---------- Refunds (client overpaid after an approved return credit) ----------
+fmcgOperationsRouter.get('/fmcg/refunds', authenticate, approvers, async (req, res) => res.json({ data: await listRefunds(org(req), await fmcgId(req)) }));
+fmcgOperationsRouter.post('/fmcg/refunds', authenticate, approvers, async (req, res) => {
+  await fmcgId(req);
+  res.status(201).json({ data: await createRefund(org(req), req.auth!.sub as string, req.industryScope!, refundSchema.parse(req.body ?? {})) });
+});
+// ---------- Alerts (near-expiry / expired batches, low stock) ----------
+fmcgOperationsRouter.get('/fmcg/alerts', authenticate, staff, async (req, res) => res.json({ data: await getFmcgAlerts(org(req), await fmcgId(req)) }));

@@ -1,6 +1,7 @@
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from './supabase.js';
 import { collectionBase, orderBase } from './fmcg-market.js';
+import { fmcgInvoicedByOrder } from './fmcg-paperwork.js';
 
 export type ClientCredit = {
   clientName: string;
@@ -30,7 +31,7 @@ export async function getClientCredit(organizationId: string, clientId: string):
   if (!client) return null;
 
   const [{ data: orders, error: ordersError }, { data: collections, error: collectionsError }, returnsRes] = await Promise.all([
-    supabaseAdmin.from('sale_orders').select('total_amount, base_total, created_at').eq('organization_id', organizationId).eq('client_id', clientId).neq('status', 'cancelled'),
+    supabaseAdmin.from('sale_orders').select('id, total_amount, base_total, exchange_rate, created_at').eq('organization_id', organizationId).eq('client_id', clientId).neq('status', 'cancelled'),
     supabaseAdmin.from('sales_collections').select('amount, sale_orders(exchange_rate)').eq('organization_id', organizationId).eq('client_id', clientId),
     supabaseAdmin.from('sales_returns').select('base_credit, sale_orders!inner(status)').eq('organization_id', organizationId).eq('client_id', clientId).eq('status', 'approved').neq('sale_orders.status', 'cancelled'),
   ]);
@@ -39,7 +40,14 @@ export async function getClientCredit(organizationId: string, clientId: string):
 
   // Approved returns / damage are credit notes: they lower what the client owes. (Before the returns table exists this is simply 0.)
   const credited = returnsRes.error ? 0 : (returnsRes.data ?? []).reduce((sum, row) => sum + Number((row as { base_credit?: unknown }).base_credit ?? 0), 0);
-  const sales = (orders ?? []).reduce((sum, row) => sum + orderBase(row), 0);
+  // An FMCG customer can be invoiced more than the goods (freight / extra charges): the order counts for the larger of the two.
+  const invoicedByOrder = await fmcgInvoicedByOrder(organizationId, (orders ?? []).map((o) => String((o as { id: string }).id)));
+  const valueOf = (row: unknown): number => {
+    const r = row as { id: string; total_amount?: unknown; exchange_rate?: unknown };
+    const extra = Math.max(0, (invoicedByOrder.get(r.id) ?? 0) - Number(r.total_amount ?? 0));
+    return orderBase(row) + extra * (Number(r.exchange_rate) > 0 ? Number(r.exchange_rate) : 1);
+  };
+  const sales = (orders ?? []).reduce((sum, row) => sum + valueOf(row), 0);
   const paid = (collections ?? []).reduce((sum, row) => sum + collectionBase(row), 0);
   const creditDays = client.credit_days == null ? null : Number(client.credit_days);
   let overdue = 0;
@@ -49,7 +57,7 @@ export async function getClientCredit(organizationId: string, clientId: string):
     let settled = paid + credited;
     const dated = (orders ?? []).filter((o) => (o as { created_at?: string }).created_at).sort((a, b) => Date.parse(String((a as { created_at: string }).created_at)) - Date.parse(String((b as { created_at: string }).created_at)));
     for (const row of dated) {
-      const value = orderBase(row);
+      const value = valueOf(row);
       const cleared = Math.min(value, settled);
       settled -= cleared;
       if (Date.parse(String((row as { created_at: string }).created_at)) <= cutoff) overdue += value - cleared;
@@ -85,5 +93,21 @@ export async function assertWithinCreditLimit(organizationId: string, clientId: 
       'CREDIT_LIMIT_EXCEEDED',
       `Credit limit exceeded for ${credit.clientName}: limit ${rupees(credit.creditLimit)}, already unpaid ${rupees(credit.outstanding)}, this order ${rupees(additionalAmount)} (available credit ${rupees(available)}). Collect a payment or raise the client's credit limit first.`,
     );
+  }
+}
+
+/**
+ * Re-checks credit when a waiting (pending_approval) order is approved. The order is already inside the client's
+ * unpaid balance, so nothing new is added: block only when the client is now over the limit or has overdue payments.
+ */
+export async function assertCreditOnApproval(organizationId: string, clientId: string | null | undefined) {
+  if (!clientId) return;
+  const credit = await getClientCredit(organizationId, clientId);
+  if (!credit) return;
+  if (credit.overdue > 0.005) {
+    throw new AppError(422, 'CREDIT_OVERDUE', `${credit.clientName} has ${rupees(credit.overdue)} overdue beyond ${credit.creditDays} credit day(s). Collect the overdue payment before approving this order.`);
+  }
+  if (credit.creditLimit != null && credit.outstanding > credit.creditLimit + 0.005) {
+    throw new AppError(422, 'CREDIT_LIMIT_EXCEEDED', `Credit limit exceeded for ${credit.clientName}: limit ${rupees(credit.creditLimit)}, unpaid including this order ${rupees(credit.outstanding)}. Collect a payment or raise the client's credit limit before approving.`);
   }
 }

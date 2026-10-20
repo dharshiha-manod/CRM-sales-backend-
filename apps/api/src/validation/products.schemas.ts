@@ -19,6 +19,8 @@ export const productCreateSchema = z.object({
   discountPercent: z.number().min(0).max(100).optional().nullable(),
   /** Days from manufacture to expiry. Lets Batch & Expiry work out an expiry date by itself. */
   shelfLifeDays: z.number().int().positive().max(36500).optional().nullable(),
+  /** Reorder level: at or below this many units the product shows up in FMCG low-stock alerts. */   // <-- NEW
+  minStockLevel: z.number().nonnegative().optional().nullable(),                                       // <-- NEW
   industryTypeIds: z.array(z.string().uuid()).max(50).optional(),
 });
 export const productUpdateSchema = productCreateSchema.partial();
