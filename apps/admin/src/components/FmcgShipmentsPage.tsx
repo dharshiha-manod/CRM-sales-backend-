@@ -4,18 +4,25 @@
 // New shipments are created from the order (it needs the order's product lines); this page tracks and updates them.
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { supabase } from '../lib/supabase';
+import { useIndustry } from '../industry/IndustryContext';
+import { FmcgShipmentDetail } from './FmcgShipmentDetail';
 import './MasterDataPages.css';
 import './FmcgShipmentsPage.css';
 
-type Status = 'packed' | 'dispatched' | 'delivered' | 'cancelled';
-type Shipment = {
+export type Status = 'packed' | 'dispatched' | 'delivered' | 'cancelled';
+export type Shipment = {
   id: string; order_id: string; shipment_no: string; status: Status;
   transport_ref: string | null; shipped_at: string | null; expected_arrival: string | null; delivered_at: string | null; notes: string | null; created_at: string;
   order_number: string; order_status: string; client_code: string | null; client_name: string; market: string;
-  total_quantity: number; items: Array<{ product_name: string; quantity: number }>;
+  total_quantity: number; items: Array<{ item_id: string; product_name: string; quantity: number; short_quantity: number; damaged_quantity: number }>;
+  received_by: string | null; pod_file_url: string | null;
+  transporter_name: string | null; driver_name: string | null; driver_phone: string | null; eway_bill_no: string | null; eway_bill_valid_until: string | null; invoice_no: string | null;
   paperwork: { docs_verified: number; docs_required: number; customs: string } | null;
+  terms: { incoterm: string | null; port_of_loading: string | null; port_of_discharge: string | null } | null;
 };
-type Mode = 'dispatch' | 'deliver' | 'edit' | 'cancel';
+const INCOTERMS = ['EXW', 'FCA', 'FAS', 'FOB', 'CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'];
+export type Mode = 'dispatch' | 'deliver' | 'edit' | 'cancel';
 type Action = { shipment: Shipment; mode: Mode } | null;
 type Tab = 'all' | Status | 'late';
 
@@ -56,15 +63,47 @@ export function FmcgShipmentsPage() {
   const [transport, setTransport] = useState('');
   const [eta, setEta] = useState('');
   const [notes, setNotes] = useState('');
+  const { activeIndustry } = useIndustry();
+  const [receivedBy, setReceivedBy] = useState('');
+  const [podUrl, setPodUrl] = useState('');
+  const [podBusy, setPodBusy] = useState(false);
+  const [receipt, setReceipt] = useState<Record<string, { short: string; damaged: string }>>({});
+  const [transporterName, setTransporterName] = useState('');
+  const [driverName, setDriverName] = useState('');
+  const [driverPhone, setDriverPhone] = useState('');
+  const [ewayNo, setEwayNo] = useState('');
+  const [ewayValid, setEwayValid] = useState('');
+  const [invoiceNo, setInvoiceNo] = useState('');
+  const [incoterm, setIncoterm] = useState('');
+  const [portLoading, setPortLoading] = useState('');
+  const [portDischarge, setPortDischarge] = useState('');
   const [busy, setBusy] = useState(false);
   const [modalError, setModalError] = useState('');
-  const [openId, setOpenId] = useState<string | null>(null);
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
   const toggleMenu = (event: React.MouseEvent<HTMLButtonElement>, id: string) => {
     if (menuFor?.id === id) { setMenuFor(null); return; }
     const rect = event.currentTarget.getBoundingClientRect();
     setMenuFor({ id, top: rect.bottom + 4, left: Math.max(8, rect.right - 170) });
   };
+
+  // --- View page: the eye icon opens #industry:fmcg:shipment:<id> as its own page ---
+  const hashViewId = () => {
+    const parts = window.location.hash.replace('#', '').split(':');
+    return parts[0] === 'industry' && parts[1] === 'fmcg' && parts[2] === 'shipment' && parts[3] ? decodeURIComponent(parts.slice(3).join(':')) : null;
+  };
+  const [viewId, setViewId] = useState<string | null>(hashViewId);
+  useEffect(() => {
+    const onHash = () => {
+      setViewId(hashViewId());
+      setMenuFor(null);
+      document.querySelector('.content')?.scrollTo?.(0, 0);
+      window.scrollTo(0, 0);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const viewShipment = (id: string) => { window.location.hash = `industry:fmcg:shipment:${encodeURIComponent(id)}`; };
+  const backToList = () => { window.location.hash = 'industry:fmcg:shipment'; };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,13 +127,27 @@ export function FmcgShipmentsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, tab, market, search]);
 
+  const viewed = viewId ? rows.find((r) => r.id === viewId) ?? null : null;
+
   const openAction = (shipment: Shipment, mode: Mode) => {
     setAction({ shipment, mode });
     setTransport(shipment.transport_ref ?? '');
     setEta(shipment.expected_arrival ?? '');
     setNotes(shipment.notes ?? '');
+    setTransporterName(shipment.transporter_name ?? '');
+    setDriverName(shipment.driver_name ?? '');
+    setDriverPhone(shipment.driver_phone ?? '');
+    setEwayNo(shipment.eway_bill_no ?? '');
+    setEwayValid(shipment.eway_bill_valid_until ?? '');
+    setInvoiceNo(shipment.invoice_no ?? '');
     setShipDate(shipment.shipped_at ?? todayLocal());
-    setDeliverDate(todayLocal());
+    setDeliverDate(shipment.delivered_at ?? todayLocal());
+    setReceivedBy(shipment.received_by ?? '');
+    setPodUrl(shipment.pod_file_url ?? '');
+    setReceipt(Object.fromEntries(shipment.items.map((i) => [i.item_id, { short: i.short_quantity ? String(i.short_quantity) : '', damaged: i.damaged_quantity ? String(i.damaged_quantity) : '' }])));
+    setIncoterm(shipment.terms?.incoterm ?? '');
+    setPortLoading(shipment.terms?.port_of_loading ?? '');
+    setPortDischarge(shipment.terms?.port_of_discharge ?? '');
     setModalError('');
   };
   const closeAction = () => { if (!busy) setAction(null); };
@@ -106,12 +159,50 @@ export function FmcgShipmentsPage() {
       setAction(null); await load();
     } catch (err) { setModalError((err as Error).message); } finally { setBusy(false); }
   };
-  const submitAction = () => {
+  const uploadPod = async (file: File | undefined) => {
+    if (!file) return;
+    if (!supabase) { setModalError('File storage is not configured for this environment.'); return; }
+    setPodBusy(true); setModalError('');
+    try {
+      const orgId = (import.meta.env.VITE_ORGANIZATION_ID as string | undefined) ?? 'org';
+      const path = `${orgId}/${activeIndustry}/pod/${crypto.randomUUID()}-${file.name}`;
+      const { error: uploadError } = await supabase.storage.from('trade-documents').upload(path, file, { upsert: false });
+      if (uploadError) throw uploadError;
+      setPodUrl(supabase.storage.from('trade-documents').getPublicUrl(path).data.publicUrl);
+    } catch (e) { setModalError(e instanceof Error ? e.message : 'Upload failed.'); } finally { setPodBusy(false); }
+  };
+  const submitAction = async () => {
     if (!action) return;
     const id = action.shipment.id;
-    const common = { transportRef: transport.trim() || null, expectedArrival: eta || null, notes: notes.trim() || null };
-    if (action.mode === 'dispatch') void patch(id, { ...common, status: 'dispatched', shippedAt: shipDate });
-    else if (action.mode === 'deliver') void patch(id, { status: 'delivered', deliveredAt: deliverDate });
+    const common = {
+      transportRef: transport.trim() || null, expectedArrival: eta || null, notes: notes.trim() || null,
+      transporterName: transporterName.trim() || null, driverName: driverName.trim() || null, driverPhone: driverPhone.trim() || null,
+      ewayBillNo: action.shipment.market === 'international' ? null : ewayNo.trim() || null,
+      ewayBillValidUntil: action.shipment.market === 'international' ? null : ewayValid || null,
+      invoiceNo: invoiceNo.trim() || null,
+    };
+    if (action.mode !== 'deliver' && action.mode !== 'cancel' && action.shipment.market !== 'international' && ewayNo.trim() && !/^[0-9]{12}$/.test(ewayNo.trim())) { setModalError('E-way bill number must be exactly 12 digits.'); return; }
+    if (action.mode === 'dispatch') {
+      if (action.shipment.market === 'international') {
+        if (!incoterm || !portLoading.trim() || !portDischarge.trim()) { setModalError('Select the Incoterm and enter both ports before dispatching.'); return; }
+        const t = action.shipment.terms;
+        const changed = incoterm !== (t?.incoterm ?? '') || portLoading.trim() !== (t?.port_of_loading ?? '') || portDischarge.trim() !== (t?.port_of_discharge ?? '');
+        if (changed) {
+          setBusy(true); setModalError('');
+          try {
+            await api(`/orders/${action.shipment.order_id}/export-details`, { method: 'PATCH', body: JSON.stringify({ incoterm, portOfLoading: portLoading.trim(), portOfDischarge: portDischarge.trim() }) });
+          } catch (err) { setModalError((err as Error).message); setBusy(false); return; }
+          setBusy(false);
+        }
+      }
+      void patch(id, { ...common, status: 'dispatched', shippedAt: shipDate });
+    }
+    else if (action.mode === 'deliver') {
+      if (!receivedBy.trim()) { setModalError('Enter the name of the person who received the goods.'); return; }
+      const lines = action.shipment.items.map((i) => ({ itemId: i.item_id, shortQuantity: Number(receipt[i.item_id]?.short) || 0, damagedQuantity: Number(receipt[i.item_id]?.damaged) || 0, shipped: i.quantity }));
+      if (lines.some((l) => l.shortQuantity < 0 || l.damagedQuantity < 0 || l.shortQuantity + l.damagedQuantity > l.shipped)) { setModalError('Short plus damaged quantity cannot be more than the quantity shipped.'); return; }
+      void patch(id, { status: 'delivered', deliveredAt: deliverDate, receivedBy: receivedBy.trim(), podFileUrl: podUrl || null, receipt: lines.map(({ itemId, shortQuantity, damagedQuantity }) => ({ itemId, shortQuantity, damagedQuantity })) });
+    }
     else if (action.mode === 'edit') void patch(id, common);
     else void patch(id, { status: 'cancelled' });
   };
@@ -128,12 +219,9 @@ export function FmcgShipmentsPage() {
 
   const tabs: Array<[Tab, string, number]> = [
     ['all', 'All', rows.length],
-    ['packed', 'Packed', count((s) => s.status === 'packed')],
-    ['dispatched', 'In transit', count((s) => s.status === 'dispatched')],
-    ['late', 'Late', count(isLate)],
-    ['delivered', 'Delivered', count((s) => s.status === 'delivered')],
     ['cancelled', 'Cancelled', count((s) => s.status === 'cancelled')],
   ];
+  const quickLabel: Partial<Record<Tab, string>> = { packed: 'Ready to dispatch', dispatched: 'In transit', late: 'Late', delivered: 'Delivered' };
   const international = action?.shipment.market === 'international';
   const refLabel = international ? 'Container / AWB / BL number' : 'Vehicle / LR number';
   const etaLabel = international ? 'Expected arrival (ETA)' : 'Expected delivery';
@@ -146,6 +234,10 @@ export function FmcgShipmentsPage() {
 
   return (
     <section className="page-panel master-page shipments-page">
+      {viewId ? (
+        <FmcgShipmentDetail shipment={viewed} loading={loading && !viewed} error={error} onBack={backToList} onAction={openAction} />
+      ) : (
+        <>
       <div className="page-panel-heading">
         <div>
           <p className="eyebrow">FMCG · SHIPMENTS</p>
@@ -176,6 +268,12 @@ export function FmcgShipmentsPage() {
             </button>
           ))}
         </div>
+        {quickLabel[tab] && (
+          <div className="sp-active-filter">
+            <span>Showing <strong>{quickLabel[tab]}</strong> shipments</span>
+            <button type="button" onClick={() => setTab('all')}>Clear filter</button>
+          </div>
+        )}
         <div className="sp-filters">
           <div className="sp-search">
             <Icon d={ICONS.search} size={16} />
@@ -202,72 +300,57 @@ export function FmcgShipmentsPage() {
               {visible.map((s) => {
                 const late = isLate(s);
                 return (
-                  <Fragment key={s.id}>
-                    <tr className={openId === s.id ? 'open' : undefined}>
-                      <td>
-                        <button type="button" className="sp-link" onClick={() => setOpenId(openId === s.id ? null : s.id)} aria-expanded={openId === s.id}>
-                          <span className="sp-caret">{openId === s.id ? '▾' : '▸'}</span>{s.shipment_no}
-                        </button>
-                        <small className="sp-sub">Order {s.order_number}</small>
-                      </td>
-                      <td>
-                        <div className="sp-client">
-                          <span className="sp-avatar">{initials(s.client_name)}</span>
-                          <div>
-                            <strong>{s.client_name}</strong>
-                            <div className="sp-meta">{s.client_code ? <small className="sp-sub">{s.client_code}</small> : null}<span className={`sp-chip ${s.market === 'international' ? 'intl' : 'local'}`}>{s.market === 'international' ? 'International' : 'Local'}</span></div>
-                          </div>
+                  <tr key={s.id}>
+                    <td>
+                      <button type="button" className="sp-link" onClick={() => viewShipment(s.id)} title="Open shipment">{s.shipment_no}</button>
+                      <small className="sp-sub">Order {s.order_number}</small>
+                    </td>
+                    <td>
+                      <div className="sp-client">
+                        <span className="sp-avatar">{initials(s.client_name)}</span>
+                        <div>
+                          <strong>{s.client_name}</strong>
+                          <div className="sp-meta">{s.client_code ? <small className="sp-sub">{s.client_code}</small> : null}<span className={`sp-chip ${s.market === 'international' ? 'intl' : 'local'}`}>{s.market === 'international' ? 'International' : 'Local'}</span></div>
                         </div>
-                      </td>
-                      <td className="num">{qty(s.total_quantity)}</td>
-                      <td>{s.transport_ref ?? <span className="sp-muted">—</span>}</td>
-                      <td>
-                        {s.shipped_at || s.expected_arrival || s.delivered_at ? (
-                          <div className="sp-dates">
-                            {s.shipped_at && <span><em>Shipped</em>{fmtDate(s.shipped_at)}</span>}
-                            {s.expected_arrival && <span className={late ? 'sp-late' : undefined}><em>{s.market === 'international' ? 'ETA' : 'Due'}</em>{fmtDate(s.expected_arrival)}{late ? ' · Overdue' : ''}</span>}
-                            {s.delivered_at && <span><em>Delivered</em>{fmtDate(s.delivered_at)}</span>}
-                          </div>
-                        ) : <span className="sp-muted">—</span>}
-                      </td>
-                      <td>
-                        {s.paperwork ? (
-                          <div className="sp-paper">
-                            <a className={`sp-pill ${s.paperwork.docs_verified >= s.paperwork.docs_required ? 'ok' : 'warn'}`} href="#industry:fmcg:trade-documents">Documents {s.paperwork.docs_verified}/{s.paperwork.docs_required} verified</a>
-                            <a className={`sp-pill ${customsTone(s.paperwork.customs)}`} href="#industry:fmcg:customs-clearance">Customs: {s.paperwork.customs}</a>
-                          </div>
-                        ) : <span className="sp-muted">{s.market === 'international' ? '—' : 'Not required'}</span>}
-                      </td>
-                      <td><span className={`sp-status sp-${s.status}`}>{STATUS_LABEL[s.status] ?? s.status}</span></td>
-                                           <td className="actions">
+                      </div>
+                    </td>
+                    <td className="num">{qty(s.total_quantity)}</td>
+                    <td>{s.transport_ref ?? <span className="sp-muted">—</span>}{(s.transporter_name || s.driver_name) ? <div className="sp-meta"><small className="sp-sub">{[s.transporter_name, s.driver_name].filter(Boolean).join(' · ')}</small></div> : null}</td>
+                    <td>
+                      {s.shipped_at || s.expected_arrival || s.delivered_at ? (
+                        <div className="sp-dates">
+                          {s.shipped_at && <span><em>Shipped</em>{fmtDate(s.shipped_at)}</span>}
+                          {s.expected_arrival && <span className={late ? 'sp-late' : undefined}><em>{s.market === 'international' ? 'ETA' : 'Due'}</em>{fmtDate(s.expected_arrival)}{late ? ' · Overdue' : ''}</span>}
+                          {s.delivered_at && <span><em>Delivered</em>{fmtDate(s.delivered_at)}</span>}
+                        </div>
+                      ) : <span className="sp-muted">—</span>}
+                    </td>
+                    <td>
+                      {s.paperwork ? (
+                        <div className="sp-paper">
+                          <a className={`sp-pill ${s.paperwork.docs_verified >= s.paperwork.docs_required ? 'ok' : 'warn'}`} href="#industry:fmcg:trade-documents">Documents {s.paperwork.docs_verified}/{s.paperwork.docs_required} verified</a>
+                          <a className={`sp-pill ${customsTone(s.paperwork.customs)}`} href="#industry:fmcg:customs-clearance">Customs: {s.paperwork.customs}</a>
+                        </div>
+                      ) : <span className="sp-muted">{s.market === 'international' ? '—' : 'Not required'}</span>}
+                    </td>
+                    <td><span className={`sp-status sp-${s.status}`}>{STATUS_LABEL[s.status] ?? s.status}</span></td>
+                    <td className="actions">
+                      <div className="sp-actions">
+                        <button type="button" className="icon-action sp-view" title="View shipment" aria-label={`View ${s.shipment_no}`} onClick={() => viewShipment(s.id)}><Icon d={ICONS.eye} size={16} /></button>
                         <button type="button" className="icon-action row-menu-trigger" title="More actions" aria-label={`Actions for ${s.shipment_no}`} onClick={(event) => toggleMenu(event, s.id)}>⋯</button>
-                      </td>
-                    </tr>
-                    {openId === s.id && (
-                      <tr className="sp-detail">
-                        <td colSpan={8}>
-                          <div className="sp-detail-grid">
-                            <table className="sp-items">
-                              <thead><tr><th>Product</th><th className="num">Quantity</th></tr></thead>
-                              <tbody>
-                                {s.items.map((i, idx) => <tr key={`${s.id}-${idx}`}><td>{i.product_name}</td><td className="num">{qty(i.quantity)}</td></tr>)}
-                                <tr className="total"><td>Total</td><td className="num">{qty(s.total_quantity)}</td></tr>
-                              </tbody>
-                            </table>
-                            {s.notes ? <div className="sp-notes"><span>Notes</span><p>{s.notes}</p></div> : null}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
+                      </div>
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
       </div>
+        </>
+      )}
 
-         {menuFor && (
+      {menuFor && (
         <>
           <div className="row-menu-backdrop" onMouseDown={() => setMenuFor(null)} />
           <div className="row-menu row-menu--icons" style={{ top: menuFor.top, left: menuFor.left }}>
@@ -277,9 +360,10 @@ export function FmcgShipmentsPage() {
               const run = (fn: () => void) => () => { setMenuFor(null); fn(); };
               return (
                 <>
-                  <button type="button" onClick={run(() => setOpenId(openId === item.id ? null : item.id))}><Icon d={ICONS.eye} size={15} /><span>{openId === item.id ? 'Hide details' : 'View details'}</span></button>
+                  <button type="button" onClick={run(() => viewShipment(item.id))}><Icon d={ICONS.eye} size={15} /><span>View shipment</span></button>
                   {item.status === 'packed' && <button type="button" onClick={run(() => openAction(item, 'dispatch'))}><Icon d={ICONS.send} size={15} /><span>Dispatch</span></button>}
                   {item.status === 'dispatched' && <button type="button" onClick={run(() => openAction(item, 'deliver'))}><Icon d={ICONS.check} size={15} /><span>Mark delivered</span></button>}
+                  {item.status === 'delivered' && <button type="button" onClick={run(() => openAction(item, 'deliver'))}><Icon d={ICONS.check} size={15} /><span>Delivery proof (POD)</span></button>}
                   {item.status !== 'cancelled' && <button type="button" onClick={run(() => openAction(item, 'edit'))}><Icon d={ICONS.edit} size={15} /><span>Edit</span></button>}
                   {item.status === 'packed' && <button type="button" className="row-menu-danger" onClick={run(() => openAction(item, 'cancel'))}><Icon d={ICONS.trash} size={15} /><span>Cancel shipment</span></button>}
                 </>
@@ -297,7 +381,7 @@ export function FmcgShipmentsPage() {
                 <p className="eyebrow">ORDER {action.shipment.order_number} · {action.shipment.client_name}</p>
                 <h3>
                   {action.mode === 'dispatch' && `Dispatch ${action.shipment.shipment_no}`}
-                  {action.mode === 'deliver' && `Mark ${action.shipment.shipment_no} delivered`}
+                  {action.mode === 'deliver' && (action.shipment.status === 'delivered' ? `Delivery proof · ${action.shipment.shipment_no}` : `Mark ${action.shipment.shipment_no} delivered`)}
                   {action.mode === 'edit' && `Edit ${action.shipment.shipment_no}`}
                   {action.mode === 'cancel' && `Cancel ${action.shipment.shipment_no}`}
                 </h3>
@@ -318,11 +402,52 @@ export function FmcgShipmentsPage() {
             {action.mode === 'cancel' ? (
               <p className="sp-modal-text">The quantity of this shipment goes back to Remaining on order {action.shipment.order_number}.</p>
             ) : action.mode === 'deliver' ? (
-              <label className="sp-field">Delivered date
-                <input type="date" value={deliverDate} min={action.shipment.shipped_at ?? undefined} max={today} onChange={(e) => setDeliverDate(e.target.value)} />
-              </label>
+              <>
+                <label className="sp-field">Delivered date
+                  <input type="date" value={deliverDate} min={action.shipment.shipped_at ?? undefined} max={today} onChange={(e) => setDeliverDate(e.target.value)} />
+                </label>
+                <label className="sp-field">Received by
+                  <input type="text" maxLength={120} value={receivedBy} onChange={(e) => setReceivedBy(e.target.value)} placeholder="Name of the person who received the goods" />
+                </label>
+                <label className="sp-field">Proof of delivery (signed challan / photo)
+                  {podUrl && <span className="sp-hint"><a href={podUrl} target="_blank" rel="noreferrer">View current file</a> — choose a file to replace it.</span>}
+                  <input type="file" accept="image/*,application/pdf" disabled={podBusy} onChange={(e) => void uploadPod(e.target.files?.[0])} />
+                  {podBusy && <small>Uploading…</small>}
+                </label>
+                <div className="sp-field">
+                  <span>Received quantities</span>
+                  <div className="sp-receipt">
+                    <strong>Product</strong><strong>Shipped</strong><strong>Short</strong><strong>Damaged</strong>
+                    {action.shipment.items.map((i) => (
+                      <Fragment key={i.item_id}>
+                        <span>{i.product_name}</span>
+                        <span>{qty(i.quantity)}</span>
+                        <input type="number" min={0} max={i.quantity} step="any" value={receipt[i.item_id]?.short ?? ''} onChange={(e) => setReceipt((r) => ({ ...r, [i.item_id]: { short: e.target.value, damaged: r[i.item_id]?.damaged ?? '' } }))} />
+                        <input type="number" min={0} max={i.quantity} step="any" value={receipt[i.item_id]?.damaged ?? ''} onChange={(e) => setReceipt((r) => ({ ...r, [i.item_id]: { short: r[i.item_id]?.short ?? '', damaged: e.target.value } }))} />
+                      </Fragment>
+                    ))}
+                  </div>
+                  <small>Leave blank when everything arrived in good condition. Damaged goods still need a Sales Return entry.</small>
+                </div>
+              </>
             ) : (
               <>
+                {action.mode === 'dispatch' && international && (
+                  <>
+                    <label className="sp-field">Incoterm
+                      <select value={incoterm} onChange={(e) => setIncoterm(e.target.value)}>
+                        <option value="">Select…</option>
+                        {INCOTERMS.map((code) => <option key={code} value={code}>{code}</option>)}
+                      </select>
+                    </label>
+                    <label className="sp-field">Port of loading
+                      <input type="text" maxLength={160} value={portLoading} onChange={(e) => setPortLoading(e.target.value)} placeholder="e.g. Chennai (INMAA)" />
+                    </label>
+                    <label className="sp-field">Port of discharge
+                      <input type="text" maxLength={160} value={portDischarge} onChange={(e) => setPortDischarge(e.target.value)} placeholder="e.g. Jebel Ali (AEJEA)" />
+                    </label>
+                  </>
+                )}
                 {action.mode === 'dispatch' && (
                   <label className="sp-field">Ship date
                     <input type="date" value={shipDate} max={today} onChange={(e) => setShipDate(e.target.value)} />
@@ -331,6 +456,28 @@ export function FmcgShipmentsPage() {
                 <label className="sp-field">{refLabel}
                   <input type="text" maxLength={80} value={transport} onChange={(e) => setTransport(e.target.value)} placeholder={international ? 'e.g. MSKU1234567' : 'e.g. TN 09 AB 1234'} />
                 </label>
+                <label className="sp-field">Transporter
+                  <input type="text" maxLength={120} value={transporterName} onChange={(e) => setTransporterName(e.target.value)} placeholder={international ? 'Shipping line / freight forwarder' : 'e.g. VRL Logistics'} />
+                </label>
+                <label className="sp-field">Driver name
+                  <input type="text" maxLength={80} value={driverName} onChange={(e) => setDriverName(e.target.value)} />
+                </label>
+                <label className="sp-field">Driver phone
+                  <input type="tel" maxLength={20} value={driverPhone} onChange={(e) => setDriverPhone(e.target.value)} placeholder="e.g. 98765 43210" />
+                </label>
+                <label className="sp-field">Tax invoice number
+                  <input type="text" maxLength={60} value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="e.g. INV/26-27/0412" />
+                </label>
+                {!international && (
+                  <>
+                    <label className="sp-field">E-way bill number
+                      <input type="text" inputMode="numeric" maxLength={12} value={ewayNo} onChange={(e) => setEwayNo(e.target.value.replace(/\D/g, ''))} placeholder="12 digits (needed for goods above ₹50,000)" />
+                    </label>
+                    <label className="sp-field">E-way bill valid until
+                      <input type="date" value={ewayValid} onChange={(e) => setEwayValid(e.target.value)} />
+                    </label>
+                  </>
+                )}
                 <label className="sp-field">{etaLabel}
                   <input type="date" value={eta} min={action.mode === 'dispatch' ? shipDate : action.shipment.shipped_at ?? undefined} onChange={(e) => setEta(e.target.value)} />
                 </label>
@@ -343,7 +490,7 @@ export function FmcgShipmentsPage() {
             </div>
             <div className="modal-actions">
               <button type="button" className="quiet-button" disabled={busy} onClick={closeAction}>Close</button>
-              <button type="button" className={action.mode === 'cancel' ? 'sp-btn danger solid' : 'primary-action'} disabled={busy} onClick={submitAction}>
+              <button type="button" className={action.mode === 'cancel' ? 'sp-btn danger solid' : 'primary-action'} disabled={busy} onClick={() => void submitAction()}>
                 {busy ? 'Saving…' : action.mode === 'dispatch' ? 'Dispatch' : action.mode === 'deliver' ? 'Mark delivered' : action.mode === 'edit' ? 'Save' : 'Cancel shipment'}
               </button>
             </div>

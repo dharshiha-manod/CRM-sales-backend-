@@ -18,7 +18,8 @@ type OrderItem = {
   quantity: number;
   free_quantity?: number | null;
   unit_price: number;
-  subtotal?: number | null;
+   subtotal?: number | null;
+  tax_amount?: number | null;
   products?: { id?: string; product_code?: string; product_name?: string } | null;
 };
 type Order = {
@@ -72,7 +73,7 @@ function buildLines(order: Order | null, records: ReturnRecord[]): Line[] {
     const line = map.get(id) ?? { productId: id, name: item.products?.product_name ?? item.products?.product_code ?? 'Product', code: item.products?.product_code ?? '', paidQty: 0, freeQty: 0, paid: 0, sold: 0, already: 0, alreadyCredited: 0, remaining: 0, netUnit: 0 };
     line.paidQty += Number(item.quantity || 0);
     line.freeQty += Number(item.free_quantity || 0);
-    line.paid += Number(item.subtotal ?? Number(item.quantity || 0) * Number(item.unit_price || 0));
+     line.paid += Number(item.subtotal ?? Number(item.quantity || 0) * Number(item.unit_price || 0)) + Number(item.tax_amount || 0);
     map.set(id, line);
   }
   for (const line of map.values()) {
@@ -113,6 +114,8 @@ export function SalesReturnDamagePage() {
   const [confirm, setConfirm] = useState<{ record: ReturnRecord; status: 'approved' | 'rejected' } | null>(null);
   const [deciding, setDeciding] = useState(false);
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
+  const [viewing, setViewing] = useState<ReturnRecord | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   function toast(message: string, tone: Toast['tone'] = 'success') {
     const id = Date.now() + Math.random();
@@ -137,7 +140,7 @@ export function SalesReturnDamagePage() {
 
   /* ---------- form: everything below is derived from the chosen order ---------- */
   const selectedOrder = orders.find((o) => o.id === form.orderId) ?? null;
-  const lines = useMemo(() => buildLines(selectedOrder, records), [selectedOrder, records]);
+  const lines = useMemo(() => buildLines(selectedOrder, editingId ? records.filter((x) => x.id !== editingId) : records), [selectedOrder, records, editingId]);
   const selectedLine = lines.find((l) => l.productId === form.productId) ?? null;
   const qty = Number(form.quantity) || 0;
   const credit = creditFor(selectedLine, qty, form.kind === 'return' || form.creditClient);
@@ -149,7 +152,14 @@ export function SalesReturnDamagePage() {
   const returnableOrders = useMemo(() => orders.filter((o) => buildLines(o, records).some((l) => l.remaining > 0)), [orders, records]);
 
   function openCreate() {
+    setEditingId(null);
     setForm(blankForm);
+    setFormError('');
+    setModal(true);
+  }
+  function openEdit(r: ReturnRecord) {
+    setEditingId(r.id);
+    setForm({ orderId: r.orderId, productId: r.productId, quantity: String(r.quantity), kind: r.kind, reason: r.reason, restock: r.restock, creditClient: r.creditClient });
     setFormError('');
     setModal(true);
   }
@@ -177,7 +187,10 @@ export function SalesReturnDamagePage() {
     if (qty > selectedLine.remaining + 1e-9) { setFormError(`Only ${selectedLine.remaining} unit(s) can still be returned or written off on this order.`); return; }
     setSaving(true);
     try {
-      const res = await api<{ data: { id: string } }>('/fmcg/returns', { method: 'POST', body: JSON.stringify({ orderId: form.orderId, productId: form.productId, quantity: qty, kind: form.kind, reason: form.reason.trim() || null, restock: form.kind === 'return' ? form.restock : false, creditClient: form.kind === 'damage' ? form.creditClient : true }) });
+      const body = JSON.stringify({ orderId: form.orderId, productId: form.productId, quantity: qty, kind: form.kind, reason: form.reason.trim() || null, restock: form.kind === 'return' ? form.restock : false, creditClient: form.kind === 'damage' ? form.creditClient : true });
+      const res = editingId
+        ? await api<{ data: { id: string } }>(`/fmcg/returns/${editingId}`, { method: 'PATCH', body })
+        : await api<{ data: { id: string } }>('/fmcg/returns', { method: 'POST', body });
       if (approveNow) {
         try {
           await api(`/fmcg/returns/${res.data.id}/decision`, { method: 'POST', body: JSON.stringify({ status: 'approved' }) });
@@ -186,7 +199,7 @@ export function SalesReturnDamagePage() {
           toast(`Logged, but approval failed: ${caught instanceof Error ? caught.message : 'please approve it from the list.'}`, 'error');
         }
       } else {
-        toast(`${form.kind === 'damage' ? 'Damage' : 'Return'} logged and sent for approval.`);
+        toast(editingId ? 'Entry updated.' : `${form.kind === 'damage' ? 'Damage' : 'Return'} logged and sent for approval.`);
       }
       setModal(false);
       await load();
@@ -306,7 +319,7 @@ export function SalesReturnDamagePage() {
         <div className="data-table-wrap returns-table-wrap">
           <table>
             <thead>
-              <tr><th>Date</th><th>Client</th><th>Order</th><th>Item</th><th className="num">Qty</th><th>Type</th><th className="num">Credit</th><th>Status</th><th className="col-actions" aria-label="Actions" /></tr>
+              <tr><th>Date</th><th>Client</th><th>Order</th><th>Item</th><th className="num">Qty</th><th>Type</th><th className="num">Credit</th><th>Status</th><th className="col-actions">Actions</th></tr>
             </thead>
             <tbody>
               {loading ? (
@@ -327,7 +340,7 @@ export function SalesReturnDamagePage() {
                   <td><div className="client-cell"><span className="client-avatar" aria-hidden="true">{initials(r.clientName)}</span><strong>{r.clientName}</strong></div></td>
                   <td><strong>{r.orderNumber}</strong></td>
                   <td><div className="stack-cell"><strong>{r.productName}</strong>{r.reason && <small title={r.reason}>{r.reason}</small>}</div></td>
-                  <td className="num">{r.quantity}</td>
+                  <td className="num"><button type="button" className="quiet-button" onClick={() => setViewing(r)}>{r.quantity}</button></td>
                   <td>
                     <div className="stack-cell">
                       <span className={`status-badge ${r.kind === 'damage' ? 'rd-damage' : 'rd-return'}`}>{r.kind === 'damage' ? 'Damage' : 'Return'}</span>
@@ -339,6 +352,14 @@ export function SalesReturnDamagePage() {
                   </td>
                   <td><span className={`status-badge rd-${r.status}`}>{STATUS_LABEL[r.status]}</span></td>
                   <td className="row-actions-cell">
+                    <button type="button" className="icon-action" title="View" aria-label="View" onClick={() => setViewing(r)}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" /><circle cx="12" cy="12" r="3" /></svg>
+                    </button>
+                    {r.status === 'pending' && (
+                      <button type="button" className="icon-action" title="Edit" aria-label="Edit" onClick={() => openEdit(r)}>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" /></svg>
+                      </button>
+                    )}
                     {r.status === 'pending' && (
                       <>
                         <button type="button" className="quiet-button rd-approve" onClick={() => setConfirm({ record: r, status: 'approved' })}>Approve</button>
@@ -376,7 +397,7 @@ export function SalesReturnDamagePage() {
         <div className="modal-backdrop" onMouseDown={() => !saving && setModal(false)}>
           <div className="master-modal returns-drawer" role="dialog" aria-modal="true" aria-labelledby="rd-modal-title" onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-heading">
-              <div><h3 id="rd-modal-title">Log return / damage</h3></div>
+              <div><h3 id="rd-modal-title">{editingId ? 'Edit return / damage' : 'Log return / damage'}</h3></div>
               <button className="icon-action" type="button" aria-label="Close" onClick={() => setModal(false)}>×</button>
             </div>
             <form className="rd-form" onSubmit={(e) => void submit(e, false)}>
@@ -385,9 +406,9 @@ export function SalesReturnDamagePage() {
 
                 <div className="rd-field">
                   <label htmlFor="rd-order">Sales order</label>
-                  <select id="rd-order" required value={form.orderId} onChange={(e) => pickOrder(e.target.value)}>
+                  <select id="rd-order" required disabled={!!editingId} value={form.orderId} onChange={(e) => pickOrder(e.target.value)}>
                     <option value="">{returnableOrders.length ? 'Select order' : 'No returnable orders'}</option>
-                    {returnableOrders.map((o) => <option key={o.id} value={o.id}>{o.order_number} — {o.clients?.client_name ?? 'Client'} ({dateLabel(o.created_at)})</option>)}
+                    {(editingId && selectedOrder ? [selectedOrder] : returnableOrders).map((o) => <option key={o.id} value={o.id}>{o.order_number} — {o.clients?.client_name ?? 'Client'} ({dateLabel(o.created_at)})</option>)}
                   </select>
                 </div>
 
@@ -406,11 +427,11 @@ export function SalesReturnDamagePage() {
                   {(
                     <div className="rd-lines">
                       {lines.map((l) => (
-                        <button type="button" key={l.productId} className={`rd-line ${form.productId === l.productId ? 'active' : ''}`} disabled={l.remaining <= 0} onClick={() => pickLine(l)}>
+                        <button type="button" key={l.productId} className={`rd-line ${form.productId === l.productId ? 'active' : ''}`} disabled={l.remaining <= 0 || (!!editingId && form.productId !== l.productId)} onClick={() => pickLine(l)}>
                           <span className="rd-radio" aria-hidden="true" />
                           <span className="rd-line-main">
                             <strong>{l.name}</strong>
-                            <small>{l.code ? `${l.code} · ` : ''}Ordered {l.paidQty}{l.freeQty > 0 ? ` + ${l.freeQty} free` : ''} @ {money(l.netUnit, orderCurrency)}</small>
+                                                      <small>{l.code ? `${l.code} · ` : ''}Ordered {l.paidQty}{l.freeQty > 0 ? ` + ${l.freeQty} free` : ''} @ {money(l.netUnit, orderCurrency)} incl. tax</small>
                           </span>
                           <span className="rd-line-side">
                             {l.remaining > 0 ? <strong>{l.remaining} available</strong> : <strong className="rd-done">Fully returned</strong>}
@@ -487,10 +508,39 @@ export function SalesReturnDamagePage() {
 
               <div className="modal-actions">
                 <button type="button" className="quiet-button" onClick={() => setModal(false)} disabled={saving}>Cancel</button>
-                <button className="quiet-button" type="submit" disabled={saving || !selectedLine}>{saving ? 'Saving…' : 'Log for approval'}</button>
-                <button className="primary-action" type="button" disabled={saving || !selectedLine} onClick={() => void submit(null, true)}>{saving ? 'Saving…' : 'Log & approve'}</button>
+                <button className="quiet-button" type="submit" disabled={saving || !selectedLine}>{saving ? 'Saving…' : editingId ? 'Save changes' : 'Log for approval'}</button>
+                <button className="primary-action" type="button" disabled={saving || !selectedLine} onClick={() => void submit(null, true)}>{saving ? 'Saving…' : editingId ? 'Save & approve' : 'Log & approve'}</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── View entry ── */}
+      {viewing && (
+        <div className="modal-backdrop modal-backdrop--center" role="presentation" onMouseDown={() => setViewing(null)}>
+          <div className="master-modal master-modal--center returns-confirm" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="modal-heading">
+              <div><p className="eyebrow">{viewing.kind === 'damage' ? 'DAMAGE' : 'RETURN'} · {viewing.orderNumber}</p><h3>Entry details</h3></div>
+              <button type="button" className="icon-action" aria-label="Close" onClick={() => setViewing(null)}>×</button>
+            </div>
+            <div className="returns-confirm-body">
+              <div className="rd-order-card">
+                <div className="rd-order-line"><span>Date</span><strong>{dateLabel(viewing.createdAt)}</strong></div>
+                <div className="rd-order-line"><span>Client</span><strong>{viewing.clientName}</strong></div>
+                <div className="rd-order-line"><span>Order</span><strong>{viewing.orderNumber}</strong></div>
+                <div className="rd-order-line"><span>Item</span><strong>{viewing.productName}</strong></div>
+                <div className="rd-order-line"><span>Quantity</span><strong>{viewing.quantity}</strong></div>
+                <div className="rd-order-line"><span>Type</span><strong>{viewing.kind === 'damage' ? 'Damage' : 'Return'}</strong></div>
+                {viewing.kind === 'return' && <div className="rd-order-line"><span>Stock</span><strong>{viewing.restock ? 'Back to stock' : 'No restock'}</strong></div>}
+                <div className="rd-order-line"><span>Reason</span><strong>{viewing.reason || '—'}</strong></div>
+                <div className="rd-order-line"><span>Credit</span><strong>{viewing.creditClient ? money(viewing.credit, viewing.currency ?? 'INR') : 'None — client pays'}</strong></div>
+                <div className="rd-order-line"><span>Status</span><strong>{STATUS_LABEL[viewing.status]}</strong></div>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="quiet-button" onClick={() => setViewing(null)}>Close</button>
+            </div>
           </div>
         </div>
       )}

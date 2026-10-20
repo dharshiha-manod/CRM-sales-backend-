@@ -135,6 +135,8 @@ const { isGlobal } = useCurrentMembership();
   content['industry:fmcg:trade-documents'] = <TradeDocumentsPage />;
   content['industry:fmcg:import-export'] = <ImportExportPage />;
   content['industry:fmcg:customs-clearance'] = <CustomsClearancePage />;
+  content['industry:fmcg:shipment-charges'] = <ShipmentChargesPage />;
+  content['industry:fmcg:customer-invoices'] = <CustomerInvoicesPage />;
 content['industry:school:school-management'] = <SchoolManagementPage />;
     content['industry:school:school-sales-collection'] = <SchoolSalesCollectionPage />;
   content['industry:school:academic-year-term'] = <AcademicYearTermPage />;
@@ -183,8 +185,9 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
   content['industry:vehicle:warranty'] = <VehicleWarrantyPage />;
   content['industry:vehicle:service'] = <VehicleServicePage />;
   content['industry:vehicle:returns'] = <VehicleReturnsPage />;
+   const pageBase = page.split(':').slice(0, 3).join(':');
   const item = (value: Page, text: string, icon: string) => (
-    <button key={value} className={page === value ? 'active' : ''} onClick={() => setPage(value)} title={text}>
+    <button key={value} className={pageBase === value ? 'active' : ''} onClick={() => setPage(value)} title={text}>
       <span>{icon}</span>
       <span className="nav-label-text">{text}</span>
       {value === 'notifications' && unreadNotificationCount > 0 && <span className="notification-unread-dot" aria-label={`${unreadNotificationCount} unread notification${unreadNotificationCount === 1 ? '' : 's'}`} />}
@@ -236,8 +239,7 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
             <button onClick={() => void signOut()}>Sign out</button>
           </div>
         </header>
-        <main className="content">{content[page]}</main>
-      </div>
+<main className="content">{content[pageBase]}</main>      </div>
     </div>
   );
 }

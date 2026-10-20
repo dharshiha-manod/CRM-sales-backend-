@@ -28,6 +28,9 @@ type Order = {
   returns_credit?: number | null;
   currency_code?: string | null;
   base_total?: number | null;
+  exchange_rate?: number | null;
+  /** What the customer's Sent / Paid invoices add up to, in company currency (goods + extra shipment charges). 0 when none. */
+  billed_total?: number | null;
   discount_amount: number;
   created_at: string;
   notes?: string | null;
@@ -255,10 +258,16 @@ export function OrdersPage() {
   }
   useEffect(() => { void load(); }, []);
 
+  // Amount payable = the larger of the order total and its Sent / Paid invoices (goods + extra shipment charges), in the order's own currency.
+  function payableOf(order: Order): number {
+    const rate = Number(order.exchange_rate) > 0 ? Number(order.exchange_rate) : 1;
+    const billed = Math.round((Number(order.billed_total ?? 0) / rate) * 100) / 100;
+    return Math.max(Number(order.total_amount), billed);
+  }
   function paymentStatus(order: Order): { label: string; tone: 'good' | 'warn' | 'bad' } {
     const paid = collected[order.order_number] ?? 0;
     if (paid <= 0) return { label: 'Outstanding — payment reminder due', tone: 'bad' };
-    if (paid < Number(order.total_amount) - Number(order.returns_credit ?? 0) - 0.005) return { label: `Partially paid (${currency(paid, order.currency_code ?? 'INR')} of ${currency(Number(order.total_amount) - Number(order.returns_credit ?? 0), order.currency_code ?? 'INR')})`, tone: 'warn' };
+    if (paid < payableOf(order) - Number(order.returns_credit ?? 0) - 0.005) return { label: `Partially paid (${currency(paid, order.currency_code ?? 'INR')} of ${currency(payableOf(order) - Number(order.returns_credit ?? 0), order.currency_code ?? 'INR')})`, tone: 'warn' };
     return { label: 'Paid', tone: 'good' };
   }
   function paymentFilterValue(order: Order): 'paid' | 'partial' | 'outstanding' {
@@ -434,7 +443,7 @@ export function OrdersPage() {
     const amount = Number(paymentForm.amount);
     if (!amount || amount <= 0) return setPaymentError('Enter an amount greater than zero.');
     const alreadyPaid = collected[order.order_number] ?? 0;
-    const balance = Number(order.total_amount) - Number(order.returns_credit ?? 0) - alreadyPaid;
+    const balance = payableOf(order) - Number(order.returns_credit ?? 0) - alreadyPaid;
     if (amount > balance + 0.01) return setPaymentError(`Amount exceeds the outstanding balance of ${currency(balance, order.currency_code ?? 'INR')}.`);
     setPaymentSaving(true);
     try {
@@ -672,7 +681,7 @@ export function OrdersPage() {
                         <td>{order.clients?.industry_types?.name ?? '—'}</td>
                         <td>{order.sales_representatives?.user_profiles?.display_name ?? order.sales_representatives?.employee_code ?? '—'}</td>
                         <td>{itemCount} {itemCount === 1 ? 'Item' : 'Items'}</td>
-                        <td>{currency(order.total_amount, order.currency_code ?? 'INR')}{order.currency_code && order.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(order.base_total ?? 0))}</small>}{Number(order.returns_credit ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Returns credit − {currency(Number(order.returns_credit), order.currency_code ?? 'INR')}</small>}</td>
+                        <td>{currency(order.total_amount, order.currency_code ?? 'INR')}{order.currency_code && order.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(order.base_total ?? 0))}</small>}{payableOf(order) > Number(order.total_amount) + 0.005 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Invoiced {currency(payableOf(order), order.currency_code ?? 'INR')} (with extra charges)</small>}{Number(order.returns_credit ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Returns credit − {currency(Number(order.returns_credit), order.currency_code ?? 'INR')}</small>}</td>
                         <td><span className={`status-badge status-${ps.tone === 'good' ? 'paid' : ps.tone === 'warn' ? 'quoted' : 'overdue'}`}>{ps.tone === 'good' ? 'Paid' : ps.tone === 'warn' ? 'Partial' : 'Outstanding'}</span></td>
                         <td><span className={`status-badge status-${order.status}`}>{order.status}</span></td>
                         {activeIndustry === 'fmcg' && (
@@ -710,7 +719,7 @@ export function OrdersPage() {
         const notesText = cleanNotes(selected.notes);
         const ps = paymentStatus(selected);
         const alreadyPaid = collected[selected.order_number] ?? 0;
-        const balance = Number(selected.total_amount) - Number(selected.returns_credit ?? 0) - alreadyPaid;
+        const balance = payableOf(selected) - Number(selected.returns_credit ?? 0) - alreadyPaid;
         const relatedVisit = selected.visit_id ? visitMap.get(selected.visit_id) : undefined;
         const quoteRef = /QT-[A-Za-z0-9-]+/.exec(selected.notes ?? '')?.[0];
         const canCancel = selected.status !== 'cancelled' && selected.status !== 'completed';
@@ -796,6 +805,7 @@ export function OrdersPage() {
 
               <div className="qd-totals">
                 <div><span>Order total</span><strong>{selCur(selected.total_amount)}</strong></div>
+                {payableOf(selected) > Number(selected.total_amount) + 0.005 && <div><span>Invoiced total (with extra charges)</span><strong>{selCur(payableOf(selected))}</strong></div>}
                 {Number(selected.returns_credit ?? 0) > 0 && <div><span>Returns credit</span><strong>− {selCur(Number(selected.returns_credit))}</strong></div>}
                 <div><span>Collected</span><strong>{selCur(alreadyPaid)}</strong></div>
                 <div className="qd-grand"><span>Balance due</span><strong>{selCur(Math.max(balance, 0))}</strong></div>

@@ -4,6 +4,7 @@
 // sell_amount = what we bill the customer. The difference is our margin on that line.
 // Customer Invoices adds up the sell amounts of a shipment's open charges.
 import { TradingMasterPage, TradingModuleConfig } from './TradingMasterPage';
+import { formatMoneyWithBase, sumMoneyWithBase } from '../lib/currencyFormat';
 
 const CHARGE_TYPES = [
   'Sea Freight', 'Air Freight', 'Road Freight', 'Customs Duty', 'Clearance Fee', 'Port / Terminal Charges',
@@ -11,7 +12,8 @@ const CHARGE_TYPES = [
 ];
 
 const num = (v: unknown): number => Number(v) || 0;
-const money = (r: Record<string, unknown>, v: number) => `${r.currency ? `${String(r.currency)} ` : ''}${v.toLocaleString()}`;
+// Shows the amount in its own currency and, for a foreign currency, the company-currency value: "$10 (≈ ₹962.7)".
+const money = (r: Record<string, unknown>, v: number) => formatMoneyWithBase(v, r.currency);
 
 const config: TradingModuleConfig = {
   resource: '/trading/shipment-charges',
@@ -41,8 +43,8 @@ const config: TradingModuleConfig = {
       key: 'currency', label: 'Currency', type: 'lookup', group: 'Amounts', listColumn: true,
       lookupResource: '/trading/currency-rates', lookupValueKey: 'currency_code', lookupLabelKey: 'currency_name',
     },
-    { key: 'cost_amount', label: 'Cost (what we pay)', type: 'number', group: 'Amounts', listColumn: true },
-    { key: 'sell_amount', label: 'Sell (billed to customer)', type: 'number', group: 'Amounts', listColumn: true },
+    { key: 'cost_amount', label: 'Cost (what we pay)', type: 'number', group: 'Amounts', listColumn: true, render: (_v, r) => money(r, num(r.cost_amount)) },
+    { key: 'sell_amount', label: 'Sell (billed to customer)', type: 'number', group: 'Amounts', listColumn: true, render: (_v, r) => money(r, num(r.sell_amount)) },
     {
       key: 'margin', label: 'Margin', type: 'text', readOnly: true, group: 'Amounts', listColumn: true,
       format: (_v, r) => money(r, num(r.sell_amount) - num(r.cost_amount)),
@@ -57,9 +59,9 @@ const config: TradingModuleConfig = {
   ],
   kpis: [
     { icon: '₹', iconClass: 'kpi-icon-ink', label: 'Charge lines', value: (r) => String(r.filter((x) => x.status !== 'Cancelled').length) },
-    { icon: '↓', iconClass: 'kpi-icon-amber', label: 'Total cost', value: (r) => r.filter((x) => x.status !== 'Cancelled').reduce((s, x) => s + num(x.cost_amount), 0).toLocaleString() },
-    { icon: '↑', iconClass: 'kpi-icon-green', label: 'Total billable', value: (r) => r.filter((x) => x.status !== 'Cancelled').reduce((s, x) => s + num(x.sell_amount), 0).toLocaleString() },
-    { icon: '%', iconClass: 'kpi-icon-school', label: 'Margin', value: (r) => r.filter((x) => x.status !== 'Cancelled').reduce((s, x) => s + num(x.sell_amount) - num(x.cost_amount), 0).toLocaleString() },
+    { icon: '↓', iconClass: 'kpi-icon-amber', label: 'Total cost', value: (r) => sumMoneyWithBase(r.filter((x) => x.status !== 'Cancelled'), (x) => num(x.cost_amount)) },
+    { icon: '↑', iconClass: 'kpi-icon-green', label: 'Total billable', value: (r) => sumMoneyWithBase(r.filter((x) => x.status !== 'Cancelled'), (x) => num(x.sell_amount)) },
+    { icon: '%', iconClass: 'kpi-icon-school', label: 'Margin', value: (r) => sumMoneyWithBase(r.filter((x) => x.status !== 'Cancelled'), (x) => num(x.sell_amount) - num(x.cost_amount)) },
     { icon: '◷', iconClass: 'kpi-icon-red', label: 'Not yet invoiced', value: (r) => String(r.filter((x) => x.status !== 'Cancelled' && !x.invoice_number).length) },
   ],
 };

@@ -1029,7 +1029,7 @@ function RowActionsMenu({
           <button type="button" style={itemStyle} onClick={() => { setOpen(false); onView(); }}>◉ View</button>
           <button type="button" style={itemStyle} onClick={() => { setOpen(false); onEdit(); }}>✎ Edit</button>
           {onDuplicate && <button type="button" style={itemStyle} onClick={() => { setOpen(false); onDuplicate(); }}>⧉ Duplicate</button>}
-            {extra && <div className="row-actions-menu-extra">{extra}</div>}
+            {extra && <div className="row-actions-menu-extra" onClick={() => setOpen(false)}>{extra}</div>}
           {onDelete && (
             <button
               type="button"

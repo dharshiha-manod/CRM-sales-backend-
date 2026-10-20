@@ -170,7 +170,33 @@ function DetailActions({ record }: { record: Record<string, unknown> }) {
   }
   return null;
 }
-// Stamps who actually uploaded the file, at the moment the file is set —
+// Stamps who actually uploaded the file, at the moment the file is set —// Same workflow as the detail window, but inside the row's ⋮ menu.
+function RowMenuActions({ record }: { record: Record<string, unknown> }) {
+  const status = String(record.status ?? 'Draft');
+  const verification = String(record.verification_status ?? '');
+  const item: React.CSSProperties = {
+    display: 'block', width: '100%', textAlign: 'left', padding: '6px 12px',
+    background: 'none', border: 'none', cursor: 'pointer', fontSize: 13,
+    borderRadius: 4, whiteSpace: 'nowrap',
+  };
+  const danger: React.CSSProperties = { ...item, color: '#c0392b' };
+
+  if (status === 'Uploaded') {
+    return <button type="button" style={item} onClick={() => void reviewDocument(record, 'submit')}>➤ Submit for verification</button>;
+  }
+  if (status === 'Pending Verification' || verification === 'Pending Verification') {
+    return (
+      <>
+        <button type="button" style={item} onClick={() => void reviewDocument(record, 'approve')}>✓ Approve</button>
+        <button type="button" style={danger} onClick={() => void reviewDocument(record, 'reject')}>✕ Reject</button>
+      </>
+    );
+  }
+  if (status === 'Rejected') {
+    return <button type="button" style={item} onClick={() => void reviewDocument(record, 'submit')}>➤ Resubmit for verification</button>;
+  }
+  return null;
+}
 // not on the "Mark as uploaded" button, which never fires because
 // onValueChange below already auto-advances Draft -> Uploaded the instant
 // a file is attached. Never overwrites an existing uploaded_by (e.g. if a
@@ -344,6 +370,7 @@ const config: TradingModuleConfig = {
   ],
   renderInsights: (rows) => <TradeDocumentInsights rows={rows} />,
   detailActions: (record) => <><DetailActions record={record} /><ReviewNote record={record} /></>,
+    rowActions: (record) => <RowMenuActions record={record} />,
   consumePendingDraft: () => consumeTradeDocumentDraft(),
   onRecordsLoaded: (rows) => reconcileExpiry(rows),
   registerReload: (reload) => { reloadDocuments = reload; },

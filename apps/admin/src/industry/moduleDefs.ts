@@ -17,7 +17,9 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
       { id: 'currency-rates', label: 'Currency Rates', icon: '¤' },
     { id: 'trade-documents', label: 'Trade Documents', icon: '📄' },
     { id: 'import-export', label: 'Import / Export Management', icon: '⇄' },
-    { id: 'customs-clearance', label: 'Customs & Clearance', icon: '🛃' },
+       { id: 'customs-clearance', label: 'Customs & Clearance', icon: '🛃' },
+    { id: 'shipment-charges', label: 'Shipment Charges', icon: '₹' },
+    { id: 'customer-invoices', label: 'Customer Invoices', icon: '🧾' },
   ],
   trading: [
     { id: 'deal', label: 'Deal Management', icon: '◆' },
