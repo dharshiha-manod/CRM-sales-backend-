@@ -756,7 +756,10 @@ function openCreate() {
 
   async function handleDelete(lead: Lead) {
     setMenuFor(null);
-    if (!window.confirm(`Delete lead "${lead.company_name}"? This can't be undone.`)) return;
+    const converted = lead.status === 'converted';
+    if (!window.confirm(converted
+      ? `Delete lead "${lead.company_name}"? Its client record will stay. This can't be undone.`
+      : `Delete lead "${lead.company_name}"? This can't be undone.`)) return;
     try {
       await api(`/leads/${lead.id}`, { method: 'DELETE' });
       setItems((current) => current.filter((item) => item.id !== lead.id));

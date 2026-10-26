@@ -57,7 +57,7 @@ type VisitRef = {
   outcome?: string | null;
   clients?: { client_name?: string } | null;
 };
-type AddClient = { id: string; client_code: string; client_name: string };
+type AddClient = { id: string; client_code: string; client_name: string; sales_representative_client_assignments?: Array<{ status: string; sales_representative_id: string }> | null };
 type AddProduct = { id: string; product_code: string; product_name: string; selling_price: number };
 type AddRep = { id: string; employee_code: string; status: string; user_profiles?: { display_name?: string | null } | null };
 type AddOrderLine = { productId: string; quantity: string; discountPercent: string; freeQuantity: string };
@@ -968,7 +968,13 @@ export function OrdersPage() {
                   </div>
                   {addClientMode === 'existing' ? (
                     <>
-                      <select value={addClientId} onChange={(e) => setAddClientId(e.target.value)}>
+                      <select value={addClientId} onChange={(e) => {
+                        const id = e.target.value;
+                        setAddClientId(id);
+                        // The order's rep is the client's own rep (same rep the beat and follow-ups use).
+                        const owner = addClients.find((c) => c.id === id)?.sales_representative_client_assignments?.find((a) => a.status === 'active');
+                        if (owner) setAddRepId(owner.sales_representative_id);
+                      }}>
                         <option value="">Select a client</option>
                         {addClients.map((c) => <option key={c.id} value={c.id}>{c.client_code} — {c.client_name}</option>)}
                       </select>

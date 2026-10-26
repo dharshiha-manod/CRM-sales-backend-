@@ -15,6 +15,18 @@ type Client = { id: string; client_code: string; client_name: string; city?: str
 type Representative = { id: string; employee_code: string; status: string; user_profiles?: { display_name?: string | null } | null };
 type Visit = { id: string; status: string; check_in_time: string; client_id?: string | null };
 
+type OutletStatus = {
+  lastOrder: { orderNumber: string; status: string; dispatchStatus: string | null; createdAt: string } | null;
+  shipment: { shipmentNo: string; status: string; expectedArrival: string | null } | null;
+};
+const lastOrderText = (s?: OutletStatus) => (s?.lastOrder ? `${s.lastOrder.orderNumber} · ${new Date(s.lastOrder.createdAt).toLocaleDateString('en-IN')}` : 'No order yet');
+const deliveryText = (s?: OutletStatus) => {
+  if (s?.shipment) return `${s.shipment.shipmentNo} · ${s.shipment.status === 'dispatched' ? 'In transit' : 'Packed'}${s.shipment.expectedArrival ? ` · due ${new Date(s.shipment.expectedArrival).toLocaleDateString('en-IN')}` : ''}`;
+  const d = s?.lastOrder?.dispatchStatus;
+  if (!s?.lastOrder) return '—';
+  return d === 'delivered' ? 'Delivered' : 'Not shipped yet';
+};
+
 type Beat = { id: string; name: string; area: string; repId: string; days: Day[]; status: 'active' | 'inactive' };
 type BeatForm = { name: string; area: string; repId: string; days: Day[]; status: Beat['status'] };
 const blankForm: BeatForm = { name: '', area: '', repId: '', days: [], status: 'active' };
@@ -67,6 +79,7 @@ export function RouteBeatPage() {
   const [kpiView, setKpiView] = useState<null | 'outlets' | 'covered' | 'checkins'>(null);
   const [summary, setSummary] = useState<Record<string, { total: number; visited: number; missed: number; productive?: number }>>({});
   const [autoBusy, setAutoBusy] = useState(false);
+  const [outletStatus, setOutletStatus] = useState<Record<string, OutletStatus>>({});
 
   async function load() {
     setLoading(true);
@@ -103,11 +116,19 @@ export function RouteBeatPage() {
       setSummary(res.data?.beats ?? {});
     } catch { /* falls back to the browser-side coverage below */ }
   }
+  // Latest order + pending delivery per outlet (read-only; does not change beats).
+  async function loadOutletStatus() {
+    try {
+      const res = await api<{ data: Record<string, OutletStatus> }>('/fmcg/beats/outlet-status');
+      setOutletStatus(res.data ?? {});
+    } catch { /* the beat page still works without it */ }
+  }
   useEffect(() => {
     void load();
     void loadBeats();
     void loadSummary();
-    const timer = window.setInterval(() => void loadSummary(), 60_000);
+    void loadOutletStatus();
+    const timer = window.setInterval(() => { void loadSummary(); void loadOutletStatus(); }, 60_000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -414,7 +435,13 @@ export function RouteBeatPage() {
                         '—'
                       )}
                     </td>
-                    <td>{cov.assigned}</td>
+                    <td>
+                      {cov.assigned}
+                      {(() => {
+                        const pending = (assignments[beat.id] ?? []).filter((cid) => outletStatus[cid]?.shipment).length;
+                        return pending > 0 ? <span className="status-badge status-quoted" title="Outlets with a shipment packed or on the way" style={{ marginLeft: 6 }}>{pending} delivery pending</span> : null;
+                      })()}
+                    </td>
                     <td>
                       {scheduledToday ? (
                         <div className="coverage-cell">
@@ -592,6 +619,8 @@ export function RouteBeatPage() {
                     <th>Code</th>
                     <th>Outlet</th>
                     <th>City</th>
+                    <th>Last order</th>
+                    <th>Delivery</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -605,12 +634,14 @@ export function RouteBeatPage() {
                         <td>{c.client_code}</td>
                         <td>{c.client_name}</td>
                         <td>{c.city || '—'}</td>
+                        <td>{lastOrderText(outletStatus[c.id])}</td>
+                        <td>{deliveryText(outletStatus[c.id])}</td>
                       </tr>
                     );
                   })}
                   {manageableClients.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="empty-row">
+                      <td colSpan={6} className="empty-row">
                         No outlets match this search.
                       </td>
                     </tr>
@@ -632,8 +663,8 @@ export function RouteBeatPage() {
           eyebrow="OUTLETS ASSIGNED"
           title="Outlets assigned to beats"
           subtitle={`${assignedOutletRows.length} outlet assignment(s) across ${beats.length} beat(s)`}
-          columns={['Outlet', 'Code', 'City', 'Beat / route', 'Representative']}
-          rows={assignedOutletRows.map((r) => ({ id: `${r.beat.id}-${r.clientId}`, cells: [r.client?.client_name ?? '—', r.client?.client_code ?? '—', r.client?.city || '—', r.beat.name, repName(r.beat.repId)] }))}
+          columns={['Outlet', 'Code', 'City', 'Beat / route', 'Representative', 'Last order', 'Delivery']}
+          rows={assignedOutletRows.map((r) => ({ id: `${r.beat.id}-${r.clientId}`, cells: [r.client?.client_name ?? '—', r.client?.client_code ?? '—', r.client?.city || '—', r.beat.name, repName(r.beat.repId), lastOrderText(outletStatus[r.clientId]), deliveryText(outletStatus[r.clientId])] }))}
           emptyText="No outlets are assigned to any beat yet."
           onClose={() => setKpiView(null)}
         />
