@@ -9,7 +9,7 @@ import { representativeForUser } from '../repositories/stock-requests.repository
 import { batchSchema, createBatch, deleteBatch, listBatches, updateBatch, writeOffBatch, writeOffSchema } from '../repositories/product-batches.repository.js';
 import { createReturn, decideReturn, deleteReturn, listReturns, returnSchema, updateReturn } from '../repositories/sales-returns.repository.js';
 import { createRefund, listRefunds, refundSchema } from '../repositories/fmcg-refunds.repository.js';
-import { beatSchema, createBeat, deleteBeat, listBeats, updateBeat } from '../repositories/route-beats.repository.js';
+import { beatSchema, createBeat, deleteBeat, listBeats, outletOrderStatus, updateBeat } from '../repositories/route-beats.repository.js';
 import { autoGenerateBeats, autoGenerateSchema, beatSummary, generateDailyPlan, localNow, myBeatToday } from '../services/beat-automation.service.js';
 import { getFmcgAlerts } from '../lib/fmcg-alerts.js';
 type Req = Parameters<RequestHandler>[0];
@@ -72,6 +72,7 @@ fmcgOperationsRouter.get('/fmcg/beats', authenticate, requireRoles('super_admin'
 });
 // Automation: summary (one grouped query), rep's list for today, auto-create beats, plan today now.
 fmcgOperationsRouter.get('/fmcg/beats/summary', authenticate, staff, async (req, res) => res.json({ data: await beatSummary(org(req), await fmcgId(req), typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined) }));
+fmcgOperationsRouter.get('/fmcg/beats/outlet-status', authenticate, staff, async (req, res) => res.json({ data: await outletOrderStatus(org(req), await fmcgId(req)) }));
 fmcgOperationsRouter.get('/fmcg/beats/my-today', authenticate, requireRoles('sales_representative'), async (req, res) => {
   const organizationId = org(req);
   await fmcgId(req);

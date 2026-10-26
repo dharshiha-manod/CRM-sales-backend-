@@ -63,3 +63,43 @@ export async function deleteBeat(org: string, industryTypeId: string, id: string
   if (error) fail(error);
   if (!data || data.length === 0) throw notFound();
 }
+
+export type OutletOrderStatus = {
+  lastOrder: { orderNumber: string; status: string; dispatchStatus: string | null; createdAt: string } | null;
+  shipment: { shipmentNo: string; status: string; expectedArrival: string | null } | null;
+};
+
+/** For every outlet on an FMCG beat: its latest order and any shipment still on the way (packed / dispatched). Read-only. */
+export async function outletOrderStatus(org: string, industryTypeId: string) {
+  const { data: beats, error: beatsError } = await supabaseAdmin.from('route_beats').select('client_ids').eq('organization_id', org).eq('industry_type_id', industryTypeId);
+  if (beatsError) fail(beatsError);
+  const clientIds = [...new Set((beats ?? []).flatMap((b) => ((b as { client_ids: string[] | null }).client_ids ?? [])))];
+  const result: Record<string, OutletOrderStatus> = Object.fromEntries(clientIds.map((id) => [id, { lastOrder: null, shipment: null }]));
+  const clientByOrder = new Map<string, string>();
+
+  for (let i = 0; i < clientIds.length; i += 100) {
+    const { data, error } = await supabaseAdmin.from('sale_orders')
+      .select('id, order_number, client_id, status, dispatch_status, created_at')
+      .eq('organization_id', org).in('client_id', clientIds.slice(i, i + 100)).not('status', 'in', '(cancelled,rejected)')
+      .order('created_at', { ascending: false });
+    if (error) fail(error);
+    for (const o of (data ?? []) as Array<{ id: string; order_number: string; client_id: string; status: string; dispatch_status: string | null; created_at: string }>) {
+      clientByOrder.set(o.id, o.client_id);
+      if (!result[o.client_id].lastOrder) result[o.client_id].lastOrder = { orderNumber: o.order_number, status: o.status, dispatchStatus: o.dispatch_status, createdAt: o.created_at };
+    }
+  }
+
+  const orderIds = [...clientByOrder.keys()];
+  for (let i = 0; i < orderIds.length; i += 100) {
+    const { data, error } = await supabaseAdmin.from('fmcg_shipments')
+      .select('order_id, shipment_no, status, expected_arrival')
+      .eq('organization_id', org).in('order_id', orderIds.slice(i, i + 100)).in('status', ['packed', 'dispatched'])
+      .order('created_at', { ascending: false });
+    if (error) fail(error);
+    for (const s of (data ?? []) as Array<{ order_id: string; shipment_no: string; status: string; expected_arrival: string | null }>) {
+      const clientId = clientByOrder.get(s.order_id);
+      if (clientId && !result[clientId].shipment) result[clientId].shipment = { shipmentNo: s.shipment_no, status: s.status, expectedArrival: s.expected_arrival };
+    }
+  }
+  return result;
+}

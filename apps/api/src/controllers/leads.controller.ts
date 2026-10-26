@@ -80,7 +80,8 @@ export const leads: Record<string, RequestHandler> = {
     const phone = typeof req.query.phone === 'string' ? req.query.phone : undefined;
     const email = typeof req.query.email === 'string' ? req.query.email : undefined;
     const companyName = typeof req.query.companyName === 'string' ? req.query.companyName : undefined;
-    res.json({ data: await leadService.checkDuplicates(organizationId, { phone, email, companyName }) });
+    const industryTypeId = typeof req.query.industryTypeId === 'string' && req.query.industryTypeId ? req.query.industryTypeId : undefined;
+    res.json({ data: await leadService.checkDuplicates(organizationId, { phone, email, companyName, industryTypeId }) });
   },
   setNextAction: async (req, res) => {
     const organizationId = org(req);

@@ -194,7 +194,7 @@ async function convert(organizationId: string, id: string, actorId: string, inpu
   return repository.convertLeadToClient(organizationId, id, actorId, input);
 }
 
-async function checkDuplicates(organizationId: string, input: { phone?: string | null; email?: string | null; companyName?: string | null }) {
+async function checkDuplicates(organizationId: string, input: { phone?: string | null; email?: string | null; companyName?: string | null; industryTypeId?: string | null }) {
   return repository.findDuplicateLeads(organizationId, input);
 }
 

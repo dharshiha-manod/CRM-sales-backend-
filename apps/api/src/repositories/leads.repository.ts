@@ -5,6 +5,7 @@ import { createFromRequirement } from './quotations.repository.js';
 import { listProducts } from './products.repository.js';
 import { getFollowUpConfig, getSalesConfig } from '../lib/settings.js';
 import { findRateToInr } from '../lib/fmcg-market.js';
+import { isSchoolIndustry } from '../lib/school.js';
 
 const fail = (error: unknown): never => {
   throw error;
@@ -297,7 +298,18 @@ export async function suggestRepresentativeForIndustry(organizationId: string, i
   if (assignmentsError) fail(assignmentsError);
 
   const representativeIds = [...new Set((assignments ?? []).map((row) => row.sales_representative_id as string))];
-  if (representativeIds.length === 0) return null;
+  if (representativeIds.length === 0) {
+    // School only: a rep whose login is locked to the School industry belongs to it even without a separate
+    // industry-assignment row (the Sales Representatives list already counts them). Other industries keep the old behaviour.
+    if (!(await isSchoolIndustry(organizationId, industryTypeId))) return null;
+    const { data: members, error: membersError } = await supabaseAdmin.from('organization_memberships').select('user_id').eq('organization_id', organizationId).eq('industry_type_id', industryTypeId).eq('status', 'active');
+    if (membersError) fail(membersError);
+    const userIds = (members ?? []).map((row) => row.user_id as string);
+    if (userIds.length === 0) return null;
+    const { data: reps, error: repsError } = await supabaseAdmin.from('sales_representatives').select('id').eq('organization_id', organizationId).eq('status', 'active').in('user_id', userIds).limit(1);
+    if (repsError) fail(repsError);
+    return reps && reps.length > 0 ? { id: reps[0].id as string } : null;
+  }
   if (representativeIds.length === 1) return { id: representativeIds[0] };
 
   const { data: openLeads, error: leadsError } = await supabaseAdmin
@@ -356,16 +368,19 @@ export async function unassignRepresentativeIndustryType(organizationId: string,
   if (!data) throw new AppError(404, 'ASSIGNMENT_NOT_FOUND', 'Representative is not assigned to this industry type.');
 }
 
-export async function findDuplicateLeads(organizationId: string, input: { phone?: string | null; email?: string | null; companyName?: string | null }) {
+export async function findDuplicateLeads(organizationId: string, input: { phone?: string | null; email?: string | null; companyName?: string | null; industryTypeId?: string | null }) {
   const filters: string[] = [];
   if (input.phone) filters.push(`phone.eq.${input.phone}`);
   if (input.email) filters.push(`email.ilike.${input.email}`);
   if (filters.length === 0) return [];
-  const { data, error } = await supabaseAdmin
+  // Every Industry Type is separate: the same phone / email may exist as a lead in another industry.
+  let duplicateQuery = supabaseAdmin
     .from('leads')
     .select('id, lead_code, company_name, phone, email, status, created_at')
     .eq('organization_id', organizationId)
-    .or(filters.join(','))
+    .or(filters.join(','));
+  if (input.industryTypeId) duplicateQuery = duplicateQuery.eq('industry_type_id', input.industryTypeId);
+  const { data, error } = await duplicateQuery
     .order('created_at', { ascending: false })
     .limit(20);
   if (error) fail(error);
@@ -387,7 +402,7 @@ export async function createLead(
   input: LeadInput & Required<Pick<LeadInput, 'industryTypeId' | 'companyName' | 'source' | 'priority'>>,
 ) {
     
-  const duplicates = await findDuplicateLeads(organizationId, { phone: input.phone, email: input.email, companyName: input.companyName });
+  const duplicates = await findDuplicateLeads(organizationId, { phone: input.phone, email: input.email, companyName: input.companyName, industryTypeId: input.industryTypeId });
   const exactDuplicate = duplicates.find(
     (row) => (input.phone && row.phone === input.phone) || (input.email && row.email?.toLowerCase() === input.email?.toLowerCase()),
   );
@@ -682,6 +697,9 @@ export async function convertLeadToClient(
   const OUTLET_TYPE_VALUES = ['wholesaler', 'retailer', 'distributor', 'super_stockist', 'institution', 'manufacturer', 'other'];
   const leadCustomerType = String(parseLeadMeta(lead.notes).customerType ?? '').toLowerCase();
   const outletType = OUTLET_TYPE_VALUES.includes(leadCustomerType) ? leadCustomerType : null;
+  // School only: the lead's "School type" (government / private / ...) is not a client type. A School client is always
+  // typed "School" (that is what the School pages and reports look for) and keeps the school type in its profile.
+  const isSchoolLead = await isSchoolIndustry(organizationId, lead.industry_type_id);
 
   const { data: client, error: clientError } = await supabaseAdmin
     .from('clients')
@@ -689,7 +707,8 @@ export async function convertLeadToClient(
       organization_id: organizationId,
       client_code: input.clientCode,
       client_name: lead.company_name,
-        client_type: input.clientType,
+        client_type: isSchoolLead ? 'School' : input.clientType,
+      ...(isSchoolLead && leadCustomerType ? { industry_details: { schoolType: leadCustomerType } } : {}),
       outlet_type: outletType,
       industry_type_id: lead.industry_type_id,
       phone: lead.phone,

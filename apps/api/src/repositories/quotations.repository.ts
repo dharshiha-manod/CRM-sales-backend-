@@ -12,6 +12,7 @@ import { assertWithinCreditLimit } from '../lib/credit.js';
 import { documentCurrencyForClient, isFmcgIndustry, toBase } from '../lib/fmcg-market.js';
 import { planAllocations, takeStockForOrder } from '../lib/stock.js';
 import { bestSchemeFor, loadLiveSchemes } from '../lib/fmcg-schemes.js';
+import { loadSchoolContext, schoolRuleFor, schoolStamp } from '../lib/school.js';
 
 const fail = (error: unknown): never => { throw error; };
 type ItemInput = { productId: string; quantity: number; discountPercent: number };
@@ -85,15 +86,18 @@ export async function createFromRequirement(organizationId: string, representati
   const listed = await priceListRates(organizationId, quoteClient, input.items.map((item) => ({ productName: String(byId.get(item.productId)?.product_name ?? ''), quantity: item.quantity })));
   const docCurrency = await documentCurrencyForClient(organizationId, quoteClient as { country_code?: string | null; currency_code?: string | null; industry_type_id?: string | null } | null);
   const schemes = docCurrency ? await loadLiveSchemes(organizationId, (quoteClient as { industry_type_id?: string | null } | null)?.industry_type_id, ids) : [];
+  // School only (null for every other industry): this school's negotiated price rules + the running academic year / term.
+  const schoolCtx = await loadSchoolContext(organizationId, quoteClient ? { id: requirement.client_id as string, industry_type_id: (quoteClient as { industry_type_id?: string | null }).industry_type_id } : null, ids);
   const lines = input.items.map((item) => {
     const product = byId.get(item.productId)!;
     const fromList = listed.get(String(product.product_name ?? ''));
     // Catalog and price-list prices are rupee prices. For an international FMCG client the quotation is in the
     // client's currency, so the rupee price is converted at the FMCG rate (1 unit of currency = rate INR).
-    const inrPrice = fromList ? fromList.rate : Number(product.selling_price);
+    const schoolRule = schoolRuleFor(schoolCtx, product.id, item.quantity, fromList ? fromList.rate : Number(product.selling_price));
+    const inrPrice = schoolRule?.discount_type === 'fixed_price' ? Number(schoolRule.fixed_price) : fromList ? fromList.rate : Number(product.selling_price);
     const unitPrice = docCurrency && docCurrency.exchange_rate !== 1 ? Math.round((inrPrice / docCurrency.exchange_rate) * 100) / 100 : inrPrice;
-    // A discount typed on the quotation line wins; otherwise the price list's own discount applies.
-    const typedDiscount = item.discountPercent || fromList?.discount || 0;
+    // A discount typed on the quotation line wins; then a School's own percentage rule; otherwise the price list's own discount applies.
+    const typedDiscount = item.discountPercent || (schoolRule?.discount_type === 'percentage' ? Number(schoolRule.discount_percent ?? 0) : 0) || fromList?.discount || 0;
     const gross = unitPrice * item.quantity;
     // A live FMCG scheme applies only to a line that has no discount of its own (typed or from the price list).
     const applied = docCurrency && !typedDiscount ? bestSchemeFor(schemes, product.id, item.quantity, unitPrice, docCurrency.exchange_rate) : null;
@@ -108,7 +112,7 @@ export async function createFromRequirement(organizationId: string, representati
   const subtotalSum = lines.reduce((sum, line) => sum + line.subtotal, 0);
   const taxSum = lines.reduce((sum, line) => sum + line.tax_amount, 0);
   const fxFields = docCurrency ? { ...docCurrency, base_total: toBase(subtotalSum + taxSum, docCurrency.exchange_rate) } : {};
-  const { data: quotation, error } = await supabaseAdmin.from('quotations').insert({ organization_id: organizationId, quotation_number: quotationNumber, client_id: requirement.client_id, representative_id: representativeId, requirement_id: requirement.id, valid_until: input.validUntil ?? null, discount_amount: lines.reduce((sum, line) => sum + line.discount_amount, 0), tax_amount: taxSum, total_amount: subtotalSum + taxSum, notes: input.notes ?? null, ...fxFields }).select().single();
+  const { data: quotation, error } = await supabaseAdmin.from('quotations').insert({ organization_id: organizationId, quotation_number: quotationNumber, client_id: requirement.client_id, representative_id: representativeId, requirement_id: requirement.id, valid_until: input.validUntil ?? null, discount_amount: lines.reduce((sum, line) => sum + line.discount_amount, 0), tax_amount: taxSum, total_amount: subtotalSum + taxSum, notes: input.notes ?? null, ...fxFields, ...schoolStamp(schoolCtx) }).select().single();
   if (error) fail(error);
   const { error: itemError } = await supabaseAdmin.from('quotation_items').insert(lines.map((line) => ({ ...line, quotation_id: quotation.id })));
   if (itemError) { await supabaseAdmin.from('quotations').delete().eq('id', quotation.id); fail(itemError); }
@@ -168,7 +172,7 @@ export async function convertToOrder(organizationId: string, representativeId: s
   // quotation_id must be set here so the Orders page can correctly show
   // this as "converted from a quotation" instead of "Manual entry" — the
   // notes text alone isn't enough, the frontend only trusts quotation_id.
-  const { data: order, error } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: number, client_id: quotation.client_id, representative_id: quotation.representative_id, discount_amount: quotation.discount_amount, tax_amount: quotation.tax_amount, total_amount: quotation.total_amount, notes: `Converted from quotation ${quotation.quotation_number}`, status: 'confirmed', quotation_id: quotation.id, ...(quotation.currency_code ? { currency_code: quotation.currency_code, exchange_rate: quotation.exchange_rate, base_total: quotation.base_total } : {}) }).select().single();
+  const { data: order, error } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: number, client_id: quotation.client_id, representative_id: quotation.representative_id, discount_amount: quotation.discount_amount, tax_amount: quotation.tax_amount, total_amount: quotation.total_amount, notes: `Converted from quotation ${quotation.quotation_number}`, status: 'confirmed', quotation_id: quotation.id, ...(quotation.currency_code ? { currency_code: quotation.currency_code, exchange_rate: quotation.exchange_rate, base_total: quotation.base_total } : {}), ...(quotation.academic_year_id ? { academic_year_id: quotation.academic_year_id, term_id: quotation.term_id ?? null } : {}) }).select().single();
   if (error) fail(error);
   const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal, tax_percent: item.tax_percent ?? 0, tax_amount: item.tax_amount ?? 0, ...(item.scheme_id ? { scheme_id: item.scheme_id, free_quantity: item.free_quantity ?? 0 } : {}) }));
   const { error: itemError } = await supabaseAdmin.from('sale_order_items').insert(items);

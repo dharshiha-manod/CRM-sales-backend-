@@ -134,3 +134,48 @@ export async function deleteReturn(org: string, scope: IndustryScope, id: string
   const { error } = await supabaseAdmin.from('sales_returns').delete().eq('id', id).eq('organization_id', org).neq('status', 'approved');
   if (error) fail(error);
 }
+/**
+ * Delivery receipt -> Sales Return & Damage. When a shipment is delivered, what the receipt records becomes a PENDING entry:
+ *  - damaged units -> a "damage" entry (client credited by default; edit to "client bears the loss" before approving)
+ *  - short units (never arrived) -> a "return" entry, not restocked, so the client is not billed for goods they never got
+ * Re-saving the receipt updates the still-pending entry; approved / rejected entries are never touched.
+ */
+export async function syncDamageFromDelivery(org: string, userId: string, scope: IndustryScope, shipmentId: string, shipmentNo: string, orderId: string) {
+  const { data: items, error } = await supabaseAdmin.from('fmcg_shipment_items').select('order_item_id, damaged_quantity, short_quantity').eq('shipment_id', shipmentId);
+  if (error) fail(error);
+  const itemIds = (items ?? []).map((i) => i.order_item_id as string);
+  const productOfItem = new Map<string, string>();
+  if (itemIds.length) {
+    const { data: lines, error: lineError } = await supabaseAdmin.from('sale_order_items').select('id, product_id').in('id', itemIds);
+    if (lineError) fail(lineError);
+    for (const l of lines ?? []) productOfItem.set(l.id as string, l.product_id as string);
+  }
+  const total = (column: 'damaged_quantity' | 'short_quantity') => {
+    const byProduct = new Map<string, number>();
+    for (const i of items ?? []) {
+      const productId = productOfItem.get(i.order_item_id as string);
+      if (productId) byProduct.set(productId, round2((byProduct.get(productId) ?? 0) + Number(i[column] ?? 0)));
+    }
+    return byProduct;
+  };
+
+  const plans: Array<{ kind: 'damage' | 'return'; reason: string; quantities: Map<string, number> }> = [
+    { kind: 'damage', reason: `Damaged on delivery (${shipmentNo})`, quantities: total('damaged_quantity') },
+    { kind: 'return', reason: `Short delivery (${shipmentNo})`, quantities: total('short_quantity') },
+  ];
+
+  for (const plan of plans) {
+    const { data: existing, error: existingError } = await supabaseAdmin.from('sales_returns').select('id, product_id, status, quantity').eq('organization_id', org).eq('order_id', orderId).eq('reason', plan.reason);
+    if (existingError) fail(existingError);
+    for (const [productId, quantity] of plan.quantities) {
+      const entry = (existing ?? []).find((e) => e.product_id === productId);
+      const input = { orderId, productId, quantity, kind: plan.kind, reason: plan.reason, creditClient: true, restock: false };
+      if (!entry) {
+        if (quantity > 0) await createReturn(org, userId, scope, input);
+      } else if (entry.status === 'pending') {
+        if (quantity <= 0) await supabaseAdmin.from('sales_returns').delete().eq('id', entry.id).eq('organization_id', org).eq('status', 'pending');
+        else if (Number(entry.quantity) !== quantity) await createReturn(org, userId, scope, input, undefined, entry.id as string);
+      }
+    }
+  }
+}

@@ -6,6 +6,8 @@ import { assertRecordInScope, resolveIndustryTypeId, type IndustryScope } from '
 import { isFmcgIndustry, marketScopeOf } from '../lib/fmcg-market.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { completeOrderIfSettled } from '../lib/order-completion.js';
+import { logger } from '../lib/logger.js';
+import { syncDamageFromDelivery } from './sales-returns.repository.js';
 import { assertAdvanceReceived, collectCodOnDelivery } from '../lib/payment-terms.js'; // <-- NEW
 import { dispatchBlockMessage,ensureFmcgExportPaperwork, ensureFmcgFreightCharge, fmcgCustomsDispatchProblems, fmcgDocumentDispatchProblems, syncFmcgExportInvoice, syncFmcgPaperworkOnStatus } from '../lib/fmcg-paperwork.js';
 
@@ -143,7 +145,7 @@ function patternOrNull(value: unknown, label: string, pattern: RegExp, hint: str
 }
 const NEXT: Record<string, string[]> = { packed: ['packed', 'dispatched', 'cancelled'], dispatched: ['dispatched', 'delivered'], delivered: ['delivered'], cancelled: [] };
 
-export async function updateShipment(org: string, scope: IndustryScope, shipmentId: string, input: UpdateInput) {
+export async function updateShipment(org: string, scope: IndustryScope, shipmentId: string, input: UpdateInput, userId?: string) {
   const { data, error } = await supabaseAdmin.from('fmcg_shipments')
     .select('id, order_id, shipment_no, status, transport_ref, shipped_at, expected_arrival, delivered_at, notes, transporter_name, driver_name, driver_phone, eway_bill_no, eway_bill_valid_until, invoice_no, received_by, pod_file_url').eq('id', shipmentId).eq('organization_id', org).maybeSingle();
   if (error) throw new AppError(500, 'SHIPMENT_LOOKUP_FAILED', error.message, error);
@@ -224,6 +226,11 @@ export async function updateShipment(org: string, scope: IndustryScope, shipment
   for (const r of receiptRows) {
     const { error: receiptError } = await supabaseAdmin.from('fmcg_shipment_items').update({ short_quantity: r.short, damaged_quantity: r.damaged }).eq('id', r.id).eq('shipment_id', shipmentId);
     if (receiptError) throw new AppError(500, 'SHIPMENT_RECEIPT_FAILED', receiptError.message, receiptError);
+  }
+  // Damaged goods land on the Sales Return & Damage page as a Pending entry (never blocks the delivery itself).
+  if (target === 'delivered' && receiptRows.length > 0 && userId) {
+    try { await syncDamageFromDelivery(org, userId, scope, shipmentId, row.shipment_no, row.order_id); }
+    catch (damageError) { logger.warn({ err: damageError, shipmentId }, 'damage entry could not be created from the delivery receipt'); }
   }
    if (target !== row.status) await syncFmcgPaperworkOnStatus(org, shipmentId, target, { shippedAt: shipped, deliveredAt: delivered }); // Import/Export, Trade Documents, Customs follow the shipment
   // FMCG: dispatching (or entering freight on a dispatched/delivered shipment) makes/updates the shipment's freight charge line.

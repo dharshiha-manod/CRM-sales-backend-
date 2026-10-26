@@ -8,6 +8,7 @@ import { documentCurrencyForClient, isFmcgIndustry, toBase, type DocumentCurrenc
 import { bestSchemeFor, loadLiveSchemes, type LiveScheme } from '../lib/fmcg-schemes.js';
 import { applyAllocations, planAllocations, readAllocation, releaseStockForOrder, takeStockForOrder, type Allocation } from '../lib/stock.js';
 import { billedTotalsForCoreOrders } from './trading.repository.js';
+import { applySchoolPricingToOrder, loadSchoolContext, schoolStamp } from '../lib/school.js';
 const fail = (error: unknown): never => { throw error; };
 type OrderItem = { productId: string; quantity: number; discountPercent: number; freeQuantity?: number };
 
@@ -77,7 +78,10 @@ export async function createOrderFromVisit(organizationId: string, representativ
   if ((products ?? []).length !== new Set(productIds).size) throw new AppError(422, 'INVALID_ORDER_PRODUCT', 'One or more selected products are unavailable.');
   const productById = new Map((products ?? []).map((product) => [product.id, product]));
   const { doc, industryTypeId } = await clientMarket(organizationId, visit.client_id);
-  const lines = buildOrderLines(input.items, productById, doc, doc ? await loadLiveSchemes(organizationId, industryTypeId, productIds) : []);
+  // School only: apply this school's negotiated price rules. Everyone else gets the same items / products back, unchanged.
+  const schoolCtx = await loadSchoolContext(organizationId, { id: visit.client_id, industry_type_id: industryTypeId }, productIds);
+  const priced = applySchoolPricingToOrder(schoolCtx, input.items, productById);
+  const lines = buildOrderLines(priced.items, priced.productById, doc, doc ? await loadLiveSchemes(organizationId, industryTypeId, productIds) : []);
 
   const total = lines.reduce((sum, line) => sum + line.subtotal, 0);
   const discount = lines.reduce((sum, line) => sum + line.discount_amount, 0);
@@ -97,7 +101,7 @@ export async function createOrderFromVisit(organizationId: string, representativ
   // Check stock BEFORE saving anything, so a short-stock order never gets created (or uses up an order number).
   if (doc && initialStatus === 'confirmed') await planAllocations(organizationId, lines.map((l) => ({ product_id: l.product_id, quantity: l.quantity, free_quantity: (l as { free_quantity?: number }).free_quantity ?? 0 })));
 
-  const { data: order, error: orderError } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: orderNumber, visit_id: visit.id, client_id: visit.client_id, representative_id: representativeId, discount_amount: discount, total_amount: total, notes: input.notes, status: initialStatus, ...(doc ? { ...doc, base_total: totalInr } : {}) }).select().single();
+  const { data: order, error: orderError } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: orderNumber, visit_id: visit.id, client_id: visit.client_id, representative_id: representativeId, discount_amount: discount, total_amount: total, notes: input.notes, status: initialStatus, ...(doc ? { ...doc, base_total: totalInr } : {}), ...schoolStamp(schoolCtx) }).select().single();
   if (orderError) fail(orderError);
 
   const { data: savedLines, error: lineError } = await supabaseAdmin.from('sale_order_items').insert(lines.map((line) => ({ ...line, order_id: order.id }))).select();
@@ -120,6 +124,13 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
   if (repError) fail(repError);
   if (!rep) throw new AppError(422, 'INVALID_REPRESENTATIVE', 'Select an active sales representative.');
 
+  // The order's rep must be the client's own rep, otherwise the beat / follow-up / target credit goes to the wrong person.
+  const { data: owners, error: ownersError } = await supabaseAdmin.from('sales_representative_client_assignments').select('sales_representative_id').eq('organization_id', organizationId).eq('client_id', client.id as string).eq('status', 'active');
+  if (ownersError) fail(ownersError);
+  if ((owners ?? []).length > 0 && !(owners ?? []).some((o) => o.sales_representative_id === rep.id)) {
+    throw new AppError(422, 'REPRESENTATIVE_NOT_ASSIGNED', "This client is assigned to a different sales representative. Select the client's own representative.");
+  }
+
   const productIds = input.items.map((item) => item.productId);
   const { data: products, error: productError } = await supabaseAdmin.from('products').select('id, product_code, product_name, selling_price').eq('organization_id', organizationId).eq('status', 'active').in('id', productIds);
   if (productError) fail(productError);
@@ -127,7 +138,9 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
 
   const productById = new Map((products ?? []).map((product) => [product.id, product]));
   const { doc } = await clientMarket(organizationId, client.id as string);
-  const lines = buildOrderLines(input.items, productById, doc, doc ? await loadLiveSchemes(organizationId, client.industry_type_id as string | null, productIds) : []);
+  const schoolCtx = await loadSchoolContext(organizationId, { id: client.id as string, industry_type_id: client.industry_type_id as string | null }, productIds);
+  const priced = applySchoolPricingToOrder(schoolCtx, input.items, productById);
+  const lines = buildOrderLines(priced.items, priced.productById, doc, doc ? await loadLiveSchemes(organizationId, client.industry_type_id as string | null, productIds) : []);
 
   const total = lines.reduce((sum, line) => sum + line.subtotal, 0);
   const discount = lines.reduce((sum, line) => sum + line.discount_amount, 0);
@@ -145,7 +158,7 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
   // Check stock BEFORE saving anything, so a short-stock order never gets created (same as the visit path).
   if (doc && initialStatus === 'confirmed') await planAllocations(organizationId, lines.map((l) => ({ product_id: l.product_id, quantity: l.quantity, free_quantity: (l as { free_quantity?: number }).free_quantity ?? 0 })));
 
-  const { data: order, error: orderError } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: orderNumber, visit_id: null, client_id: client.id, representative_id: rep.id, discount_amount: discount, total_amount: total, notes: input.notes, status: initialStatus, ...(doc ? { ...doc, base_total: totalInr } : {}) }).select().single();
+  const { data: order, error: orderError } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: orderNumber, visit_id: null, client_id: client.id, representative_id: rep.id, discount_amount: discount, total_amount: total, notes: input.notes, status: initialStatus, ...(doc ? { ...doc, base_total: totalInr } : {}), ...schoolStamp(schoolCtx) }).select().single();
   if (orderError) fail(orderError);
 
   const { data: savedLines, error: lineError } = await supabaseAdmin.from('sale_order_items').insert(lines.map((line) => ({ ...line, order_id: order.id }))).select();
@@ -254,7 +267,9 @@ export async function updateOrder(organizationId: string, scope: IndustryScope, 
 
     const productById = new Map((products ?? []).map((product) => [product.id, product]));
     const { doc } = await clientMarket(organizationId, order.client_id as string);
-    const lines = buildOrderLines(input.items, productById, doc, doc ? await loadLiveSchemes(organizationId, orderIndustryTypeId, productIds) : []);
+    const schoolCtx = await loadSchoolContext(organizationId, { id: order.client_id as string, industry_type_id: orderIndustryTypeId }, productIds);
+    const priced = applySchoolPricingToOrder(schoolCtx, input.items, productById);
+    const lines = buildOrderLines(priced.items, priced.productById, doc, doc ? await loadLiveSchemes(organizationId, orderIndustryTypeId, productIds) : []);
     const total = lines.reduce((sum, line) => sum + line.subtotal, 0);
     const discount = lines.reduce((sum, line) => sum + line.discount_amount, 0);
     const totalInr = doc ? toBase(total, doc.exchange_rate) : total;

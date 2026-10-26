@@ -88,6 +88,13 @@ export async function syncAssignments(org: string, representativeId: string, cli
     const { error } = await supabaseAdmin.from('sales_representative_client_assignments').upsert(rows, { onConflict: 'organization_id,sales_representative_id,client_id' });
     if (error) fail(error);
   }
+  // One owner per outlet: any other rep still actively assigned to these outlets is released,
+  // so orders, beats and follow-ups all point to the same representative.
+  for (let i = 0; i < ids.length; i += ID_CHUNK) {
+    const { error } = await supabaseAdmin.from('sales_representative_client_assignments').update({ status: 'inactive' })
+      .eq('organization_id', org).eq('status', 'active').neq('sales_representative_id', representativeId).in('client_id', ids.slice(i, i + ID_CHUNK));
+    if (error) fail(error);
+  }
 }
 
 // ---------- auto-generate beats ----------
@@ -117,19 +124,40 @@ export async function autoGenerateBeats(org: string, userId: string, industryTyp
   }
 
   // 1) group by pincode, else city; 2) order each group by nearest neighbour; 3) cut into evenly sized beats
+  // A client that already belongs to a rep (set on its lead) stays with that rep: beats are cut per area AND per owner.
+  const ownerOf = new Map<string, string>();
+  for (let i = 0; i < free.length; i += 100) {
+    const { data: owned, error: ownedError } = await supabaseAdmin.from('sales_representative_client_assignments')
+      .select('client_id, sales_representative_id, sales_representatives!inner(status)')
+      .eq('organization_id', org).eq('status', 'active').eq('sales_representatives.status', 'active')
+      .in('client_id', free.slice(i, i + 100).map((c) => c.id));
+    if (ownedError) fail(ownedError);
+    for (const a of (owned ?? []) as Array<{ client_id: string; sales_representative_id: string }>) if (!ownerOf.has(a.client_id)) ownerOf.set(a.client_id, a.sales_representative_id);
+  }
+
   const groups = new Map<string, Outlet[]>();
   for (const c of free) {
-    const key = (c.postal_code?.trim() || c.city?.trim() || 'Unassigned').toLowerCase();
+    const key = `${(c.postal_code?.trim() || c.city?.trim() || 'Unassigned').toLowerCase()}|${ownerOf.get(c.id) ?? ''}`;
     groups.set(key, [...(groups.get(key) ?? []), c]);
   }
-  type Planned = { name: string; area: string; outlets: Outlet[] };
+  type Planned = { name: string; area: string; outlets: Outlet[]; ownerRep: string | null };
   const planned: Planned[] = [];
   for (const list of groups.values()) {
     const area = list[0].city?.trim() || list[0].postal_code?.trim() || 'Unassigned';
     const ordered = orderNearest(list);
     const parts = Math.ceil(ordered.length / input.maxOutlets);
     const size = Math.ceil(ordered.length / parts);
-    for (let i = 0; i < parts; i += 1) planned.push({ name: parts === 1 ? `${area} Beat` : `${area} Beat ${i + 1}`, area, outlets: ordered.slice(i * size, (i + 1) * size) });
+    for (let i = 0; i < parts; i += 1) planned.push({ name: '', area, outlets: ordered.slice(i * size, (i + 1) * size), ownerRep: ownerOf.get(list[0].id) ?? null });
+  }
+  // Name beats per area: "Colachel Beat" when the area has one beat, "Colachel Beat 1, 2..." when it has several.
+  const perArea = new Map<string, number>();
+  for (const p of planned) perArea.set(p.area.toLowerCase(), (perArea.get(p.area.toLowerCase()) ?? 0) + 1);
+  const seenArea = new Map<string, number>();
+  for (const p of planned) {
+    const k = p.area.toLowerCase();
+    const n = (seenArea.get(k) ?? 0) + 1;
+    seenArea.set(k, n);
+    p.name = perArea.get(k) === 1 ? `${p.area} Beat` : `${p.area} Beat ${n}`;
   }
 
   // 4) balance visit days (and reps) so no weekday is overloaded; existing beats count towards the load
@@ -142,7 +170,12 @@ export async function autoGenerateBeats(org: string, userId: string, industryTyp
     const days = [...WORK_DAYS].sort((a, b) => dayLoad[a] - dayLoad[b]).slice(0, input.visitDaysPerBeat);
     days.sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b));
     let representativeId: string | null = null;
-    if (reps.length) {
+    if (p.ownerRep) {
+      // the outlets' own rep keeps them; only outlets with no owner are balanced across the selected reps
+      representativeId = p.ownerRep;
+      repDay[representativeId] ??= Object.fromEntries(WORK_DAYS.map((d) => [d, 0]));
+      for (const d of days) repDay[representativeId][d] += p.outlets.length;
+    } else if (reps.length) {
       const cost = (r: string) => days.reduce((s, d) => s + repDay[r][d], 0);
       representativeId = [...reps].sort((a, b) => cost(a) - cost(b))[0];
       for (const d of days) repDay[representativeId][d] += p.outlets.length;

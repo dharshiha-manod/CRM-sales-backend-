@@ -15,7 +15,8 @@ export const INDUSTRY_FIELD_DEFS: Record<string, IndustryFieldDef[]> = {
   SCHOOL: [
     { key: 'boardAffiliation', label: 'Board affiliation', type: 'select', required: true, options: ['CBSE', 'ICSE', 'State Board', 'IB', 'Other'] },
     { key: 'udiseCode', label: 'UDISE+ code', type: 'text', pattern: /^[0-9]{11}$/, patternMessage: 'UDISE+ code must be 11 digits' },
-    { key: 'studentStrength', label: 'Approx. student strength', type: 'number', min: 0, max: 200000 }
+    { key: 'studentStrength', label: 'Approx. student strength', type: 'number', min: 0, max: 200000 },
+    { key: 'schoolType', label: 'School type', type: 'select', options: ['government', 'private', 'international', 'college', 'coaching'] }
   ],
   TEXTILE: [
     { key: 'unitType', label: 'Unit type', type: 'select', required: true, options: ['Powerloom', 'Handloom', 'Composite mill', 'Garment unit', 'Trader'] },
