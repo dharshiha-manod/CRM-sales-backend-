@@ -5,6 +5,7 @@ import './MasterDataPages.css';
 // Mirrors the SCHOOL entry in ClientsPage.tsx's INDUSTRY_FIELDS — keep both in sync
 // (and apps/api/src/lib/industry-profile.ts, which re-validates on save).
 const BOARD_OPTIONS = ['CBSE', 'ICSE', 'State Board', 'IB', 'Other'];
+const SCHOOL_TYPE_OPTIONS: [string, string][] = [['government', 'Government school'], ['private', 'Private school'], ['international', 'International school'], ['college', 'College'], ['coaching', 'Coaching / Tuition center']];
 const ADVANCE_MODE_OPTIONS = ['Cash', 'UPI', 'Bank transfer', 'Cheque', 'Other'];
 
 type IndustryType = { id: string; code: string; name: string; status: string };
@@ -17,6 +18,7 @@ type SchoolForm = {
   creditLimit: string;
   creditDays: string;
   boardAffiliation: string;
+  schoolType: string;
   udiseCode: string;
   studentStrength: string;
   advanceAmount: string;
@@ -25,10 +27,11 @@ type SchoolForm = {
   advanceReferenceNo: string;
   status: 'active' | 'inactive';
 };
-const blankForm: SchoolForm = { clientCode: '', clientName: '', city: '', gstin: '', creditLimit: '', creditDays: '', boardAffiliation: '', udiseCode: '', studentStrength: '', advanceAmount: '', advancePaymentMode: '', advancePaymentDate: '', advanceReferenceNo: '', status: 'active' };
+const blankForm: SchoolForm = { clientCode: '', clientName: '', city: '', gstin: '', creditLimit: '', creditDays: '', boardAffiliation: '', schoolType: '', udiseCode: '', studentStrength: '', advanceAmount: '', advancePaymentMode: '', advancePaymentDate: '', advanceReferenceNo: '', status: 'active' };
 
 type IndustryDetails = {
   boardAffiliation?: string;
+  schoolType?: string;
   udiseCode?: string;
   studentStrength?: string | number;
   advanceAmount?: string | number;
@@ -82,45 +85,9 @@ function advanceAmountOf(client: Client): number {
   return raw ? Number(raw) || 0 : 0;
 }
 
-const DEMO_SCHOOLS: Client[] = [
-  {
-    id: 'demo-school-1',
-    client_code: 'SCH-0001',
-    client_name: 'Sunrise Public School',
-    client_type: 'School',
-    status: 'active',
-    city: 'Chennai',
-    gstin: null,
-    credit_limit: 200000,
-    credit_days: 30,
-    industry_details: {
-      boardAffiliation: 'CBSE',
-      udiseCode: '33010203401',
-      studentStrength: 1200,
-      advanceAmount: 50000,
-      advancePaymentMode: 'Bank transfer',
-      advancePaymentDate: '2026-06-15',
-      advanceReferenceNo: 'TXN882145',
-    },
-    sales_representative_client_assignments: [],
-  },
-  {
-    id: 'demo-school-2',
-    client_code: 'SCH-0002',
-    client_name: 'Greenfield Matriculation School',
-    client_type: 'School',
-    status: 'active',
-    city: 'Coimbatore',
-    gstin: null,
-    credit_limit: 120000,
-    credit_days: 15,
-    industry_details: { boardAffiliation: 'State Board', udiseCode: '33020304502', studentStrength: 650 },
-    sales_representative_client_assignments: [],
-  },
-];
-
 export function SchoolManagementPage() {
   const [schools, setSchools] = useState<Client[]>([]);
+  const [summary, setSummary] = useState<Record<string, { orderCount: number; totalSales: number; totalCollected: number; outstanding: number; lastOrderDate: string | null }>>({});
   const [orders, setOrders] = useState<Order[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [loading, setLoading] = useState(true);
@@ -141,21 +108,21 @@ export function SchoolManagementPage() {
   const [formMessage, setFormMessage] = useState('');
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
 
-  const schoolIndustryTypeId = useMemo(() => industryTypes.find((it) => it.code === 'SCHOOL')?.id ?? '', [industryTypes]);
+  const schoolIndustryTypeId = useMemo(() => industryTypes.find((it) => it.code.toUpperCase() === 'SCHOOL')?.id ?? '', [industryTypes]);
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      const [clientsRes, ordersRes, collectionsRes, industryTypesRes] = await Promise.all([
+      // /clients is already limited to the School industry by the API; a client's "type" is not used to find schools
+      // (a school created from a lead used to be typed "private" / "government" and so never showed up here).
+      const [clientsRes, summaryRes, industryTypesRes] = await Promise.all([
         api<{ data: Client[] }>('/clients'),
-        api<{ data: Order[] }>('/orders').catch(() => ({ data: [] })),
-        api<{ data: Collection[] }>('/collections').catch(() => ({ data: [] })),
+        api<{ data: { rows: Array<{ school: { id: string }; orderCount: number; totalSales: number; totalCollected: number; outstanding: number; lastOrderDate: string | null }> } }>('/school/sales-summary').catch(() => ({ data: { rows: [] } })),
         api<{ data: IndustryType[] }>('/industry-types?status=active').catch(() => ({ data: [] })),
       ]);
-      setSchools((clientsRes.data ?? []).filter((c) => (c.client_type ?? '').toLowerCase() === 'school'));
-      setOrders(ordersRes.data ?? []);
-      setCollections(collectionsRes.data ?? []);
+      setSchools(clientsRes.data ?? []);
+      setSummary(Object.fromEntries((summaryRes.data?.rows ?? []).map((r) => [r.school.id, r])));
       setIndustryTypes(industryTypesRes.data ?? []);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to load school data.');
@@ -184,6 +151,7 @@ export function SchoolManagementPage() {
       creditLimit: school.credit_limit != null ? String(school.credit_limit) : '',
       creditDays: school.credit_days != null ? String(school.credit_days) : '',
       boardAffiliation: String(d.boardAffiliation ?? ''),
+      schoolType: String(d.schoolType ?? ''),
       udiseCode: String(d.udiseCode ?? ''),
       studentStrength: d.studentStrength != null ? String(d.studentStrength) : '',
       advanceAmount: d.advanceAmount != null ? String(d.advanceAmount) : '',
@@ -203,6 +171,7 @@ export function SchoolManagementPage() {
       const industryDetails = Object.fromEntries(
         Object.entries({
           boardAffiliation: form.boardAffiliation,
+          schoolType: form.schoolType,
           udiseCode: form.udiseCode,
           studentStrength: form.studentStrength,
           advanceAmount: form.advanceAmount,
@@ -235,23 +204,24 @@ export function SchoolManagementPage() {
     }
   }
   function ledger(clientId: string) {
-    const clientOrders = orders.filter((o) => o.client_id === clientId && o.status !== 'cancelled');
-    const clientCollections = collections.filter((c) => c.client_id === clientId);
-    const totalSales = clientOrders.reduce((sum, o) => sum + (o.total_amount ?? 0), 0);
-    const totalCollected = clientCollections.reduce((sum, c) => sum + (c.amount ?? 0), 0);
-    const outstanding = Math.max(0, totalSales - totalCollected);
-    const lastOrder = clientOrders.slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
-    return { orderCount: clientOrders.length, totalSales, totalCollected, outstanding, lastOrderDate: lastOrder?.created_at ?? null };
+    const s = summary[clientId];
+    return { orderCount: s?.orderCount ?? 0, totalSales: s?.totalSales ?? 0, totalCollected: s?.totalCollected ?? 0, outstanding: s?.outstanding ?? 0, lastOrderDate: s?.lastOrderDate ?? null };
   }
 
   const rows = useMemo(() => {
-    const usingDemoData = !loading && schools.length === 0;
-    const source = usingDemoData ? DEMO_SCHOOLS : schools;
-    return source.map((s) => ({ school: s, ...ledger(s.id), rep: activeRep(s), advance: advanceAmountOf(s) }));
+    return schools.map((s) => ({ school: s, ...ledger(s.id), rep: activeRep(s), advance: advanceAmountOf(s) }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schools, orders, collections, loading]);
+  }, [schools, summary]);
 
-  const usingDemoData = !loading && schools.length === 0;
+  // The ledger drawer loads the school's own orders + payments from the School API (not the capped global lists).
+  useEffect(() => {
+    if (!viewing) return;
+    let cancelled = false;
+    api<{ data: { orders: Order[]; collections: Collection[] } }>(`/school/schools/${viewing.id}/ledger`)
+      .then((res) => { if (!cancelled) { setOrders(res.data?.orders ?? []); setCollections(res.data?.collections ?? []); } })
+      .catch(() => { if (!cancelled) { setOrders([]); setCollections([]); } });
+    return () => { cancelled = true; };
+  }, [viewing]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -294,8 +264,8 @@ export function SchoolManagementPage() {
   const totalOutstanding = rows.reduce((sum, r) => sum + r.outstanding, 0);
 
   const viewingLedger = viewing ? ledger(viewing.id) : null;
-  const viewingOrders = viewing ? orders.filter((o) => o.client_id === viewing.id).slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) : [];
-  const viewingCollections = viewing ? collections.filter((c) => c.client_id === viewing.id).slice().sort((a, b) => new Date(b.collected_at).getTime() - new Date(a.collected_at).getTime()) : [];
+  const viewingOrders = viewing ? orders : [];
+  const viewingCollections = viewing ? collections : [];
   const viewingDetails = viewing?.industry_details ?? {};
 
   return (
@@ -304,7 +274,7 @@ export function SchoolManagementPage() {
         <div>
           <p className="eyebrow">SCHOOL · SCHOOL MANAGEMENT</p>
           <h2>School management</h2>
-          <p>Directory of school clients — board affiliation, UDISE+ code, student strength, advance payments and sales ledger. Add or edit a school from the Clients directory with client type "School".</p>
+          <p>Directory of school clients — board affiliation, UDISE+ code, student strength, advance payments and sales ledger. Schools qualified from Leads appear here automatically; you can also add one directly.</p>
         </div>
       </div>
 
@@ -335,8 +305,7 @@ export function SchoolManagementPage() {
         </div>
       </div>
 
-      {error && !usingDemoData && <p role="alert" className="error">{error}</p>}
-      {usingDemoData && <p className="demo-data-banner">Showing sample data for preview — this is a UI-only demo, nothing here is saved.</p>}
+      {error && <p role="alert" className="error">{error}</p>}
 
      <div className="master-toolbar">
         <div className="master-search">
@@ -491,14 +460,13 @@ export function SchoolManagementPage() {
               const row = filteredRows.find((r) => r.school.id === menuFor.id);
               if (!row) return null;
               const { school } = row;
-              const isDemo = String(school.id).startsWith('demo-');
               return (
                 <>
                   <button type="button" title="View" onClick={() => { setMenuFor(null); setViewing(school); }}>
                     <span>◉</span>
                     <span>View</span>
                   </button>
-                  {!isDemo && (
+                  {(
                     <>
                       <button type="button" title="Edit" onClick={() => { setMenuFor(null); openEdit(school); }}>
                         <span>✎</span>
@@ -632,6 +600,7 @@ export function SchoolManagementPage() {
                 <legend>School details</legend>
                 <div className="fieldset-grid">
                   <label>Board affiliation *<select required value={form.boardAffiliation} onChange={(e) => setForm({ ...form, boardAffiliation: e.target.value })}><option value="">Select…</option>{BOARD_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}</select></label>
+                  <label>School type<select value={form.schoolType} onChange={(e) => setForm({ ...form, schoolType: e.target.value })}><option value="">Select…</option>{SCHOOL_TYPE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
                   <label>UDISE+ code<input value={form.udiseCode} placeholder="11 digits" onChange={(e) => setForm({ ...form, udiseCode: e.target.value })} /></label>
                   <label>Approx. student strength<input type="number" min="0" value={form.studentStrength} onChange={(e) => setForm({ ...form, studentStrength: e.target.value })} /></label>
                 </div>

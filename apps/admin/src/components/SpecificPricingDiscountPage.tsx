@@ -2,11 +2,8 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import './MasterDataPages.css';
 
-// No backend table for school-specific pricing yet — persisted client-side in
-// localStorage, same interim pattern as fs-schemes in SchemeDiscountPage.tsx.
-// Swap for a real /pricing-rules API once the backend adds it.
-const STORAGE_KEY = 'fs-school-pricing-rules';
-
+// School-specific pricing rules are real School master data (school_pricing_rules), saved through the School API.
+// Once a rule is active and inside its dates, new quotations and orders for that school pick it up automatically.
 type School = { id: string; client_code: string; client_name: string; client_type: string; status: string };
 type Product = { id: string; product_code: string; product_name: string; category?: string | null; selling_price: number; status: string };
 
@@ -20,65 +17,29 @@ type PricingRule = {
   discountType: DiscountType;
   discountPercent: string;
   fixedPrice: string;
+  minQuantity: string;
   startDate: string;
   endDate: string;
   status: 'active' | 'inactive';
   notes: string;
 };
 type RuleForm = Omit<PricingRule, 'id'>;
-const blankForm: RuleForm = { schoolId: '', productId: '', discountType: 'percentage', discountPercent: '', fixedPrice: '', startDate: '', endDate: '', status: 'active', notes: '' };
+const blankForm: RuleForm = { schoolId: '', productId: '', discountType: 'percentage', discountPercent: '', fixedPrice: '', minQuantity: '', startDate: '', endDate: '', status: 'active', notes: '' };
+type ApiRule = { id: string; client_id: string; product_id: string; discount_type: DiscountType; discount_percent: number | null; fixed_price: number | null; min_quantity: number | null; start_date: string | null; end_date: string | null; status: 'active' | 'inactive'; notes: string | null };
+const fromApi = (r: ApiRule): PricingRule => ({
+  id: r.id, schoolId: r.client_id, productId: r.product_id, discountType: r.discount_type,
+  discountPercent: r.discount_percent != null ? String(r.discount_percent) : '', fixedPrice: r.fixed_price != null ? String(r.fixed_price) : '',
+  minQuantity: r.min_quantity ? String(r.min_quantity) : '', startDate: r.start_date ? String(r.start_date).slice(0, 10) : '', endDate: r.end_date ? String(r.end_date).slice(0, 10) : '',
+  status: r.status, notes: r.notes ?? '',
+});
+const toPayload = (f: RuleForm) => ({
+  clientId: f.schoolId, productId: f.productId, discountType: f.discountType,
+  discountPercent: f.discountType === 'percentage' ? Number(f.discountPercent) : null,
+  fixedPrice: f.discountType === 'fixed_price' ? Number(f.fixedPrice) : null,
+  minQuantity: f.minQuantity ? Number(f.minQuantity) : 0,
+  startDate: f.startDate || null, endDate: f.endDate || null, status: f.status, notes: f.notes.trim() || null,
+});
 
-function loadRules(): PricingRule[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as PricingRule[]) : [];
-  } catch {
-    return [];
-  }
-}
-function saveRules(rules: PricingRule[]) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(rules));
-  } catch {
-    /* best-effort */
-  }
-}
-function newId() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-// Denormalized (school/product name baked in) so these render correctly even
-// when no real schools or products exist yet to look up by id.
-const DEMO_RULES = [
-  {
-    id: 'demo-rule-1',
-    schoolName: 'Sunrise Public School',
-    schoolCode: 'SCH-0001',
-    productName: 'School Uniform Set (Grade 1-5)',
-    productCode: 'UNI-105',
-    listPrice: 1450,
-    discountType: 'percentage' as const,
-    discountPercent: '12',
-    fixedPrice: '',
-    startDate: '2026-06-01',
-    endDate: '2027-04-30',
-    status: 'active' as const,
-  },
-  {
-    id: 'demo-rule-2',
-    schoolName: 'Greenfield Matriculation School',
-    schoolCode: 'SCH-0002',
-    productName: 'Note Book Set (200 pages, pack of 10)',
-    productCode: 'NBK-210',
-    listPrice: 620,
-    discountType: 'fixed_price' as const,
-    discountPercent: '',
-    fixedPrice: '540',
-    startDate: '2026-06-01',
-    endDate: '2027-04-30',
-    status: 'active' as const,
-  },
-];
 const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(value);
 const dateLabel = (value: string) => (value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value)) : '—');
 
@@ -93,7 +54,8 @@ function isCurrentlyValid(rule: PricingRule): boolean {
 export function SpecificPricingDiscountPage() {
   const [schools, setSchools] = useState<School[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
-  const [rules, setRules] = useState<PricingRule[]>(loadRules());
+  const [rules, setRules] = useState<PricingRule[]>([]);
+  const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,12 +71,15 @@ export function SpecificPricingDiscountPage() {
     setLoading(true);
     setError(null);
     try {
-      const [clientsRes, productsRes] = await Promise.all([
+      // /clients and /products are already limited to the School industry by the API, so no client-side type filter is needed.
+      const [clientsRes, productsRes, rulesRes] = await Promise.all([
         api<{ data: School[] }>('/clients'),
         api<{ data: Product[] }>('/products?status=active'),
+        api<{ data: ApiRule[] }>('/school/pricing-rules'),
       ]);
-      setSchools((clientsRes.data ?? []).filter((c) => (c.client_type ?? '').toLowerCase() === 'school'));
+      setSchools(clientsRes.data ?? []);
       setProducts(productsRes.data ?? []);
+      setRules((rulesRes.data ?? []).map(fromApi));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to load schools or products.');
     } finally {
@@ -125,10 +90,6 @@ export function SpecificPricingDiscountPage() {
     void load();
   }, []);
 
-  function persist(next: PricingRule[]) {
-    setRules(next);
-    saveRules(next);
-  }
 
   const schoolById = useMemo(() => Object.fromEntries(schools.map((s) => [s.id, s])), [schools]);
   const productById = useMemo(() => Object.fromEntries(products.map((p) => [p.id, p])), [products]);
@@ -141,32 +102,47 @@ export function SpecificPricingDiscountPage() {
   }
   function openEdit(rule: PricingRule) {
     setEditing(rule);
-    setForm({ schoolId: rule.schoolId, productId: rule.productId, discountType: rule.discountType, discountPercent: rule.discountPercent, fixedPrice: rule.fixedPrice, startDate: rule.startDate, endDate: rule.endDate, status: rule.status, notes: rule.notes });
+    setForm({ schoolId: rule.schoolId, productId: rule.productId, discountType: rule.discountType, discountPercent: rule.discountPercent, fixedPrice: rule.fixedPrice, minQuantity: rule.minQuantity, startDate: rule.startDate, endDate: rule.endDate, status: rule.status, notes: rule.notes });
     setFormError(null);
     setModal(true);
   }
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     if (!form.schoolId) return setFormError('Select a school.');
     if (!form.productId) return setFormError('Select a product.');
     if (form.discountType === 'percentage' && (!form.discountPercent || Number(form.discountPercent) <= 0)) return setFormError('Enter a discount percentage greater than zero.');
     if (form.discountType === 'fixed_price' && (!form.fixedPrice || Number(form.fixedPrice) <= 0)) return setFormError('Enter a fixed price greater than zero.');
     setFormError(null);
-    if (editing) {
-      persist(rules.map((r) => (r.id === editing.id ? { ...r, ...form } : r)));
-    } else {
-      persist([...rules, { id: newId(), ...form }]);
+    setSaving(true);
+    try {
+      const res = await api<{ data: ApiRule }>(editing ? `/school/pricing-rules/${editing.id}` : '/school/pricing-rules', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(toPayload(form)) });
+      const saved = fromApi(res.data);
+      setRules((current) => (editing ? current.map((r) => (r.id === saved.id ? saved : r)) : [saved, ...current]));
+      setModal(false);
+    } catch (caught) {
+      setFormError(caught instanceof Error ? caught.message : 'Unable to save this pricing rule.');
+    } finally {
+      setSaving(false);
     }
-    setModal(false);
   }
-  function removeRule(id: string) {
-    persist(rules.filter((r) => r.id !== id));
+  async function removeRule(id: string) {
+    if (!window.confirm('Delete this pricing rule?')) return;
+    try {
+      await api(`/school/pricing-rules/${id}`, { method: 'DELETE' });
+      setRules((current) => current.filter((r) => r.id !== id));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to delete this pricing rule.');
+    }
   }
-  function toggleStatus(rule: PricingRule) {
-    persist(rules.map((r) => (r.id === rule.id ? { ...r, status: r.status === 'active' ? 'inactive' : 'active' } : r)));
+  async function toggleStatus(rule: PricingRule) {
+    try {
+      const res = await api<{ data: ApiRule }>(`/school/pricing-rules/${rule.id}`, { method: 'PATCH', body: JSON.stringify({ status: rule.status === 'active' ? 'inactive' : 'active' }) });
+      const saved = fromApi(res.data);
+      setRules((current) => current.map((r) => (r.id === saved.id ? saved : r)));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to change the status.');
+    }
   }
-
-  const usingDemoData = rules.length === 0;
 
   const filteredRules = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -180,8 +156,8 @@ export function SpecificPricingDiscountPage() {
     });
   }, [rules, search, schoolFilter, schoolById, productById]);
 
-  const activeCount = usingDemoData ? DEMO_RULES.length : rules.filter(isCurrentlyValid).length;
-  const schoolsCovered = usingDemoData ? new Set(DEMO_RULES.map((r) => r.schoolCode)).size : new Set(rules.map((r) => r.schoolId)).size;
+  const activeCount = rules.filter(isCurrentlyValid).length;
+  const schoolsCovered = new Set(rules.map((r) => r.schoolId)).size;
 
   return (
     <section className="page-panel master-page">
@@ -199,7 +175,7 @@ export function SpecificPricingDiscountPage() {
         <div className="kpi-grid">
         <div className="kpi-card" data-tone="ink">
           <div className="kpi-icon">％</div>
-          <div><span>Pricing rules</span><strong>{usingDemoData ? DEMO_RULES.length : rules.length}</strong><small>{activeCount} currently valid</small></div>
+          <div><span>Pricing rules</span><strong>{rules.length}</strong><small>{activeCount} currently valid</small></div>
         </div>
         <div className="kpi-card" data-tone="blue">
           <div className="kpi-icon">◎</div>
@@ -207,8 +183,7 @@ export function SpecificPricingDiscountPage() {
         </div>
       </div>
 
-      {error && !usingDemoData && <p role="alert" className="error">{error}</p>}
-      {usingDemoData && <p className="demo-data-banner">Showing sample data for preview — this is a UI-only demo, nothing here is saved.</p>}
+      {error && <p role="alert" className="error">{error}</p>}
 
       <div className="master-toolbar">
         <div className="master-search">
@@ -249,28 +224,6 @@ export function SpecificPricingDiscountPage() {
                   <td><span className="skeleton-block" style={{ width: '55%' }} /></td>
                 </tr>
               ))
-            ) : usingDemoData ? (
-              DEMO_RULES.map((rule) => {
-                const specialPrice = rule.discountType === 'fixed_price' ? Number(rule.fixedPrice) : rule.listPrice * (1 - Number(rule.discountPercent || 0) / 100);
-                return (
-                  <tr key={rule.id}>
-                    <td><strong>{rule.schoolName}</strong><small>{rule.schoolCode}</small></td>
-                    <td><strong>{rule.productName}</strong><small>{rule.productCode}</small></td>
-                    <td>{money(rule.listPrice)}</td>
-                    <td>
-                      {money(specialPrice)}
-                      <small style={{ display: 'block', color: 'var(--text-faint)' }}>{rule.discountType === 'percentage' ? `${rule.discountPercent}% off` : discountTypeLabels[rule.discountType]}</small>
-                    </td>
-                    <td>{dateLabel(rule.startDate)} – {dateLabel(rule.endDate)}</td>
-                    <td><span className="status-badge active">valid now</span></td>
-                    <td className="master-actions">
-                      <button type="button" className="icon-action" title="Sample data — add a real rule to edit" aria-label="Edit pricing rule" disabled>✎</button>
-                      <button type="button" className="icon-action" title="Sample data — add a real rule to toggle" aria-label="Toggle pricing rule status" disabled>⊘</button>
-                      <button type="button" className="icon-action" title="Sample data — add a real rule to delete" aria-label="Delete pricing rule" disabled>🗑</button>
-                    </td>
-                  </tr>
-                );
-              })
             ) : (
               filteredRules.map((rule) => {
                 const school = schoolById[rule.schoolId];
@@ -284,16 +237,16 @@ export function SpecificPricingDiscountPage() {
                     <td>{money(listPrice)}</td>
                     <td>
                       {money(specialPrice)}
-                      <small style={{ display: 'block', color: 'var(--text-faint)' }}>{rule.discountType === 'percentage' ? `${rule.discountPercent}% off` : discountTypeLabels[rule.discountType]}</small>
+                      <small style={{ display: 'block', color: 'var(--text-faint)' }}>{rule.discountType === 'percentage' ? `${rule.discountPercent}% off` : discountTypeLabels[rule.discountType]}{Number(rule.minQuantity) > 0 ? ` · from ${rule.minQuantity} qty` : ''}</small>
                     </td>
                     <td>{dateLabel(rule.startDate)} – {dateLabel(rule.endDate)}</td>
                     <td><span className={`status-badge ${isCurrentlyValid(rule) ? 'active' : 'inactive'}`}>{isCurrentlyValid(rule) ? 'valid now' : rule.status}</span></td>
                     <td className="master-actions">
                       <button type="button" className="icon-action" title="Edit rule" aria-label="Edit pricing rule" onClick={() => openEdit(rule)}>✎</button>
-                      <button type="button" className="icon-action" title={rule.status === 'active' ? 'Deactivate' : 'Activate'} aria-label="Toggle pricing rule status" onClick={() => toggleStatus(rule)}>
+                      <button type="button" className="icon-action" title={rule.status === 'active' ? 'Deactivate' : 'Activate'} aria-label="Toggle pricing rule status" onClick={() => void toggleStatus(rule)}>
                         {rule.status === 'active' ? '⊘' : '✓'}
                       </button>
-                      <button type="button" className="icon-action" title="Delete rule" aria-label="Delete pricing rule" onClick={() => removeRule(rule.id)}>🗑</button>
+                      <button type="button" className="icon-action" title="Delete rule" aria-label="Delete pricing rule" onClick={() => void removeRule(rule.id)}>🗑</button>
                     </td>
                   </tr>
                 );
@@ -348,13 +301,14 @@ export function SpecificPricingDiscountPage() {
               ) : (
                 <label>Fixed price (₹)<input type="number" min="0" step="0.01" value={form.fixedPrice} onChange={(e) => setForm({ ...form, fixedPrice: e.target.value })} /></label>
               )}
+              <label>Minimum quantity<input type="number" min="0" step="1" placeholder="0 = any quantity" value={form.minQuantity} onChange={(e) => setForm({ ...form, minQuantity: e.target.value })} /></label>
               <label>Valid from<input type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} /></label>
               <label>Valid till<input type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} /></label>
               <label>Status<select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as RuleForm['status'] })}><option value="active">Active</option><option value="inactive">Inactive</option></select></label>
               <label style={{ gridColumn: '1 / -1' }}>Notes<input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></label>
               <div className="modal-actions" style={{ gridColumn: '1 / -1' }}>
                 <button type="button" className="quiet-button" onClick={() => setModal(false)}>Cancel</button>
-                <button className="primary-action" type="submit">{editing ? 'Save changes' : 'Add rule'}</button>
+                <button className="primary-action" type="submit" disabled={saving}>{editing ? 'Save changes' : 'Add rule'}</button>
               </div>
             </form>
           </div>

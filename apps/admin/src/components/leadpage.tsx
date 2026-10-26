@@ -473,6 +473,8 @@ const [status, setStatus] = useState('');
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // School only: shown when a lead became a client but Requirement / Quotation could not be created automatically.
+  const [chainNotice, setChainNotice] = useState<string | null>(null);
  const { matchesActiveIndustry, activeIndustryTypeId } = useIndustryScope();
    const { activeIndustry, config } = useIndustry();
   const [, setRatesTick] = useState(0);
@@ -756,10 +758,7 @@ function openCreate() {
 
   async function handleDelete(lead: Lead) {
     setMenuFor(null);
-    const converted = lead.status === 'converted';
-    if (!window.confirm(converted
-      ? `Delete lead "${lead.company_name}"? Its client record will stay. This can't be undone.`
-      : `Delete lead "${lead.company_name}"? This can't be undone.`)) return;
+    if (!window.confirm(`Delete lead "${lead.company_name}"? This can't be undone.`)) return;
     try {
       await api(`/leads/${lead.id}`, { method: 'DELETE' });
       setItems((current) => current.filter((item) => item.id !== lead.id));
@@ -785,6 +784,8 @@ function openCreate() {
       if (form.phone) params.set('phone', form.phone);
       if (form.email) params.set('email', form.email);
       if (form.companyName) params.set('companyName', form.companyName);
+      const dupIndustry = form.industryTypeId || activeIndustryTypeId;
+      if (dupIndustry) params.set('industryTypeId', dupIndustry);
       const result = await api<{ data: Array<{ lead_code: string; company_name: string }> }>(`/leads/duplicates?${params.toString()}`);
       if (result.data?.length) {
         setDuplicateWarning(`Possible duplicate: ${result.data[0].lead_code} — ${result.data[0].company_name}. Review before saving.`);
@@ -857,6 +858,7 @@ function openCreate() {
             body: JSON.stringify({ status: form.status }),
           });
           finalLead = statusResponse.data;
+          void noticeIfChainStopped(finalLead);
         }
 
         setItems((current) => current.map((item) => (item.id === finalLead.id ? finalLead : item)));
@@ -868,10 +870,11 @@ function openCreate() {
         // "Qualified" always showed "New" until the next edit.
         const created = await api<{ data: Lead }>('/leads', { method: 'POST', body: JSON.stringify(payload) });
         if (form.status && form.status !== 'new') {
-          await api<{ data: Lead }>(`/leads/${created.data.id}/status`, {
+          const createdStatus = await api<{ data: Lead }>(`/leads/${created.data.id}/status`, {
             method: 'PATCH',
             body: JSON.stringify({ status: form.status }),
           });
+          void noticeIfChainStopped(createdStatus.data);
         }
       }
       const savedShopTypes = activeIndustry === 'school'
@@ -889,6 +892,22 @@ function openCreate() {
     }
   }
 
+  // After a lead is qualified from the form or the row dropdown, tell the user (School only) when the automatic
+  // Requirement / Quotation could not be created, with the real reason the server logged on the lead.
+  async function noticeIfChainStopped(lead: Lead) {
+    if (activeIndustry !== 'school' || !lead.converted_client_id) return;
+    try {
+      const [reqRes, activityRes] = await Promise.all([
+        api<{ data: Array<{ id: string }> }>(`/requirements?clientId=${lead.converted_client_id}`),
+        api<{ data: LeadActivity[] }>(`/leads/${lead.id}/activities`),
+      ]);
+      if ((reqRes.data ?? []).length > 0) return setChainNotice(null);
+      const reason = (activityRes.data ?? []).find((a) => a.activity_type === 'note_added' && /^(Auto-|Requirement and Quotation|Could not assign)/.test(a.note ?? ''))?.note;
+      setChainNotice(`${lead.company_name} was converted to a client, but no Requirement was created. ${reason ?? 'Assign a sales representative to this lead and it will be created automatically.'}`);
+    } catch {
+      /* cosmetic only */
+    }
+  }
   async function openDetail(lead: Lead) {
   setSelected(lead);
 setMenuFor(null);
@@ -929,6 +948,7 @@ async function changeStatus(newStatus: Lead['status']) {
       const refreshed = await api<{ data: LeadActivity[] }>(`/leads/${selected.id}/activities`);
       setActivities(refreshed.data ?? []);
 
+      if (newStatus === 'qualified') void noticeIfChainStopped(response.data);
       if (newStatus === 'qualified' && response.data.converted_client_id) {
         const generatedCode = `CLI-${response.data.lead_code.replace(/^LD-/, '')}`;
         const clientId = response.data.converted_client_id;
@@ -966,6 +986,7 @@ async function changeStatus(newStatus: Lead['status']) {
       const response = await api<{ data: Lead }>(`/leads/${lead.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: newStatus }) });
       setItems((current) => current.map((item) => (item.id === response.data.id ? response.data : item)));
       if (selected?.id === response.data.id) setSelected(response.data);
+      if (newStatus === 'qualified') void noticeIfChainStopped(response.data);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to update lead status.');
     } finally {
@@ -1213,6 +1234,11 @@ async function suggestRep() {
         </div>
       )}
 
+      {chainNotice && (
+        <p className="error-message" role="status">
+          {chainNotice} <button type="button" className="link-button" onClick={() => setChainNotice(null)}>Dismiss</button>
+        </p>
+      )}
       {error && <p className="error-message">{error}</p>}
 
       {loading ? (

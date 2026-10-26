@@ -2,10 +2,16 @@ import { FormEvent, MouseEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import './MasterDataPages.css';
 
+// Everything on this page is calculated by the School API from the School industry's real orders and collections
+// (nothing is typed in here). Orders and quotations are stamped with the academic year / term that was running when
+// they were created, so the whole page can be narrowed to one year or one term.
 type IndustryDetails = { advanceAmount?: string | number; advancePaymentMode?: string; advancePaymentDate?: string };
-type Client = { id: string; client_code: string; client_name: string; client_type: string; status: 'active' | 'inactive'; city?: string | null; industry_details?: IndustryDetails | null };
-type Order = { id: string; order_number: string; status: string; total_amount: number; created_at: string; client_id?: string };
-type Collection = { id: string; amount: number; mode: string; reference_no?: string | null; collected_at: string; sale_orders?: { order_number?: string } | null; client_id?: string };
+type Client = { id: string; client_code: string; client_name: string; client_type?: string; status: 'active' | 'inactive'; city?: string | null; industry_details?: IndustryDetails | null };
+type SummaryRow = { school: Client; orderCount: number; totalSales: number; totalCollected: number; outstanding: number; lastOrderDate: string | null; advance: number };
+type LedgerOrder = { id: string; order_number: string; status: string; total_amount: number; created_at: string; paid: number; balance: number; school_academic_years?: { label?: string } | null; school_terms?: { name?: string } | null };
+type LedgerCollection = { id: string; amount: number; mode: string; reference_no?: string | null; collected_at: string; sale_orders?: { order_number?: string } | null };
+type Ledger = { orders: LedgerOrder[]; collections: LedgerCollection[] };
+type Year = { id: string; label: string; status: string; terms: { id: string; name: string }[] };
 
 const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
 const money2 = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(value);
@@ -17,52 +23,14 @@ function advanceAmountOf(client: Client): number {
   return raw ? Number(raw) || 0 : 0;
 }
 
-// Ledger numbers here are pre-computed rather than derived from orders/collections,
-// since these demo schools have no real order/collection rows to aggregate from.
-const DEMO_ROWS = [
-  {
-    school: {
-      id: 'demo-school-1',
-      client_code: 'SCH-0001',
-      client_name: 'Sunrise Public School',
-      client_type: 'School',
-      status: 'active' as const,
-      city: 'Chennai',
-      industry_details: { advanceAmount: 50000, advancePaymentMode: 'Bank transfer', advancePaymentDate: '2026-06-15' },
-    },
-    orderCount: 4,
-    totalSales: 320000,
-    totalCollected: 270000,
-    outstanding: 50000,
-    lastOrderDate: '2026-08-20',
-    advance: 50000,
-  },
-  {
-    school: {
-      id: 'demo-school-2',
-      client_code: 'SCH-0002',
-      client_name: 'Greenfield Matriculation School',
-      client_type: 'School',
-      status: 'active' as const,
-      city: 'Coimbatore',
-      industry_details: {},
-    },
-    orderCount: 2,
-    totalSales: 145000,
-    totalCollected: 145000,
-    outstanding: 0,
-    lastOrderDate: '2026-08-05',
-    advance: 0,
-  },
-];
-
 export function SchoolSalesCollectionPage() {
-  const [schools, setSchools] = useState<Client[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [collections, setCollections] = useState<Collection[]>([]);
+  const [rows, setRows] = useState<SummaryRow[]>([]);
+  const [years, setYears] = useState<Year[]>([]);
+  const [yearId, setYearId] = useState('');
+  const [termId, setTermId] = useState('');
+  const [ledger, setLedger] = useState<Ledger>({ orders: [], collections: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
 
   const [search, setSearch] = useState('');
   const [balanceFilter, setBalanceFilter] = useState<'all' | 'due' | 'clear'>('all');
@@ -79,18 +47,20 @@ export function SchoolSalesCollectionPage() {
   const [collectError, setCollectError] = useState<string | null>(null);
   const [collectSaving, setCollectSaving] = useState(false);
 
+  const periodQuery = (() => {
+    const q = new URLSearchParams();
+    if (yearId) q.set('academicYearId', yearId);
+    if (termId) q.set('termId', termId);
+    const s = q.toString();
+    return s ? `?${s}` : '';
+  })();
+
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      const [clientsRes, ordersRes, collectionsRes] = await Promise.all([
-        api<{ data: Client[] }>('/clients'),
-        api<{ data: Order[] }>('/orders').catch(() => ({ data: [] })),
-        api<{ data: Collection[] }>('/collections').catch(() => ({ data: [] })),
-      ]);
-      setSchools((clientsRes.data ?? []).filter((c) => (c.client_type ?? '').toLowerCase() === 'school'));
-      setOrders(ordersRes.data ?? []);
-      setCollections(collectionsRes.data ?? []);
+      const summaryRes = await api<{ data: { rows: SummaryRow[] } }>(`/school/sales-summary${periodQuery}`);
+      setRows(summaryRes.data?.rows ?? []);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to load school sales & collection data.');
     } finally {
@@ -98,8 +68,27 @@ export function SchoolSalesCollectionPage() {
     }
   }
   useEffect(() => {
-    void load();
+    api<{ data: Year[] }>('/school/academic-years').then((res) => setYears(res.data ?? [])).catch(() => setYears([]));
   }, []);
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [yearId, termId]);
+
+  async function loadLedger(schoolId: string) {
+    try {
+      const res = await api<{ data: Ledger }>(`/school/schools/${schoolId}/ledger${periodQuery}`);
+      setLedger(res.data ?? { orders: [], collections: [] });
+    } catch (caught) {
+      setLedger({ orders: [], collections: [] });
+      setError(caught instanceof Error ? caught.message : 'Unable to load this school\'s ledger.');
+    }
+  }
+  useEffect(() => {
+    if (viewing) void loadLedger(viewing.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewing, yearId, termId]);
+
   function toggleMenu(event: MouseEvent<HTMLButtonElement>, schoolId: string) {
     if (menuFor?.id === schoolId) {
       setMenuFor(null);
@@ -109,33 +98,7 @@ export function SchoolSalesCollectionPage() {
     setMenuFor({ id: schoolId, top: rect.bottom + 6, left: Math.max(8, rect.right - 168) });
   }
 
-  function ledger(clientId: string) {
-    const clientOrders = orders.filter((o) => o.client_id === clientId && o.status !== 'cancelled');
-    const clientCollections = collections.filter((c) => c.client_id === clientId);
-    const totalSales = clientOrders.reduce((sum, o) => sum + (o.total_amount ?? 0), 0);
-    const totalCollected = clientCollections.reduce((sum, c) => sum + (c.amount ?? 0), 0);
-    const outstanding = Math.max(0, totalSales - totalCollected);
-    const lastOrder = clientOrders.slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
-    return { orderCount: clientOrders.length, totalSales, totalCollected, outstanding, lastOrderDate: lastOrder?.created_at ?? null };
-  }
-
-  const collectedByOrder = useMemo(() => {
-    const map: Record<string, number> = {};
-    collections.forEach((c) => {
-      const key = c.sale_orders?.order_number;
-      if (!key) return;
-      map[key] = (map[key] ?? 0) + Number(c.amount || 0);
-    });
-    return map;
-  }, [collections]);
-
-  const usingDemoData = !loading && schools.length === 0;
-
-  const rows = useMemo(() => {
-    if (usingDemoData) return DEMO_ROWS;
-    return schools.map((s) => ({ school: s, ...ledger(s.id), advance: advanceAmountOf(s) }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schools, orders, collections, usingDemoData]);
+  const termsOfYear = useMemo(() => years.find((y) => y.id === yearId)?.terms ?? [], [years, yearId]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -152,12 +115,10 @@ export function SchoolSalesCollectionPage() {
   const totalOutstanding = rows.reduce((sum, r) => sum + r.outstanding, 0);
   const totalAdvance = rows.reduce((sum, r) => sum + r.advance, 0);
 
-  const viewingLedger = viewing
-    ? (String(viewing.id).startsWith('demo-') ? DEMO_ROWS.find((r) => r.school.id === viewing.id) ?? ledger(viewing.id) : ledger(viewing.id))
-    : null;
-  const viewingOrders = viewing ? orders.filter((o) => o.client_id === viewing.id).slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) : [];
-  const viewingCollections = viewing ? collections.filter((c) => c.client_id === viewing.id).slice().sort((a, b) => new Date(b.collected_at).getTime() - new Date(a.collected_at).getTime()) : [];
-  const viewingOutstandingOrders = viewingOrders.filter((o) => o.status !== 'cancelled' && Number(o.total_amount) - (collectedByOrder[o.order_number] ?? 0) > 0.01);
+  const viewingLedger = viewing ? rows.find((r) => r.school.id === viewing.id) ?? null : null;
+  const viewingOrders = ledger.orders;
+  const viewingCollections = ledger.collections;
+  const viewingOutstandingOrders = viewingOrders.filter((o) => o.status !== 'cancelled' && o.balance > 0.01);
 
   function openCollect() {
     setCollectOrderId('');
@@ -173,9 +134,7 @@ export function SchoolSalesCollectionPage() {
     setCollectError(null);
     const order = viewingOutstandingOrders.find((o) => o.id === id);
     if (!order) return;
-    const paid = collectedByOrder[order.order_number] ?? 0;
-    const balance = Number(order.total_amount) - paid;
-    setCollectAmount(balance > 0 ? balance.toFixed(2) : '');
+    setCollectAmount(order.balance > 0 ? order.balance.toFixed(2) : '');
   }
   async function submitCollect(event: FormEvent) {
     event.preventDefault();
@@ -184,9 +143,7 @@ export function SchoolSalesCollectionPage() {
     if (!order) return setCollectError('Select an order to record a payment against.');
     const value = Number(collectAmount);
     if (!value || value <= 0) return setCollectError('Enter an amount greater than zero.');
-    const paid = collectedByOrder[order.order_number] ?? 0;
-    const balance = Number(order.total_amount) - paid;
-    if (value > balance + 0.01) return setCollectError(`Amount exceeds the outstanding balance of ${money2(balance)}.`);
+    if (value > order.balance + 0.01) return setCollectError(`Amount exceeds the outstanding balance of ${money2(order.balance)}.`);
     setCollectSaving(true);
     try {
       await api('/collections', {
@@ -194,7 +151,7 @@ export function SchoolSalesCollectionPage() {
         body: JSON.stringify({ orderId: order.id, amount: value, mode: collectMode, referenceNo: collectReferenceNo.trim() || null, notes: collectNotes.trim() || null }),
       });
       setCollectOpen(false);
-      await load();
+      await Promise.all([load(), viewing ? loadLedger(viewing.id) : Promise.resolve()]);
     } catch (caught) {
       setCollectError(caught instanceof Error ? caught.message : 'Unable to record this collection.');
     } finally {
@@ -231,15 +188,14 @@ export function SchoolSalesCollectionPage() {
         </div>
       </div>
 
-      {error && !usingDemoData && <p role="alert" className="error">{error}</p>}
-      {usingDemoData && <p className="demo-data-banner">Showing sample data for preview — this is a UI-only demo, nothing here is saved.</p>}
+      {error && <p role="alert" className="error">{error}</p>}
 
  
       <div className="master-toolbar">
         <div className="master-search">
           <input value={search} placeholder="Search school name, code or city" onChange={(e) => setSearch(e.target.value)} />
           <button className="quiet-button" type="button" onClick={() => setFiltersOpen(!filtersOpen)}>
-            Filters{balanceFilter !== 'all' ? ' (active)' : ''}
+            Filters{balanceFilter !== 'all' || yearId ? ' (active)' : ''}
           </button>
         </div>
         <button className="primary-action" type="button" onClick={() => { window.location.hash = 'industry:school:school-management'; }}>
@@ -249,6 +205,20 @@ export function SchoolSalesCollectionPage() {
       {filtersOpen && (
         <div className="master-filter-bar">
           <label>
+            Academic year
+            <select value={yearId} onChange={(e) => { setYearId(e.target.value); setTermId(''); }}>
+              <option value="">All years</option>
+              {years.map((y) => <option key={y.id} value={y.id}>{y.label}</option>)}
+            </select>
+          </label>
+          <label>
+            Term
+            <select value={termId} onChange={(e) => setTermId(e.target.value)} disabled={!yearId}>
+              <option value="">All terms</option>
+              {termsOfYear.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </label>
+          <label>
             Balance
             <select value={balanceFilter} onChange={(e) => setBalanceFilter(e.target.value as typeof balanceFilter)}>
               <option value="all">All schools</option>
@@ -256,7 +226,7 @@ export function SchoolSalesCollectionPage() {
               <option value="clear">Fully collected</option>
             </select>
           </label>
-          <button type="button" className="link-button" onClick={() => setBalanceFilter('all')} disabled={balanceFilter === 'all'}>
+          <button type="button" className="link-button" onClick={() => { setBalanceFilter('all'); setYearId(''); setTermId(''); }} disabled={balanceFilter === 'all' && !yearId}>
             Clear filters
           </button>
         </div>
@@ -351,7 +321,7 @@ export function SchoolSalesCollectionPage() {
         </>
       )}
 
-      {viewing && viewingLedger && (
+      {viewing && (
         <div className="modal-backdrop" onMouseDown={() => !collectOpen && setViewing(null)}>
           <div className="master-modal detail-panel" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-heading">
@@ -363,26 +333,28 @@ export function SchoolSalesCollectionPage() {
             </div>
 
             <dl className="detail-dl">
-              <dt>Total sales</dt><dd>{money(viewingLedger.totalSales)}</dd>
-              <dt>Total collected</dt><dd>{money(viewingLedger.totalCollected)}</dd>
-              <dt>Outstanding</dt><dd className={viewingLedger.outstanding > 0 ? 'text-warn' : ''}>{money(viewingLedger.outstanding)}</dd>
+              <dt>Total sales</dt><dd>{money(viewingLedger?.totalSales ?? 0)}</dd>
+              <dt>Total collected</dt><dd>{money(viewingLedger?.totalCollected ?? 0)}</dd>
+              <dt>Outstanding</dt><dd className={(viewingLedger?.outstanding ?? 0) > 0 ? 'text-warn' : ''}>{money(viewingLedger?.outstanding ?? 0)}</dd>
               <dt>Advance on file</dt><dd>{advanceAmountOf(viewing) > 0 ? money(advanceAmountOf(viewing)) : 'None recorded'}</dd>
             </dl>
 
             <h5 className="ledger-heading">Orders</h5>
             <div className="data-table-wrap">
               <table>
-                <thead><tr><th>Order no.</th><th>Status</th><th>Amount</th><th>Date</th></tr></thead>
+                <thead><tr><th>Order no.</th><th>Status</th><th>Amount</th><th>Balance</th><th>Year / term</th><th>Date</th></tr></thead>
                 <tbody>
                   {viewingOrders.slice(0, 10).map((o) => (
                     <tr key={o.id}>
                       <td>{o.order_number}</td>
                       <td><span className={`status-badge status-${o.status}`}>{o.status}</span></td>
                       <td>{money2(o.total_amount)}</td>
+                      <td className={o.balance > 0 && o.status !== 'cancelled' ? 'text-warn' : ''}>{o.status === 'cancelled' ? '—' : money2(o.balance)}</td>
+                      <td>{o.school_academic_years?.label ?? '—'}{o.school_terms?.name ? ` · ${o.school_terms.name}` : ''}</td>
                       <td>{dateLabel(o.created_at)}</td>
                     </tr>
                   ))}
-                  {viewingOrders.length === 0 && <tr><td colSpan={4} className="empty-row">No orders recorded yet.</td></tr>}
+                  {viewingOrders.length === 0 && <tr><td colSpan={6} className="empty-row">No orders recorded yet.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -435,9 +407,7 @@ export function SchoolSalesCollectionPage() {
                 <select required value={collectOrderId} onChange={(e) => selectCollectOrder(e.target.value)}>
                   <option value="">Select an outstanding order for this school</option>
                   {viewingOutstandingOrders.map((o) => {
-                    const paid = collectedByOrder[o.order_number] ?? 0;
-                    const balance = Number(o.total_amount) - paid;
-                    return <option key={o.id} value={o.id}>{o.order_number} — {money2(balance)} due</option>;
+                    return <option key={o.id} value={o.id}>{o.order_number} — {money2(o.balance)} due</option>;
                   })}
                 </select>
               </label>

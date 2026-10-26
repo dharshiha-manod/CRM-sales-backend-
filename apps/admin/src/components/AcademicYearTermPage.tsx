@@ -1,58 +1,19 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
+import { api } from '../lib/api';
 import './MasterDataPages.css';
 
-// No backend table for this yet — persisted client-side in localStorage,
-// same interim pattern as OrderMeta in OrdersPage.tsx. Swap for a real
-// /academic-years API once the backend adds it.
-const STORAGE_KEY = 'fs-academic-years';
-
+// Academic years and their terms are real School master data (school_academic_years / school_terms), saved through
+// the School API for the School industry only. New School quotations and orders are stamped automatically with the
+// year and term that is running on the day they are created, which School-wise Sales & Collection then reports on.
 type Term = { id: string; name: string; startDate: string; endDate: string };
 type AcademicYear = { id: string; label: string; startDate: string; endDate: string; status: 'active' | 'closed'; terms: Term[] };
+type ApiTerm = { id: string; name: string; start_date: string; end_date: string };
+type ApiYear = { id: string; label: string; start_date: string; end_date: string; status: 'active' | 'closed'; terms: ApiTerm[] };
 
-function loadYears(): AcademicYear[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as AcademicYear[]) : [];
-  } catch {
-    return [];
-  }
-}
-function saveYears(years: AcademicYear[]) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(years));
-  } catch {
-    /* best-effort */
-  }
-}
-function newId() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-const DEMO_YEARS: AcademicYear[] = [
-  {
-    id: 'demo-year-1',
-    label: '2026–2027',
-    startDate: '2026-06-01',
-    endDate: '2027-04-30',
-    status: 'active',
-    terms: [
-      { id: 'demo-term-1', name: 'Term 1', startDate: '2026-06-01', endDate: '2026-09-30' },
-      { id: 'demo-term-2', name: 'Term 2', startDate: '2026-10-01', endDate: '2027-01-31' },
-      { id: 'demo-term-3', name: 'Term 3', startDate: '2027-02-01', endDate: '2027-04-30' },
-    ],
-  },
-  {
-    id: 'demo-year-2',
-    label: '2025–2026',
-    startDate: '2025-06-01',
-    endDate: '2026-04-30',
-    status: 'closed',
-    terms: [
-      { id: 'demo-term-4', name: 'Term 1', startDate: '2025-06-01', endDate: '2025-09-30' },
-      { id: 'demo-term-5', name: 'Term 2', startDate: '2025-10-01', endDate: '2026-01-31' },
-    ],
-  },
-];
+const fromApi = (y: ApiYear): AcademicYear => ({
+  id: y.id, label: y.label, startDate: String(y.start_date).slice(0, 10), endDate: String(y.end_date).slice(0, 10), status: y.status,
+  terms: (y.terms ?? []).map((t) => ({ id: t.id, name: t.name, startDate: String(t.start_date).slice(0, 10), endDate: String(t.end_date).slice(0, 10) })),
+});
 const dateLabel = (value: string) => (value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value)) : '—');
 
 type YearForm = { label: string; startDate: string; endDate: string; status: AcademicYear['status'] };
@@ -62,10 +23,14 @@ type TermForm = { name: string; startDate: string; endDate: string };
 const blankTermForm: TermForm = { name: '', startDate: '', endDate: '' };
 
 export function AcademicYearTermPage() {
-  const [years, setYears] = useState<AcademicYear[]>(loadYears());
+  const [years, setYears] = useState<AcademicYear[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [modal, setModal] = useState(false);
   const [editingYear, setEditingYear] = useState<AcademicYear | null>(null);
   const [yearForm, setYearForm] = useState<YearForm>(blankYearForm);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const [expanded, setExpanded] = useState<string | null>(null);
   const [termModal, setTermModal] = useState(false);
@@ -73,69 +38,98 @@ export function AcademicYearTermPage() {
   const [editingTerm, setEditingTerm] = useState<Term | null>(null);
   const [termForm, setTermForm] = useState<TermForm>(blankTermForm);
 
-  function persist(next: AcademicYear[]) {
-    setYears(next);
-    saveYears(next);
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api<{ data: ApiYear[] }>('/school/academic-years');
+      setYears((res.data ?? []).map(fromApi));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to load academic years.');
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  // Runs a save, replaces the changed year with the server's copy, and shows the server's message when it is refused.
+  async function run(action: () => Promise<{ data: ApiYear } | void>, onFail: (message: string) => void, onDone?: () => void) {
+    setSaving(true);
+    try {
+      const res = await action();
+      if (res && 'data' in res && res.data) {
+        const saved = fromApi(res.data);
+        setYears((current) => (current.some((y) => y.id === saved.id) ? current.map((y) => (y.id === saved.id ? saved : y)) : [saved, ...current]));
+      }
+      onDone?.();
+    } catch (caught) {
+      onFail(caught instanceof Error ? caught.message : 'Unable to save.');
+    } finally {
+      setSaving(false);
+    }
   }
 
   function openCreateYear() {
     setEditingYear(null);
     setYearForm(blankYearForm);
+    setFormError(null);
     setModal(true);
   }
   function openEditYear(year: AcademicYear) {
     setEditingYear(year);
     setYearForm({ label: year.label, startDate: year.startDate, endDate: year.endDate, status: year.status });
+    setFormError(null);
     setModal(true);
   }
   function submitYear(event: FormEvent) {
     event.preventDefault();
-    if (editingYear) {
-      persist(years.map((y) => (y.id === editingYear.id ? { ...y, ...yearForm } : y)));
-    } else {
-      persist([...years, { id: newId(), ...yearForm, terms: [] }]);
-    }
-    setModal(false);
+    setFormError(null);
+    void run(
+      () => api<{ data: ApiYear }>(editingYear ? `/school/academic-years/${editingYear.id}` : '/school/academic-years', { method: editingYear ? 'PATCH' : 'POST', body: JSON.stringify(yearForm) }),
+      setFormError,
+      () => setModal(false),
+    );
   }
-  function removeYear(id: string) {
-    persist(years.filter((y) => y.id !== id));
+  function removeYear(year: AcademicYear) {
+    if (!window.confirm(`Delete academic year ${year.label} and its terms?`)) return;
+    void run(async () => { await api(`/school/academic-years/${year.id}`, { method: 'DELETE' }); setYears((current) => current.filter((y) => y.id !== year.id)); }, setError);
   }
   function toggleYearStatus(year: AcademicYear) {
-    persist(years.map((y) => (y.id === year.id ? { ...y, status: y.status === 'active' ? 'closed' : 'active' } : y)));
+    void run(() => api<{ data: ApiYear }>(`/school/academic-years/${year.id}`, { method: 'PATCH', body: JSON.stringify({ status: year.status === 'active' ? 'closed' : 'active' }) }), setError);
   }
 
   function openCreateTerm(yearId: string) {
     setTermYearId(yearId);
     setEditingTerm(null);
     setTermForm(blankTermForm);
+    setFormError(null);
     setTermModal(true);
   }
   function openEditTerm(yearId: string, term: Term) {
     setTermYearId(yearId);
     setEditingTerm(term);
     setTermForm({ name: term.name, startDate: term.startDate, endDate: term.endDate });
+    setFormError(null);
     setTermModal(true);
   }
   function submitTerm(event: FormEvent) {
     event.preventDefault();
     if (!termYearId) return;
-    persist(
-      years.map((y) => {
-        if (y.id !== termYearId) return y;
-        if (editingTerm) {
-          return { ...y, terms: y.terms.map((t) => (t.id === editingTerm.id ? { ...t, ...termForm } : t)) };
-        }
-        return { ...y, terms: [...y.terms, { id: newId(), ...termForm }] };
-      })
+    setFormError(null);
+    void run(
+      () => api<{ data: ApiYear }>(editingTerm ? `/school/academic-years/${termYearId}/terms/${editingTerm.id}` : `/school/academic-years/${termYearId}/terms`, { method: editingTerm ? 'PATCH' : 'POST', body: JSON.stringify(termForm) }),
+      setFormError,
+      () => setTermModal(false),
     );
-    setTermModal(false);
   }
-  function removeTerm(yearId: string, termId: string) {
-    persist(years.map((y) => (y.id === yearId ? { ...y, terms: y.terms.filter((t) => t.id !== termId) } : y)));
+  function removeTerm(yearId: string, term: Term) {
+    if (!window.confirm(`Delete ${term.name}?`)) return;
+    void run(() => api<{ data: ApiYear }>(`/school/academic-years/${yearId}/terms/${term.id}`, { method: 'DELETE' }), setError);
   }
 
-  const usingDemoData = years.length === 0;
-  const displayYears = usingDemoData ? DEMO_YEARS : years;
+  const displayYears = years;
   const activeYear = displayYears.find((y) => y.status === 'active');
 
   return (
@@ -146,7 +140,7 @@ export function AcademicYearTermPage() {
           <h2>Academic year &amp; term management</h2>
           <p>Define academic years and their terms so orders, pricing and reports can be scoped to the right session.</p>
         </div>
-        <button className="primary-action" type="button" onClick={openCreateYear}>
+        <button className="primary-action" type="button" onClick={openCreateYear} disabled={loading}>
           + Add academic year
         </button>
       </div>
@@ -166,7 +160,8 @@ export function AcademicYearTermPage() {
         </div>
       </div>  
 
-      {usingDemoData && <p className="demo-data-banner">Showing sample data for preview — this is a UI-only demo, nothing here is saved.</p>}
+      {error && <p role="alert" className="error">{error}</p>}
+      {loading && <p>Loading academic years…</p>}
 
       <div className="data-table-wrap">
         <table>
@@ -181,7 +176,6 @@ export function AcademicYearTermPage() {
           </thead>
           <tbody>
             {displayYears.map((year) => {
-              const isDemo = year.id.startsWith('demo-');
               return (
               <>
                 <tr key={year.id}>
@@ -194,13 +188,13 @@ export function AcademicYearTermPage() {
                   </td>
                   <td><span className={`status-badge ${year.status === 'active' ? 'active' : 'inactive'}`}>{year.status}</span></td>
                                    <td className="master-actions">
-                    {!isDemo && (
+                    {(
                       <>
                         <button type="button" className="icon-action" title="Edit year" aria-label={`Edit ${year.label}`} onClick={() => openEditYear(year)}>✎</button>
                         <button type="button" className="icon-action" title={year.status === 'active' ? 'Close year' : 'Reopen year'} aria-label={`Change status of ${year.label}`} onClick={() => toggleYearStatus(year)}>
                           {year.status === 'active' ? '⊘' : '✓'}
                         </button>
-                        <button type="button" className="icon-action" title="Delete year" aria-label={`Delete ${year.label}`} onClick={() => removeYear(year.id)}>🗑</button>
+                        <button type="button" className="icon-action" title="Delete year" aria-label={`Delete ${year.label}`} onClick={() => removeYear(year)}>🗑</button>
                       </>
                     )}
                   </td>
@@ -209,6 +203,7 @@ export function AcademicYearTermPage() {
                   <tr key={`${year.id}-terms`}>
                     <td colSpan={5} style={{ padding: 0 }}>
                       <div className="data-table-wrap" style={{ margin: '.5rem 1rem 1rem' }}>
+                        <div style={{ padding: '.5rem' }}><button type="button" className="primary-action" onClick={() => openCreateTerm(year.id)}>+ Add term</button></div>
                         <table>
                           <thead><tr><th>Term</th><th>Duration</th><th>Actions</th></tr></thead>
                           <tbody>
@@ -217,10 +212,10 @@ export function AcademicYearTermPage() {
                                 <td>{term.name}</td>
                                 <td>{dateLabel(term.startDate)} – {dateLabel(term.endDate)}</td>
                                 <td className="master-actions">
-                                  {!isDemo && (
+                                  {(
                                     <>
                                       <button type="button" className="icon-action" title="Edit term" aria-label={`Edit ${term.name}`} onClick={() => openEditTerm(year.id, term)}>✎</button>
-                                      <button type="button" className="icon-action" title="Delete term" aria-label={`Delete ${term.name}`} onClick={() => removeTerm(year.id, term.id)}>🗑</button>
+                                      <button type="button" className="icon-action" title="Delete term" aria-label={`Delete ${term.name}`} onClick={() => removeTerm(year.id, term)}>🗑</button>
                                     </>
                                   )}
                                 </td>
@@ -236,7 +231,7 @@ export function AcademicYearTermPage() {
               </>
               );
             })}
-            {displayYears.length === 0 && (
+            {!loading && displayYears.length === 0 && (
               <tr>
                 <td colSpan={5} className="empty-row">
                   <div className="empty-state">
@@ -263,9 +258,10 @@ export function AcademicYearTermPage() {
               <label>Start date<input type="date" required value={yearForm.startDate} onChange={(e) => setYearForm({ ...yearForm, startDate: e.target.value })} /></label>
               <label>End date<input type="date" required value={yearForm.endDate} onChange={(e) => setYearForm({ ...yearForm, endDate: e.target.value })} /></label>
               <label>Status<select value={yearForm.status} onChange={(e) => setYearForm({ ...yearForm, status: e.target.value as YearForm['status'] })}><option value="active">Active</option><option value="closed">Closed</option></select></label>
+              {formError && <p role="alert" className="error" style={{ gridColumn: '1 / -1' }}>{formError}</p>}
               <div className="modal-actions">
                 <button type="button" className="quiet-button" onClick={() => setModal(false)}>Cancel</button>
-                <button className="primary-action" type="submit">{editingYear ? 'Save changes' : 'Add year'}</button>
+                <button className="primary-action" type="submit" disabled={saving}>{editingYear ? 'Save changes' : 'Add year'}</button>
               </div>
             </form>
           </div>
@@ -283,9 +279,10 @@ export function AcademicYearTermPage() {
               <label style={{ gridColumn: '1 / -1' }}>Term name<input required placeholder="e.g. Term 1" value={termForm.name} onChange={(e) => setTermForm({ ...termForm, name: e.target.value })} /></label>
               <label>Start date<input type="date" required value={termForm.startDate} onChange={(e) => setTermForm({ ...termForm, startDate: e.target.value })} /></label>
               <label>End date<input type="date" required value={termForm.endDate} onChange={(e) => setTermForm({ ...termForm, endDate: e.target.value })} /></label>
+              {formError && <p role="alert" className="error" style={{ gridColumn: '1 / -1' }}>{formError}</p>}
               <div className="modal-actions">
                 <button type="button" className="quiet-button" onClick={() => setTermModal(false)}>Cancel</button>
-                <button className="primary-action" type="submit">{editingTerm ? 'Save changes' : 'Add term'}</button>
+                <button className="primary-action" type="submit" disabled={saving}>{editingTerm ? 'Save changes' : 'Add term'}</button>
               </div>
             </form>
           </div>

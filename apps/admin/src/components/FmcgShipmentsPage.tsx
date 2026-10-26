@@ -427,7 +427,7 @@ export function FmcgShipmentsPage() {
                       </Fragment>
                     ))}
                   </div>
-                  <small>Leave blank when everything arrived in good condition. Damaged goods still need a Sales Return entry.</small>
+                  <small>Leave blank when everything arrived in good condition. Damaged and short quantities are added to Sales Return &amp; Damage automatically as a Pending entry.</small>
                 </div>
               </>
             ) : (

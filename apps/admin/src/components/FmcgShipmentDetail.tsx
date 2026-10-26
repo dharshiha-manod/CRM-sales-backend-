@@ -188,7 +188,7 @@ export function FmcgShipmentDetail({ shipment: s, loading, error, onBack, onActi
               </div>
               <div><dt>Proof of delivery</dt><dd>{s.pod_file_url ? <a href={s.pod_file_url} target="_blank" rel="noreferrer">View document</a> : '—'}</dd></div>
             </dl>
-            {damagedQty > 0 && <p className="sp-hint">Damaged goods still need a Sales Return entry. <a href="#industry:fmcg:sales-return-damage">Open Sales Return &amp; Damage</a></p>}
+            {(damagedQty > 0 || shortQty > 0) && <p className="sp-hint">A Pending Sales Return entry was created for the damaged / short quantity. <a href="#industry:fmcg:sales-return-damage">Open Sales Return &amp; Damage</a></p>}
           </section>
         )}
 

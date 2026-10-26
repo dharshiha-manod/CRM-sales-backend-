@@ -18,7 +18,8 @@ const INDUSTRY_FIELDS: Record<string, IndustryField[]> = {
   SCHOOL: [
     { key: 'boardAffiliation', label: 'Board affiliation', type: 'select', required: true, options: ['CBSE', 'ICSE', 'State Board', 'IB', 'Other'] },
     { key: 'udiseCode', label: 'UDISE+ code', type: 'text', hint: '11 digits' },
-    { key: 'studentStrength', label: 'Approx. student strength', type: 'number' }
+    { key: 'studentStrength', label: 'Approx. student strength', type: 'number' },
+    { key: 'schoolType', label: 'School type', type: 'select', options: ['government', 'private', 'international', 'college', 'coaching'] }
   ],
   TEXTILE: [
     { key: 'unitType', label: 'Unit type', type: 'select', required: true, options: ['Powerloom', 'Handloom', 'Composite mill', 'Garment unit', 'Trader'] },
@@ -39,6 +40,13 @@ type Contact = { id: string; name: string; designation?: string | null; is_prima
 type Assignment = { id: string; status: string; sales_representatives?: { employee_code: string; user_profiles?: { display_name?: string | null } | null } | null };
 type Client = { id: string; client_name: string; client_code: string; status: 'active' | 'inactive'; priority: 'low' | 'normal' | 'high' | 'critical'; current_stage?: string | null; created_at?: string | null; address?: string | null; city?: string | null; state?: string | null; latitude?: number | null; longitude?: number | null; gstin?: string | null; pan?: string | null; outlet_type?: string | null; credit_limit?: number | null; credit_days?: number | null; industry_type_id?: string | null; country_code?: string | null; currency_code?: string | null; industry_details?: Record<string, unknown> | null; industry_types?: { id: string; code: string; name: string } | null; client_contacts?: Contact[]; sales_representative_client_assignments?: Assignment[]; client_type: string };type ClientForm = { clientCode: string; clientName: string; clientType: string; industryTypeId: string; outletType: string; gstin: string; pan: string; creditLimit: string; creditDays: string; streetAddress: string; city: string; state: string; countryCode: string; currencyCode: string; industryDetails: Record<string, string>; priority: Client['priority']; status: Client['status'] };
 const blank: ClientForm = { clientCode: '', clientName: '', clientType: 'School', industryTypeId: '', outletType: '', gstin: '', pan: '', creditLimit: '', creditDays: '', streetAddress: '', city: '', state: '', countryCode: '', currencyCode: '', industryDetails: {}, priority: 'normal', status: 'active' };
+// School clients are always stored with client type "School"; what people want to see in the Type column is the school type
+// picked on the lead (Government / Private / ...). Display only - filters and saved data still use client_type.
+const SCHOOL_TYPE_LABELS: Record<string, string> = { government: 'Government school', private: 'Private school', international: 'International school', college: 'College', coaching: 'Coaching / Tuition center' };
+const typeLabel = (item: { client_type: string; industry_types?: { code?: string } | null; industry_details?: Record<string, unknown> | null }) => {
+  const schoolType = String(item.industry_details?.schoolType ?? '');
+  return item.industry_types?.code?.toUpperCase() === 'SCHOOL' && schoolType ? (SCHOOL_TYPE_LABELS[schoolType] ?? schoolType) : item.client_type;
+};
 const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
 
 type TabOrder = { id: string; order_number: string; status: string; total_amount: number; created_at: string; client_id?: string };
@@ -255,7 +263,7 @@ const stageOf = (clientId: string): string => {
             <tr key={item.id}>
               <td><strong>{item.client_name}</strong><br /><small className="lead-code">{item.client_code}</small></td>
               <td>{item.industry_types?.name ?? <span className="empty-row">Not set</span>}</td>
-              <td>{item.client_type}{isMarketView && <><br /><span className={`status-badge ${marketOf(item) === 'international' ? 'status-pending' : 'status-completed'}`}>{marketOf(item) === 'international' ? `International${item.country_code ? ` · ${item.country_code}` : ''}` : 'Local'}</span></>}</td>
+              <td>{typeLabel(item)}{isMarketView && <><br /><span className={`status-badge ${marketOf(item) === 'international' ? 'status-pending' : 'status-completed'}`}>{marketOf(item) === 'international' ? `International${item.country_code ? ` · ${item.country_code}` : ''}` : 'Local'}</span></>}</td>
               <td><span className={`status-badge stage-${stageOf(item.id).toLowerCase()}`}>{stageOf(item.id)}</span></td>
               <td>{item.client_contacts?.find((c) => c.is_primary)?.email || item.client_contacts?.[0]?.email || <small className="lead-code">No email</small>}<br /><small className="lead-code">{item.client_contacts?.find((c) => c.is_primary)?.phone || item.client_contacts?.[0]?.phone || '—'}</small></td>
               <td>{item.created_at ? new Intl.DateTimeFormat(undefined, { dateStyle: 'short' }).format(new Date(item.created_at)) : '—'}</td>
@@ -436,7 +444,7 @@ const stageOf = (clientId: string): string => {
                   <dl className="detail-dl">
                     <dt>Client code</dt><dd>{viewing.client_code}</dd>
                     <dt>Industry</dt><dd>{viewing.industry_types?.name ?? 'Not set'}</dd>
-                      {viewing.industry_types?.code?.toUpperCase() !== 'FMCG' && (<><dt>Type</dt><dd>{viewing.client_type}</dd></>)}
+                      {viewing.industry_types?.code?.toUpperCase() !== 'FMCG' && (<><dt>Type</dt><dd>{typeLabel(viewing)}</dd></>)}
                {viewing.industry_types?.code?.toUpperCase() !== 'TRADING' && (
                       <>
                         <dt>Outlet type</dt><dd>{OUTLET_TYPES.find(([value]) => value === viewing.outlet_type)?.[1] ?? 'Not set'}</dd>
