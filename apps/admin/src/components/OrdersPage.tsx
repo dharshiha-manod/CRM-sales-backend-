@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { FmcgExportPanel } from './FmcgExportPanel';
 import { FmcgShipmentPanel } from './FmcgShipmentPanel';
@@ -8,6 +8,10 @@ import { buildDraftFromOrder } from '../lib/tradeDocumentHandoff';
 import { kpiClick } from '../lib/kpiClick';
 import { lineDiscountView } from '../lib/productDiscount';
 import './MasterDataPages.css';
+import { SchoolPeriodTag } from './SchoolPeriodTag';
+import { SchoolDeliveryBadge, SchoolDeliveryPanel } from './SchoolDeliveryPanel';
+import { SchoolReturnsPanel } from './SchoolReturnsPanel';
+import { SchoolRefundPanel } from './SchoolRefundPanel';
 
 const ORDER_DOC_TYPES = ['Commercial Invoice', 'Packing List', 'Delivery Note', 'Bill of Lading', 'Other'];
 
@@ -17,15 +21,20 @@ type OrderItem = {
   discount_amount: number;
   subtotal: number;
   free_quantity?: number | null;
-  products?: { id?: string; product_code?: string; product_name?: string; mrp?: number | null; discount_percent?: number | null } | null;
+  colour?: string | null; // Textile only
+  products?: { id?: string; product_code?: string; product_name?: string; unit?: string | null; mrp?: number | null; discount_percent?: number | null } | null;
 };
 type Order = {
+  academic_year_id?: string | null; term_id?: string | null; // School only
+  school_dispatched_at?: string | null; school_delivered_at?: string | null; school_received_by?: string | null; school_delivery_note?: string | null; // School delivery
   id: string;
   order_number: string;
   status: string;
   total_amount: number;
   /** Approved returns / damage credited against this order (order currency). */
   returns_credit?: number | null;
+  /** Money already paid back to the client against that credit. */
+  refunded_amount?: number | null;
   currency_code?: string | null;
   base_total?: number | null;
   exchange_rate?: number | null;
@@ -35,6 +44,9 @@ type Order = {
   created_at: string;
   notes?: string | null;
   visit_id?: string | null;
+  distributor_id?: string | null; // Textile only
+  distributor_code?: string | null;
+  distributor_name?: string | null;
   quotation_id?: string | null; // not populated by every API response — rendered/matched only if present
   clients?: { client_code?: string; client_name?: string; country_code?: string | null; industry_types?: { name?: string } | null } | null;
   incoterm?: string | null;
@@ -57,11 +69,12 @@ type VisitRef = {
   outcome?: string | null;
   clients?: { client_name?: string } | null;
 };
-type AddClient = { id: string; client_code: string; client_name: string; sales_representative_client_assignments?: Array<{ status: string; sales_representative_id: string }> | null };
-type AddProduct = { id: string; product_code: string; product_name: string; selling_price: number };
+type AddClient = { id: string; client_code: string; client_name: string; outlet_type?: string | null; status?: string | null; sales_representative_client_assignments?: Array<{ status: string; sales_representative_id: string }> | null };
+type DistOption = { id: string; distributor_code: string; distributor_name: string; status: string };
+type AddProduct = { id: string; product_code: string; product_name: string; selling_price: number; unit?: string | null; textile_details?: { colors?: { name: string; code?: string | null }[] } | null };
 type AddRep = { id: string; employee_code: string; status: string; user_profiles?: { display_name?: string | null } | null };
-type AddOrderLine = { productId: string; quantity: string; discountPercent: string; freeQuantity: string };
-const emptyAddLine: AddOrderLine = { productId: '', quantity: '1', discountPercent: '0', freeQuantity: '0' };
+type AddOrderLine = { productId: string; quantity: string; discountPercent: string; freeQuantity: string; colour: string };
+const emptyAddLine: AddOrderLine = { productId: '', quantity: '1', discountPercent: '0', freeQuantity: '0', colour: '' };
 
 // ── Automatic Sales Order pipeline (Requirement → Quotation → Order) ──
 // Quotations already carry a "convert" action on the backend (used today by
@@ -155,7 +168,8 @@ function saveOrderMeta(orderId: string, meta: OrderMeta) {
 }
 
 export function OrdersPage() {
-  const { clientMatchesActiveIndustry, activeIndustry } = useIndustryScope();
+  const { clientMatchesActiveIndustry, activeIndustry, activeIndustryTypeId } = useIndustryScope();
+  const isTextile = activeIndustry === 'textile';
 
   const [items, setItems] = useState<Order[]>([]);
   const [collected, setCollected] = useState<Record<string, number>>({});
@@ -217,6 +231,19 @@ export function OrdersPage() {
   const [addSaving, setAddSaving] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [addSuccess, setAddSuccess] = useState<string | null>(null);
+  // Textile only: the distributor who delivers the order to the client (Model B).
+  const [addDistributorId, setAddDistributorId] = useState('');
+  const [distOptions, setDistOptions] = useState<DistOption[]>([]);
+  const [distSaving, setDistSaving] = useState(false);
+  const [distError, setDistError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isTextile || !activeIndustryTypeId) return;
+    let cancelled = false;
+    api<{ data: DistOption[] }>(`/textile/distributors?industryTypeId=${activeIndustryTypeId}`)
+      .then((res) => { if (!cancelled) setDistOptions((res.data ?? []).filter((d) => d.status === 'Active')); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [isTextile, activeIndustryTypeId]);
 
   async function load() {
     setLoading(true);
@@ -264,10 +291,14 @@ export function OrdersPage() {
     const billed = Math.round((Number(order.billed_total ?? 0) / rate) * 100) / 100;
     return Math.max(Number(order.total_amount), billed);
   }
+  // INR balances under ₹1 are round-off, not real dues (customers pay round figures).
+  function settleTolerance(order: Order): number {
+    return !order.currency_code || order.currency_code === 'INR' ? 0.99 : 0.005;
+  }
   function paymentStatus(order: Order): { label: string; tone: 'good' | 'warn' | 'bad' } {
     const paid = collected[order.order_number] ?? 0;
     if (paid <= 0) return { label: 'Outstanding — payment reminder due', tone: 'bad' };
-    if (paid < payableOf(order) - Number(order.returns_credit ?? 0) - 0.005) return { label: `Partially paid (${currency(paid, order.currency_code ?? 'INR')} of ${currency(payableOf(order) - Number(order.returns_credit ?? 0), order.currency_code ?? 'INR')})`, tone: 'warn' };
+    if (paid < payableOf(order) - Number(order.returns_credit ?? 0) - settleTolerance(order)) return { label: `Partially paid (${currency(paid, order.currency_code ?? 'INR')} of ${currency(payableOf(order) - Number(order.returns_credit ?? 0), order.currency_code ?? 'INR')})`, tone: 'warn' };
     return { label: 'Paid', tone: 'good' };
   }
   function paymentFilterValue(order: Order): 'paid' | 'partial' | 'outstanding' {
@@ -327,6 +358,7 @@ export function OrdersPage() {
        setAddClientId('');
     setAddClientMode('existing');
     setAddClientName('');
+    setAddDistributorId('');
     setAddLines([emptyAddLine]);
     setAddNotes('');
     setAddRepId('');
@@ -370,6 +402,8 @@ export function OrdersPage() {
     if (!validLines.length) return setAddError('Add at least one product line.');
     for (const line of validLines) {
       if (!line.quantity || Number(line.quantity) <= 0) return setAddError('Each line needs a quantity greater than zero.');
+      const lineProduct = addProducts.find((p) => p.id === line.productId);
+      if (isTextile && (lineProduct?.textile_details?.colors ?? []).length > 0 && !line.colour) return setAddError(`Pick a colour for ${lineProduct?.product_name ?? 'each fabric line'}.`);
     }
     setAddSaving(true);
     try {
@@ -380,11 +414,13 @@ export function OrdersPage() {
           clientId: addClientMode === 'existing' ? addClientId : null,
           clientName: addClientMode === 'outside' ? addClientName.trim() : null,
           representativeId: addRepId,
+          ...(isTextile && addClientMode === 'existing' && addDistributorId ? { distributorId: addDistributorId } : {}),
           items: validLines.map((line) => ({
             productId: line.productId,
             quantity: Number(line.quantity),
                       discountPercent: Number(line.discountPercent || 0),
             freeQuantity: Number(line.freeQuantity || 0),
+            ...(isTextile && line.colour ? { colour: line.colour } : {}),
           })),
           notes: notesWithFreeQty || null,
         }),
@@ -396,6 +432,20 @@ export function OrdersPage() {
       setAddError(caught instanceof Error ? caught.message : 'Unable to create this order.');
     } finally {
       setAddSaving(false);
+    }
+  }
+  async function saveDistributor(value: string) {
+    if (!selected) return;
+    setDistSaving(true);
+    setDistError(null);
+    try {
+      const res = await api<{ data: { distributor_id: string | null; distributor_code: string | null; distributor_name: string | null } }>(`/orders/${selected.id}/distributor`, { method: 'PATCH', body: JSON.stringify({ distributorId: value || null }) });
+      setSelected((s) => (s ? { ...s, distributor_id: res.data.distributor_id, distributor_code: res.data.distributor_code, distributor_name: res.data.distributor_name } : s));
+      await load();
+    } catch (caught) {
+      setDistError(caught instanceof Error ? caught.message : 'Unable to save the distributor.');
+    } finally {
+      setDistSaving(false);
     }
   }
   function clearFilters() {
@@ -544,8 +594,8 @@ export function OrdersPage() {
   const completedCount = scopedItems.filter((o) => o.status === 'completed').length;
   const cancelledCount = scopedItems.filter((o) => o.status === 'cancelled').length;
   const totalSalesValue = useMemo(
-    () => scopedItems.filter((o) => o.status !== 'cancelled' && o.status !== 'pending_approval').reduce((sum, o) => sum + Number(o.base_total ?? o.total_amount ?? 0), 0),
-    [scopedItems],
+    () => scopedItems.filter((o) => o.status !== 'cancelled' && o.status !== 'pending_approval').reduce((sum, o) => sum + Number(o.base_total ?? o.total_amount ?? 0) - (activeIndustry === 'school' ? Number(o.returns_credit ?? 0) : 0), 0), // School: net of approved returns
+    [scopedItems, activeIndustry],
   );
 
   return (
@@ -681,9 +731,9 @@ export function OrdersPage() {
                         <td>{order.clients?.industry_types?.name ?? '—'}</td>
                         <td>{order.sales_representatives?.user_profiles?.display_name ?? order.sales_representatives?.employee_code ?? '—'}</td>
                         <td>{itemCount} {itemCount === 1 ? 'Item' : 'Items'}</td>
-                        <td>{currency(order.total_amount, order.currency_code ?? 'INR')}{order.currency_code && order.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(order.base_total ?? 0))}</small>}{payableOf(order) > Number(order.total_amount) + 0.005 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Invoiced {currency(payableOf(order), order.currency_code ?? 'INR')} (with extra charges)</small>}{Number(order.returns_credit ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Returns credit − {currency(Number(order.returns_credit), order.currency_code ?? 'INR')}</small>}</td>
+                        <td>{currency(order.total_amount, order.currency_code ?? 'INR')}{order.currency_code && order.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(order.base_total ?? 0))}</small>}{payableOf(order) > Number(order.total_amount) + 0.005 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Invoiced {currency(payableOf(order), order.currency_code ?? 'INR')} (with extra charges)</small>}{Number(order.returns_credit ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Returns credit − {currency(Number(order.returns_credit), order.currency_code ?? 'INR')}</small>}{activeIndustry === 'school' && Number(order.refunded_amount ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--green)' }}>Refunded {currency(Number(order.refunded_amount), order.currency_code ?? 'INR')}</small>}{activeIndustry === 'school' && Number(order.returns_credit ?? 0) > 0 && (collected[order.order_number] ?? 0) - Number(order.refunded_amount ?? 0) + Number(order.returns_credit ?? 0) - Number(order.total_amount) > 0.005 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--red)' }}>Refund due {currency((collected[order.order_number] ?? 0) - Number(order.refunded_amount ?? 0) + Number(order.returns_credit ?? 0) - Number(order.total_amount), order.currency_code ?? 'INR')}</small>}</td>
                         <td><span className={`status-badge status-${ps.tone === 'good' ? 'paid' : ps.tone === 'warn' ? 'quoted' : 'overdue'}`}>{ps.tone === 'good' ? 'Paid' : ps.tone === 'warn' ? 'Partial' : 'Outstanding'}</span></td>
-                        <td><span className={`status-badge status-${order.status}`}>{order.status}</span></td>
+                        <td><span className={`status-badge status-${order.status}`}>{order.status}</span>{activeIndustry === 'school' && <SchoolDeliveryBadge order={order} />}</td>
                         {activeIndustry === 'fmcg' && (
                           <td>
                             {order.status === 'confirmed' || order.status === 'completed'
@@ -691,7 +741,7 @@ export function OrdersPage() {
                               : '—'}
                           </td>
                         )}
-                        <td>{dateLabel(order.created_at)}</td>
+                        <td>{dateLabel(order.created_at)}<SchoolPeriodTag yearId={order.academic_year_id} termId={order.term_id} /></td>
                         <td className="master-actions">
                           <button type="button" className="icon-action row-menu-trigger" title="More actions" aria-label="More actions" onClick={() => openOrder(order)}>
                             <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
@@ -724,7 +774,7 @@ export function OrdersPage() {
         const quoteRef = /QT-[A-Za-z0-9-]+/.exec(selected.notes ?? '')?.[0];
         const canCancel = selected.status !== 'cancelled' && selected.status !== 'completed';
         const showCancelButton = canCancel && !cancelOpen;
-             const showPayButton = selected.status !== 'cancelled' && balance > 0.01 && !paymentOpen;
+          const showPayButton = selected.status !== 'cancelled' && balance > settleTolerance(selected) && !paymentOpen;
         const showFooter = activeIndustry === 'trading' || selected.status === 'pending_approval' || showCancelButton || showPayButton;
 
         return (
@@ -784,8 +834,8 @@ export function OrdersPage() {
                       const shown = lineDiscountView(line.products?.id, Number(line.quantity), Number(line.unit_price), Number(line.discount_amount), 0, line.products);
                       return (
                       <tr key={index}>
-                        <td>{line.products?.product_name ?? line.products?.product_code ?? 'Product'}</td>
-                        <td>{line.quantity}</td>
+                        <td>{line.products?.product_name ?? line.products?.product_code ?? 'Product'}{isTextile && line.colour && <><br /><small>Colour: {line.colour}</small></>}</td>
+                        <td>{line.quantity}{isTextile && line.products?.unit ? ` ${line.products.unit}` : ''}</td>
                         <td>{Number(line.free_quantity) > 0 ? line.free_quantity : (line.products?.product_code ? (freeQty[line.products.product_code] ?? '—') : '—')}</td>
                         <td>{selCur(shown.unitPrice)}</td>
                         <td>
@@ -808,7 +858,8 @@ export function OrdersPage() {
                 {payableOf(selected) > Number(selected.total_amount) + 0.005 && <div><span>Invoiced total (with extra charges)</span><strong>{selCur(payableOf(selected))}</strong></div>}
                 {Number(selected.returns_credit ?? 0) > 0 && <div><span>Returns credit</span><strong>− {selCur(Number(selected.returns_credit))}</strong></div>}
                 <div><span>Collected</span><strong>{selCur(alreadyPaid)}</strong></div>
-                <div className="qd-grand"><span>Balance due</span><strong>{selCur(Math.max(balance, 0))}</strong></div>
+                {activeIndustry === 'school' && Number(selected.refunded_amount ?? 0) > 0 && <div><span>Refunded to school</span><strong>− {selCur(Number(selected.refunded_amount))}</strong></div>}
+                <div className="qd-grand"><span>Balance due</span><strong>{selCur(balance > settleTolerance(selected) ? balance : 0)}</strong></div>
               </div>
 
               {selected.clients?.country_code && selected.clients.country_code.toUpperCase() !== 'IN' && (
@@ -819,10 +870,22 @@ export function OrdersPage() {
                 <FmcgShipmentPanel key={`ship-${selected.id}`} order={selected} onSaved={(saved) => { setSelected((s) => (s ? { ...s, ...saved } : s)); void load(); }} />
               )}
 
+              {activeIndustry === 'school' && (
+                <SchoolDeliveryPanel key={`deliv-${selected.id}`} order={selected} onSaved={(saved) => { setSelected((s) => (s ? { ...s, ...saved } : s)); void load(); }} />
+              )}
+
+              {activeIndustry === 'school' && (
+                <SchoolReturnsPanel key={`ret-${selected.id}`} order={selected} onChanged={(patch) => { setSelected((s) => (s ? { ...s, ...patch } : s)); void load(); }} />
+              )}
+
+              {activeIndustry === 'school' && (
+                <SchoolRefundPanel key={`refund-${selected.id}`} order={selected} onChanged={(patch) => { setSelected((s) => (s ? { ...s, ...patch } : s)); void load(); }} />
+              )}
+
               <div className="qd-panel">
                 <div className="qd-panel-head">
                   <span>Payment &amp; dispatch</span>
-                  <span className={`qd-pill ${balance > 0.01 ? 'warn' : 'ok'}`}>{ps.label}</span>
+                 <span className={`qd-pill ${balance > settleTolerance(selected) ? 'warn' : 'ok'}`}>{ps.label}</span>
                 </div>
                 <div className="qd-fields">
                   <label>
@@ -837,7 +900,7 @@ export function OrdersPage() {
                       <option value="cod">Cash on delivery</option>
                     </select>
                   </label>
-                  {activeIndustry !== 'fmcg' && (
+                  {activeIndustry !== 'fmcg' && activeIndustry !== 'school' && ( // School tracks dispatch in the Delivery to school panel above
                     <label>
                       Dispatch status
                       <select value={orderMeta.dispatchStatus} onChange={(e) => updateOrderMeta({ dispatchStatus: e.target.value })}>
@@ -847,6 +910,27 @@ export function OrdersPage() {
                   )}
                 </div>
               </div>
+
+              {isTextile && (
+                <div className="qd-panel">
+                  <div className="qd-panel-head">
+                    <span>Distributor delivery</span>
+                    <span className={`qd-pill ${selected.distributor_id ? 'ok' : 'warn'}`}>{selected.distributor_id ? 'Assigned' : 'Direct'}</span>
+                  </div>
+                  <div className="qd-fields">
+                    <label>
+                      Distributor
+                      <select value={selected.distributor_id ?? ''} disabled={distSaving || selected.status === 'cancelled' || selected.status === 'completed'} onChange={(e) => void saveDistributor(e.target.value)}>
+                        <option value="">No distributor — deliver directly</option>
+                        {selected.distributor_id && !distOptions.some((d) => d.id === selected.distributor_id) && <option value={selected.distributor_id}>{selected.distributor_code ?? ''} {selected.distributor_name ?? 'Distributor'}</option>}
+                        {distOptions.map((d) => <option key={d.id} value={d.id}>{d.distributor_code} — {d.distributor_name}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  {distError && <p className="error-message">{distError}</p>}
+                  <small className="text-faint-inline">Fabric rolls allocated to this order are delivered to {selected.clients?.client_name ?? 'the client'} through the selected distributor.</small>
+                </div>
+              )}
 
               {notesText && (
                 <div className="qd-notes">
@@ -991,6 +1075,15 @@ export function OrdersPage() {
                     {addReps.map((r) => <option key={r.id} value={r.id}>{r.user_profiles?.display_name || r.employee_code}</option>)}
                   </select>
                 </label>
+                {isTextile && addClientMode === 'existing' && (
+                  <label className="order-builder-field">
+                    <span>Distributor (delivers to the client)</span>
+                    <select value={addDistributorId} onChange={(e) => setAddDistributorId(e.target.value)}>
+                      <option value="">No distributor — deliver directly</option>
+                      {distOptions.map((d) => <option key={d.id} value={d.id}>{d.distributor_code} — {d.distributor_name}</option>)}
+                    </select>
+                  </label>
+                )}
                 <strong>Products</strong>
                 <div className="order-line order-line-header" aria-hidden="true">
                   <span className="order-line-label">Product</span>
@@ -1000,8 +1093,9 @@ export function OrdersPage() {
                   <span className="order-line-label">Subtotal</span>
                 </div>
                 {addLines.map((line, index) => (
-                  <div className="order-line" key={index}>
-                    <select value={line.productId} onChange={(e) => updateAddLine(index, { productId: e.target.value })}>
+                  <Fragment key={index}>
+                  <div className="order-line">
+                    <select value={line.productId} onChange={(e) => updateAddLine(index, { productId: e.target.value, colour: '' })}>
                       <option value="">Select product</option>
                       {addProducts.map((product) => (
                         <option key={product.id} value={product.id}>
@@ -1017,6 +1111,19 @@ export function OrdersPage() {
                       <button type="button" className="text-action" onClick={() => setAddLines(addLines.filter((_, i) => i !== index))}>Remove</button>
                     )}
                   </div>
+                  {isTextile && (() => {
+                    const lineColours = addProducts.find((p) => p.id === line.productId)?.textile_details?.colors ?? [];
+                    if (lineColours.length === 0) return null;
+                    return (
+                      <div style={{ margin: '-.2rem 0 .7rem' }}>
+                        <select aria-label="Colour" value={line.colour} onChange={(e) => updateAddLine(index, { colour: e.target.value })}>
+                          <option value="">Select colour *</option>
+                          {lineColours.map((c) => <option key={c.name} value={c.name}>{c.code ? `${c.name} (${c.code})` : c.name}</option>)}
+                        </select>
+                      </div>
+                    );
+                  })()}
+                  </Fragment>
                 ))}
                 <button type="button" className="secondary-action" onClick={() => setAddLines([...addLines, emptyAddLine])}>+ Add product</button>
 

@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { collectionsInInr, ordersInInr } from '../lib/inr';
 import { useIndustry } from '../industry/IndustryContext';
 import { REPORT_TERMS } from '../industry/reportConfig';
+import { TextileRollStockPanel } from './TextileRollStockPanel';
 import { kpiClick, goToPage } from '../lib/kpiClick';
 import { getReportMockData } from '../industry/reportMockData';
 import './ReportsPage.css';
@@ -777,6 +778,8 @@ export function ReportsPage() {
             </div>
           ) : <div className="ops-empty"><strong>No {terms.itemLabelPlural.toLowerCase()} sold</strong><p>No order line items in this range yet.</p></div>}
         </section>
+
+        {activeIndustry === 'textile' && <TextileRollStockPanel />}
 
         <section className="ops-panel">
           <header><div><p className="eyebrow">{terms.clientLabelPlural}</p><h2>Top {terms.clientLabelPlural}</h2></div><span>Top {view.clients.length}</span></header>

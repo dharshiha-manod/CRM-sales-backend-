@@ -9,9 +9,12 @@ import { lineDiscountView } from '../lib/productDiscount';
 
 const QUOTATION_DOC_TYPES = ['Proforma Invoice', 'Commercial Invoice', 'Other'];
 import { QuotationPipelineStepper } from './QuotationPipelineStepper';
+import { SchoolPeriodTag } from './SchoolPeriodTag';
 import './MasterDataPages.css';
 
 type QuotationItem = {
+  id?: string;
+  colour?: string | null; // Textile only
   product_id?: string | null;
   quantity: number;
   unit_price: number;
@@ -20,9 +23,10 @@ type QuotationItem = {
   subtotal: number;
   tax_percent?: number;
   tax_amount?: number;
-  products?: { product_code?: string; product_name?: string; mrp?: number | null; discount_percent?: number | null } | null;
+  products?: { product_code?: string; product_name?: string; unit?: string | null; textile_details?: { colors?: { name: string }[] } | null; mrp?: number | null; discount_percent?: number | null } | null;
 };
 type Quotation = {
+  academic_year_id?: string | null; term_id?: string | null; // School only
   id: string;
   quotation_number: string;
   status: 'draft' | 'sent' | 'client_accepted' | 'accepted' | 'rejected' | 'expired' | 'converted';
@@ -161,6 +165,7 @@ export function QuotationsPage() {
   const { role } = useCurrentMembership();
   const canApprove = role === 'admin' || role === 'super_admin' || role === 'sales_manager';
   const { clientMatchesActiveIndustry, activeIndustry } = useIndustryScope();
+  const isTextile = activeIndustry === 'textile';
   const [items, setItems] = useState<Quotation[]>([]);
   const [selected, setSelected] = useState<Quotation | null>(null);
   const selCur = (v: number) => currency(v, selected?.currency_code ?? 'INR');
@@ -254,6 +259,19 @@ export function QuotationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Textile only: choose the colour of a draft quotation line (colours come from the product).
+  async function setLineColour(quotation: Quotation, lineId: string | undefined, colour: string) {
+    if (!lineId || !colour) return;
+    setConvertMessage(null);
+    try {
+      const res = await api<{ data: Quotation }>(`/quotations/${quotation.id}/items/${lineId}/colour`, { method: 'PATCH', body: JSON.stringify({ colour }) });
+      setSelected(res.data);
+      await load();
+    } catch (caught) {
+      setConvertMessage(caught instanceof Error ? caught.message : 'Unable to set the colour.');
+      setConvertMessageIsError(true);
+    }
+  }
   async function markStatus(quotation: Quotation, nextStatus: 'rejected') {
     setStatusUpdatingId(quotation.id);
     setConvertMessage(null);
@@ -469,7 +487,7 @@ export function QuotationsPage() {
                     <small>{quote.clients?.client_code}</small>
                   </td>
                   <td>{quote.sales_representatives?.user_profiles?.display_name ?? quote.sales_representatives?.employee_code ?? '—'}</td>
-                  <td>{dateLabel(quote.created_at)}</td>
+                  <td>{dateLabel(quote.created_at)}<SchoolPeriodTag yearId={quote.academic_year_id} termId={quote.term_id} /></td>
                   <td>{currency(quote.total_amount, quote.currency_code ?? 'INR')}{quote.currency_code && quote.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(quote.base_total ?? 0))}</small>}</td>
                                              <td>
                     <span className={`status-badge status-${quote.status}`}>{quote.status}</span>
@@ -564,8 +582,16 @@ export function QuotationsPage() {
                     const shown = lineDiscountView(line.product_id, Number(line.quantity), Number(line.unit_price), Number(line.discount_amount), Number(line.discount_percent), line.products);
                     return (
                     <tr key={index}>
-                      <td>{line.products?.product_name ?? 'Product'}</td>
-                      <td>{line.quantity}</td>
+                      <td>
+                        {line.products?.product_name ?? 'Product'}
+                        {isTextile && (selected.status === 'draft' && (line.products?.textile_details?.colors ?? []).length > 0 ? (
+                          <><br /><select aria-label="Colour" value={line.colour ?? ''} onChange={(event) => void setLineColour(selected, line.id, event.target.value)}>
+                            <option value="">Select colour</option>
+                            {(line.products?.textile_details?.colors ?? []).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+                          </select></>
+                        ) : (line.colour ? <><br /><small>Colour: {line.colour}</small></> : null))}
+                      </td>
+                      <td>{line.quantity}{isTextile && line.products?.unit ? ` ${line.products.unit}` : ''}</td>
                       <td>{selCur(shown.unitPrice)}</td>
                       <td>
                         {selCur(shown.discountAmount)}

@@ -16,7 +16,7 @@ const INDUSTRY_FIELDS: Record<string, IndustryField[]> = {
     { key: 'outletCategory', label: 'Trade channel', type: 'select', options: ['General trade', 'Modern trade', 'HoReCa', 'Institutional'] }
   ],
   SCHOOL: [
-    { key: 'boardAffiliation', label: 'Board affiliation', type: 'select', required: true, options: ['CBSE', 'ICSE', 'State Board', 'IB', 'Other'] },
+    { key: 'boardAffiliation', label: 'Board affiliation', type: 'select', options: ['CBSE', 'ICSE', 'State Board', 'IB', 'Other'] },
     { key: 'udiseCode', label: 'UDISE+ code', type: 'text', hint: '11 digits' },
     { key: 'studentStrength', label: 'Approx. student strength', type: 'number' },
     { key: 'schoolType', label: 'School type', type: 'select', options: ['government', 'private', 'international', 'college', 'coaching'] }

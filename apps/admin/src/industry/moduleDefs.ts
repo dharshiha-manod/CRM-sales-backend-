@@ -43,8 +43,6 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'customer-invoices', label: 'Customer Invoices', icon: '🧾' },
   ],
   textile: [
-    { id: 'design-pattern', label: 'Design / Pattern Management', icon: '✎' },
-  { id: 'colour-size', label: 'Colour & Size Management', icon: '◧' },
     { id: 'fabric-roll', label: 'Fabric Roll Management', icon: '▤' },
     { id: 'textile-sample', label: 'Textile Sample Management', icon: '▣' },
     { id: 'quality-inspection', label: 'Quality & Inspection Management', icon: '✔' },

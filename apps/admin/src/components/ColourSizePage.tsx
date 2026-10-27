@@ -14,12 +14,13 @@ emptyIcon: '◧',
   statusOptions: ['Active', 'Inactive'],
   searchableKeys: ['sku', 'colour_name', 'design_code', 'size'],
   fields: [
-{ key: 'sku', label: 'SKU', type: 'text', required: true, listColumn: true, placeholder: 'auto-generated from design + colour + size', readOnly: true, autoGenerate: (row) => `${row.design_code || 'DSN'}-${(row.colour_name || '').slice(0,3).toUpperCase()}-${row.size || ''}` },
+{ key: 'sku', label: 'SKU', type: 'text', required: true, listColumn: true, placeholder: 'auto-generated from design + colour + size', readOnly: true, regenerateOn: ['design_code', 'colour_name', 'size'], autoGenerate: (row) =>`${row.design_code || 'DSN'}-${(row.colour_name || '').slice(0,3).toUpperCase()}-${row.size || ''}` },
     { key: 'design_code', label: 'Design code', type: 'lookup', lookupResource: '/textile/designs', lookupLabelKey: 'design_name', required: true, listColumn: true },
     { key: 'colour_name', label: 'Colour', type: 'text', required: true, listColumn: true },
     { key: 'size', label: 'Size', type: 'select', options: SIZES, listColumn: true },
 { key: 'colour_hex', label: 'Colour swatch (hex)', type: 'colour', group: 'Variant details', placeholder: '#RRGGBB' },
-    { key: 'stock_quantity', label: 'Stock quantity', type: 'number', group: 'Variant details' },
+    { key: 'stock_quantity', label: 'Stock quantity', type: 'number', group: 'Variant details', helpText: 'Posts to Inventory only when a Textile product exists with the same code as this SKU (see "Inventory link").' },
+    { key: 'inventory_status', label: 'Inventory link', type: 'text', readOnly: true, listColumn: true, group: 'Variant details', format: (v) => (v === 'Linked' ? '✔ Linked' : v === 'Not linked' ? '⚠ Not linked' : '') },
     { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Inactive'], group: 'Variant details' },
   ],
   kpis: [
@@ -27,11 +28,6 @@ emptyIcon: '◧',
     { icon: '▥', iconClass: 'kpi-icon-school', label: 'Total stock units', value: (r) => String(r.reduce((sum, x) => sum + (Number(x.stock_quantity) || 0), 0)) },
     { icon: '⊘', iconClass: 'kpi-icon-red', label: 'Out of stock', value: (r) => String(r.filter((x) => Number(x.stock_quantity) === 0).length) },
     { icon: '⚠', iconClass: 'kpi-icon-amber', label: 'Low stock (<10)', value: (r) => String(r.filter((x) => Number(x.stock_quantity) > 0 && Number(x.stock_quantity) < 10).length) },
-{ icon: '⚠', iconClass: 'kpi-icon-amber', label: 'Low stock (<10)', value: (r) => String(r.filter((x) => Number(x.stock_quantity) > 0 && Number(x.stock_quantity) < 10).length) },
-  ],
-  sampleRecords: [
-    { id: 'demo-variant-1', sku: 'DSN-014-RED-M', design_code: 'DSN-2026-014', colour_name: 'Maroon Red', size: 'M', colour_hex: '#7b1e2b', stock_quantity: 42, status: 'Active' },
-    { id: 'demo-variant-2', sku: 'DSN-014-GLD-FREE', design_code: 'DSN-2026-014', colour_name: 'Antique Gold', size: 'Free size', colour_hex: '#c9a24b', stock_quantity: 0, status: 'Active' },
   ],
 };
 

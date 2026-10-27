@@ -20,7 +20,7 @@ import { RequirementsPage } from './components/RequirementsPage';
 import { RepresentativesPage } from './components/RepresentativesPage';
 import { RouteBeatPage } from './components/RouteBeatPage';
 import { SchemeDiscountPage } from './components/SchemeDiscountPage';
-import { DistributorPage } from './components/DistributorPage';
+import { TextileDistributorPage } from './components/TextileDistributorPage';
 import { FmcgDistributorPage } from './components/FmcgDistributorPage';
 import { SchoolManagementPage } from './components/SchoolManagementPage';
 import { SchoolSalesCollectionPage } from './components/SchoolSalesCollectionPage';
@@ -30,8 +30,6 @@ import { SalesReturnDamagePage } from './components/SalesReturnDamagePage';
 import { BatchExpiryPage } from './components/BatchExpiryPage';
 import { FmcgCurrencyRatesPage } from './components/FmcgCurrencyRatesPage';
 import { FmcgShipmentsPage } from './components/FmcgShipmentsPage';
-import { DesignPatternPage } from './components/DesignPatternPage';
-import { ColourSizePage } from './components/ColourSizePage';
 import { FabricRollPage } from './components/FabricRollPage';
 import { TextileSamplePage } from './components/TextileSamplePage';
 import { QualityInspectionPage } from './components/QualityInspectionPage';
@@ -141,12 +139,10 @@ content['industry:school:school-management'] = <SchoolManagementPage />;
     content['industry:school:school-sales-collection'] = <SchoolSalesCollectionPage />;
   content['industry:school:academic-year-term'] = <AcademicYearTermPage />;
   content['industry:school:specific-pricing-discount'] = <SpecificPricingDiscountPage />;
-  content['industry:textile:design-pattern'] = <DesignPatternPage />;
-  content['industry:textile:colour-size'] = <ColourSizePage />;
   content['industry:textile:fabric-roll'] = <FabricRollPage />;
   content['industry:textile:textile-sample'] = <TextileSamplePage />;
   content['industry:textile:quality-inspection'] = <QualityInspectionPage />;
-  content['industry:textile:distributor'] = <DistributorPage industryLabel="Textile" />;
+  content['industry:textile:distributor'] = <TextileDistributorPage />;
   content['industry:pharma:sample'] = <PharmaSamplePage />;
   content['industry:pharma:batch-expiry'] = <PharmaBatchExpiryPage />;
   content['industry:pharma:product-promotion'] = <PharmaProductPromotionPage />;
@@ -239,7 +235,7 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
             <button onClick={() => void signOut()}>Sign out</button>
           </div>
         </header>
-<main className="content">{content[pageBase]}</main>      </div>
+<main className="content">{content[pageBase] ?? content.dashboard}</main>   </div>
     </div>
   );
 }

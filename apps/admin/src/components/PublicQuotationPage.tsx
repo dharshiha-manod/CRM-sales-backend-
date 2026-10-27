@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import './PublicQuotationPage.css';
 
-type Line = { tax_amount?: number | null; id?: string; discount_percent?: number | null; quantity: number; unit_price: number; subtotal: number; tax_percent?: number | null; products?: { product_name?: string } | null };
+type Line = { tax_amount?: number | null; id?: string; discount_percent?: number | null; quantity: number; unit_price: number; subtotal: number; tax_percent?: number | null; colour?: string | null; products?: { product_name?: string; unit?: string | null } | null };
 type Quote = { quotation_number: string; status: string; valid_until?: string | null; total_amount: number; tax_amount?: number | null; currency_code?: string | null; company_logo_url?: string | null; clients?: { client_name?: string } | null; organizations?: { name?: string } | null; quotation_items?: Line[] };
 const baseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api';
 const makeMoney = (code?: string | null) => (value: number) => { const c = (code || 'INR').toUpperCase(); return new Intl.NumberFormat(c === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: c }).format(Number(value)); };
@@ -43,7 +43,7 @@ export function PublicQuotationPage({ token }: { token: string }) {
               <tbody>
                 {quote.quotation_items?.map((line, index) => (
                   <tr key={index}>
-                    <td>{line.products?.product_name ?? 'Product'}</td>
+                    <td>{line.products?.product_name ?? 'Product'}{line.colour && <><br /><small>Colour: {line.colour}{line.products?.unit ? ` · price per ${line.products.unit}` : ''}</small></>}</td>
                     <td className="c">
                       <input className="pq-qty" type="number" min={1} step={1} inputMode="numeric" aria-label={`Quantity for ${line.products?.product_name ?? 'item'}`} value={qty[line.id ?? ''] ?? String(line.quantity)} onChange={(event) => setQty((current) => ({ ...current, [line.id ?? '']: event.target.value }))} onBlur={() => setQty((current) => ({ ...current, [line.id ?? '']: String(lineQty(line)) }))} />
                     </td>

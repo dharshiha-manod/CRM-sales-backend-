@@ -1,3 +1,4 @@
+import { TextileRollStockPanel } from './TextileRollStockPanel';
 import { useEffect, useMemo, useState } from 'react';
 import { useIndustry } from '../industry/IndustryContext';
 import { useIndustryScope } from '../industry/useIndustryScope';
@@ -681,6 +682,7 @@ export function InventoryPage() {
         <div className="kpi-card" data-tone="amber" {...kpiClick(statusFilter === 'expiring_soon', () => showStock('expiring_soon'))}><div className="kpi-icon kpi-icon-amber">◷</div><div><span>Expiring Soon</span><strong>{kpis.expiringSoon}</strong> </div></div>
 <div className="kpi-card" data-tone="blue" {...kpiClick(false, () => showStock('all'))}><div className="kpi-icon kpi-icon-blue">₹</div><div><span>Stock Value (at cost)</span><strong>{kpis.costValue > 0 ? `₹${kpis.costValue.toLocaleString('en-IN')}` : '—'}</strong><small style={{ display: 'block', marginTop: 2, fontSize: 12, opacity: 0.7 }}>Sales value ₹{kpis.salesValue.toLocaleString('en-IN')}{kpis.missingCost > 0 ? ` · ${kpis.missingCost} without purchase price` : ''}</small></div></div>        <div className="kpi-card" data-tone="red"><div className="kpi-icon kpi-icon-red">⬤</div><div><span>Out of Stock</span><strong>{kpis.outOfStock}</strong></div></div>
       </div>
+      {activeIndustry === 'textile' && <TextileRollStockPanel />}
 
       {/* FILTERS */}
       <section className="inv-filters">

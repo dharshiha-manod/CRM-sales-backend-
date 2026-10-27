@@ -4,16 +4,23 @@ import './MasterDataPages.css';
 
 // School-specific pricing rules are real School master data (school_pricing_rules), saved through the School API.
 // Once a rule is active and inside its dates, new quotations and orders for that school pick it up automatically.
-type School = { id: string; client_code: string; client_name: string; client_type: string; status: string };
+type School = { id: string; client_code: string; client_name: string; client_type: string; status: string; industry_details?: Record<string, unknown> | null };
 type Product = { id: string; product_code: string; product_name: string; category?: string | null; selling_price: number; status: string };
+
+type ApplyTo = 'school' | 'school_type' | 'all';
+const applyToLabels: Record<ApplyTo, string> = { school: 'One school', school_type: 'All schools of one type', all: 'All schools' };
+const SCHOOL_TYPE_LABELS: Record<string, string> = { government: 'Government schools', private: 'Private schools', international: 'International schools', college: 'Colleges', coaching: 'Coaching / Tuition centers' };
+const schoolTypeOf = (s?: School) => String(s?.industry_details?.schoolType ?? '');
 
 type DiscountType = 'percentage' | 'fixed_price';
 const discountTypeLabels: Record<DiscountType, string> = { percentage: 'Percentage off', fixed_price: 'Fixed price' };
 
 type PricingRule = {
   id: string;
+  applyTo: ApplyTo;
+  schoolType: string;
   schoolId: string;
-  productId: string;
+  productId: string; // '' = all products
   discountType: DiscountType;
   discountPercent: string;
   fixedPrice: string;
@@ -24,16 +31,17 @@ type PricingRule = {
   notes: string;
 };
 type RuleForm = Omit<PricingRule, 'id'>;
-const blankForm: RuleForm = { schoolId: '', productId: '', discountType: 'percentage', discountPercent: '', fixedPrice: '', minQuantity: '', startDate: '', endDate: '', status: 'active', notes: '' };
-type ApiRule = { id: string; client_id: string; product_id: string; discount_type: DiscountType; discount_percent: number | null; fixed_price: number | null; min_quantity: number | null; start_date: string | null; end_date: string | null; status: 'active' | 'inactive'; notes: string | null };
+const blankForm: RuleForm = { applyTo: 'school', schoolType: '', schoolId: '', productId: '', discountType: 'percentage', discountPercent: '', fixedPrice: '', minQuantity: '', startDate: '', endDate: '', status: 'active', notes: '' };
+type ApiRule = { id: string; apply_to?: ApplyTo; school_type?: string | null; client_id: string | null; product_id: string | null; discount_type: DiscountType; discount_percent: number | null; fixed_price: number | null; min_quantity: number | null; start_date: string | null; end_date: string | null; status: 'active' | 'inactive'; notes: string | null };
 const fromApi = (r: ApiRule): PricingRule => ({
-  id: r.id, schoolId: r.client_id, productId: r.product_id, discountType: r.discount_type,
+  id: r.id, applyTo: r.apply_to ?? 'school', schoolType: r.school_type ?? '', schoolId: r.client_id ?? '', productId: r.product_id ?? '', discountType: r.discount_type,
   discountPercent: r.discount_percent != null ? String(r.discount_percent) : '', fixedPrice: r.fixed_price != null ? String(r.fixed_price) : '',
   minQuantity: r.min_quantity ? String(r.min_quantity) : '', startDate: r.start_date ? String(r.start_date).slice(0, 10) : '', endDate: r.end_date ? String(r.end_date).slice(0, 10) : '',
   status: r.status, notes: r.notes ?? '',
 });
 const toPayload = (f: RuleForm) => ({
-  clientId: f.schoolId, productId: f.productId, discountType: f.discountType,
+  applyTo: f.applyTo, clientId: f.applyTo === 'school' ? f.schoolId : null, schoolType: f.applyTo === 'school_type' ? f.schoolType : null,
+  productId: f.productId || null, discountType: f.discountType,
   discountPercent: f.discountType === 'percentage' ? Number(f.discountPercent) : null,
   fixedPrice: f.discountType === 'fixed_price' ? Number(f.fixedPrice) : null,
   minQuantity: f.minQuantity ? Number(f.minQuantity) : 0,
@@ -42,6 +50,12 @@ const toPayload = (f: RuleForm) => ({
 
 const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(value);
 const dateLabel = (value: string) => (value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value)) : '—');
+
+function appliesTo(rule: PricingRule, school: School): boolean {
+  if (rule.applyTo === 'all') return true;
+  if (rule.applyTo === 'school_type') return rule.schoolType !== '' && rule.schoolType === schoolTypeOf(school);
+  return rule.schoolId === school.id;
+}
 
 function isCurrentlyValid(rule: PricingRule): boolean {
   if (rule.status !== 'active') return false;
@@ -102,14 +116,15 @@ export function SpecificPricingDiscountPage() {
   }
   function openEdit(rule: PricingRule) {
     setEditing(rule);
-    setForm({ schoolId: rule.schoolId, productId: rule.productId, discountType: rule.discountType, discountPercent: rule.discountPercent, fixedPrice: rule.fixedPrice, minQuantity: rule.minQuantity, startDate: rule.startDate, endDate: rule.endDate, status: rule.status, notes: rule.notes });
+    setForm({ applyTo: rule.applyTo, schoolType: rule.schoolType, schoolId: rule.schoolId, productId: rule.productId, discountType: rule.discountType, discountPercent: rule.discountPercent, fixedPrice: rule.fixedPrice, minQuantity: rule.minQuantity, startDate: rule.startDate, endDate: rule.endDate, status: rule.status, notes: rule.notes });
     setFormError(null);
     setModal(true);
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!form.schoolId) return setFormError('Select a school.');
-    if (!form.productId) return setFormError('Select a product.');
+    if (form.applyTo === 'school' && !form.schoolId) return setFormError('Select a school.');
+    if (form.applyTo === 'school_type' && !form.schoolType) return setFormError('Select the school type.');
+    if (!form.productId && form.discountType === 'fixed_price') return setFormError('A fixed price needs one product. Choose a product, or use a percentage for all products.');
     if (form.discountType === 'percentage' && (!form.discountPercent || Number(form.discountPercent) <= 0)) return setFormError('Enter a discount percentage greater than zero.');
     if (form.discountType === 'fixed_price' && (!form.fixedPrice || Number(form.fixedPrice) <= 0)) return setFormError('Enter a fixed price greater than zero.');
     setFormError(null);
@@ -147,17 +162,17 @@ export function SpecificPricingDiscountPage() {
   const filteredRules = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rules.filter((r) => {
-      if (schoolFilter && r.schoolId !== schoolFilter) return false;
+      if (schoolFilter) { const picked = schoolById[schoolFilter]; if (!picked || !appliesTo(r, picked)) return false; }
       if (!q) return true;
       const school = schoolById[r.schoolId];
       const product = productById[r.productId];
-      const text = `${school?.client_name ?? ''} ${product?.product_name ?? ''} ${product?.product_code ?? ''}`.toLowerCase();
+      const text = `${school?.client_name ?? ''} ${applyToLabels[r.applyTo]} ${SCHOOL_TYPE_LABELS[r.schoolType] ?? ''} ${product?.product_name ?? 'all products'} ${product?.product_code ?? ''}`.toLowerCase();
       return text.includes(q);
     });
-  }, [rules, search, schoolFilter, schoolById, productById]);
+  }, [rules, search, schoolFilter, schoolById, productById]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeCount = rules.filter(isCurrentlyValid).length;
-  const schoolsCovered = new Set(rules.map((r) => r.schoolId)).size;
+  const schoolsCovered = schools.filter((s) => rules.some((r) => appliesTo(r, s))).length;
 
   return (
     <section className="page-panel master-page">
@@ -165,7 +180,7 @@ export function SpecificPricingDiscountPage() {
         <div>
           <p className="eyebrow">SCHOOL · SPECIFIC PRICING &amp; DISCOUNT MANAGEMENT</p>
           <h2>Specific pricing &amp; discount management</h2>
-          <p>Negotiated pricing for a particular school on a particular product — a fixed price or a discount percentage, valid for a date range.</p>
+          <p>Negotiated pricing for one school, every school of one type (e.g. all Government schools), or all schools — on one product or all products — as a discount or fixed price, valid for a date range. The most specific rule wins.</p>
         </div>
         <button className="primary-action" type="button" onClick={openCreate} disabled={loading}>
           + Add pricing rule
@@ -232,12 +247,16 @@ export function SpecificPricingDiscountPage() {
                 const specialPrice = rule.discountType === 'fixed_price' ? Number(rule.fixedPrice) : listPrice * (1 - Number(rule.discountPercent || 0) / 100);
                 return (
                   <tr key={rule.id}>
-                    <td>{school ? <><strong>{school.client_name}</strong><small>{school.client_code}</small></> : <span className="text-faint-inline">Unknown school</span>}</td>
-                    <td>{product ? <><strong>{product.product_name}</strong><small>{product.product_code}</small></> : <span className="text-faint-inline">Unknown product</span>}</td>
-                    <td>{money(listPrice)}</td>
                     <td>
-                      {money(specialPrice)}
-                      <small style={{ display: 'block', color: 'var(--text-faint)' }}>{rule.discountType === 'percentage' ? `${rule.discountPercent}% off` : discountTypeLabels[rule.discountType]}{Number(rule.minQuantity) > 0 ? ` · from ${rule.minQuantity} qty` : ''}</small>
+                      {rule.applyTo === 'all' ? <><strong>All schools</strong><small>Every school in this industry</small></>
+                        : rule.applyTo === 'school_type' ? <><strong>{SCHOOL_TYPE_LABELS[rule.schoolType] ?? rule.schoolType}</strong><small>All schools of this type</small></>
+                        : school ? <><strong>{school.client_name}</strong><small>{school.client_code}</small></> : <span className="text-faint-inline">Unknown school</span>}
+                    </td>
+                    <td>{!rule.productId ? <><strong>All products</strong><small>Every product</small></> : product ? <><strong>{product.product_name}</strong><small>{product.product_code}</small></> : <span className="text-faint-inline">Unknown product</span>}</td>
+                    <td>{rule.productId ? money(listPrice) : '—'}</td>
+                    <td>
+                      {rule.productId ? money(specialPrice) : `${rule.discountPercent}% off`}
+                      <small style={{ display: 'block', color: 'var(--text-faint)' }}>{rule.productId ? (rule.discountType === 'percentage' ? `${rule.discountPercent}% off` : discountTypeLabels[rule.discountType]) : 'on every product'}{Number(rule.minQuantity) > 0 ? ` · from ${rule.minQuantity} qty` : ''}</small>
                     </td>
                     <td>{dateLabel(rule.startDate)} – {dateLabel(rule.endDate)}</td>
                     <td><span className={`status-badge ${isCurrentlyValid(rule) ? 'active' : 'inactive'}`}>{isCurrentlyValid(rule) ? 'valid now' : rule.status}</span></td>
@@ -277,23 +296,41 @@ export function SpecificPricingDiscountPage() {
             <form className="master-modal-form" onSubmit={submit}>
               {formError && <p className="error-message" style={{ gridColumn: '1 / -1' }}>{formError}</p>}
               <label style={{ gridColumn: '1 / -1' }}>
-                School
-                <select required value={form.schoolId} onChange={(e) => setForm({ ...form, schoolId: e.target.value })}>
-                  <option value="">Select a school</option>
-                  {schools.map((s) => <option key={s.id} value={s.id}>{s.client_name} ({s.client_code})</option>)}
+                Apply to
+                <select value={form.applyTo} onChange={(e) => setForm({ ...form, applyTo: e.target.value as ApplyTo })}>
+                  {Object.entries(applyToLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                 </select>
               </label>
+              {form.applyTo === 'school' && (
+                <label style={{ gridColumn: '1 / -1' }}>
+                  School
+                  <select value={form.schoolId} onChange={(e) => setForm({ ...form, schoolId: e.target.value })}>
+                    <option value="">Select a school</option>
+                    {schools.map((s) => <option key={s.id} value={s.id}>{s.client_name} ({s.client_code})</option>)}
+                  </select>
+                </label>
+              )}
+              {form.applyTo === 'school_type' && (
+                <label style={{ gridColumn: '1 / -1' }}>
+                  School type
+                  <select value={form.schoolType} onChange={(e) => setForm({ ...form, schoolType: e.target.value })}>
+                    <option value="">Select the school type</option>
+                    {Object.entries(SCHOOL_TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                  <small style={{ color: 'var(--text-faint)', fontWeight: 400 }}>Uses the "School type" saved on each school. A rule for one specific school always wins over this.</small>
+                </label>
+              )}
               <label style={{ gridColumn: '1 / -1' }}>
                 Product
-                <select required value={form.productId} onChange={(e) => setForm({ ...form, productId: e.target.value })}>
-                  <option value="">Select a product</option>
+                <select value={form.productId} onChange={(e) => setForm({ ...form, productId: e.target.value, ...(e.target.value === '' ? { discountType: 'percentage' as DiscountType } : {}) })}>
+                  <option value="">All products (percentage only)</option>
                   {products.map((p) => <option key={p.id} value={p.id}>{p.product_name} ({p.product_code}) — {money(p.selling_price)}</option>)}
                 </select>
               </label>
               <label>
                 Discount type
                 <select value={form.discountType} onChange={(e) => setForm({ ...form, discountType: e.target.value as DiscountType })}>
-                  {Object.entries(discountTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  {Object.entries(discountTypeLabels).filter(([value]) => value === 'percentage' || form.productId !== '').map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                 </select>
               </label>
               {form.discountType === 'percentage' ? (

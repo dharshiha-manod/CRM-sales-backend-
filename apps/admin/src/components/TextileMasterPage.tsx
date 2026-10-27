@@ -1408,7 +1408,7 @@ function renderInput(
     return (
       <select required={f.required} value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">Select…</option>
-        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        {(value && !options.some((o) => o.value === value) ? [...options, { value, label: value }] : options).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     );
   }

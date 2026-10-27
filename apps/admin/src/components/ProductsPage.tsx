@@ -42,6 +42,8 @@ type Product = {
   // Resolved server-side from the product_industry_types join table (see
   // products.repository.ts) — not a real column on the products row itself.
   industry_type_id?: string | null;
+  // Textile only — saved in the database (products.textile_details, JSON).
+  textile_details?: StoredTextileDetails | null;
 };
 // FMCG-specific fields have no backend column yet — persisted client-side in
 // localStorage, keyed by product id, until real columns exist.
@@ -164,6 +166,74 @@ function generateProductCode(category: string, productName: string, suffix: numb
   return `${catPart}-${namePart}-${suffix}`;
 }
 
+// ---------- Textile (fabric) product details — used only when the active industry is textile ----------
+type StoredTextileDetails = {
+  fabricType?: string | null; composition?: string | null;
+  width?: number | null; widthUnit?: 'in' | 'cm' | null; gsm?: number | null;
+  lengthPerRoll?: number | null; lengthUnit?: 'm' | 'yd' | null; pattern?: string | null;
+  designCode?: string | null; sizes?: string[]; imageUrl?: string | null;
+  colors?: { name: string; code?: string | null; quantity?: number | null }[];
+};
+type TextileColor = { name: string; code: string; quantity: string };
+type TextileDetails = {
+  fabricType: string; composition: string; width: string; widthUnit: 'in' | 'cm'; gsm: string;
+  lengthPerRoll: string; lengthUnit: 'm' | 'yd'; pattern: string; colors: TextileColor[];
+  designCode: string; sizes: string; imageUrl: string;
+};
+const blankTextile: TextileDetails = {
+  fabricType: '', composition: '', width: '', widthUnit: 'in', gsm: '',
+  lengthPerRoll: '', lengthUnit: 'm', pattern: '', colors: [],
+  designCode: '', sizes: '', imageUrl: '',
+};
+const FABRIC_TYPES = ['Cotton', 'Silk', 'Linen', 'Wool', 'Polyester', 'Viscose / Rayon', 'Nylon', 'Denim', 'Georgette', 'Chiffon', 'Satin', 'Velvet', 'Blended'];
+const numOrNull = (value: string) => (value.trim() === '' || Number.isNaN(Number(value)) ? null : Number(value));
+function textileFromProduct(product: Product): TextileDetails {
+  const t = product.textile_details;
+  if (!t) return blankTextile;
+  return {
+    fabricType: t.fabricType ?? '', composition: t.composition ?? '',
+    width: t.width == null ? '' : String(t.width), widthUnit: t.widthUnit ?? 'in',
+    gsm: t.gsm == null ? '' : String(t.gsm),
+    lengthPerRoll: t.lengthPerRoll == null ? '' : String(t.lengthPerRoll), lengthUnit: t.lengthUnit ?? 'm',
+    pattern: t.pattern ?? '',
+    designCode: t.designCode ?? '', sizes: (t.sizes ?? []).join(', '), imageUrl: t.imageUrl ?? '',
+    colors: (t.colors ?? []).map((c) => ({ name: c.name, code: c.code ?? '', quantity: c.quantity == null ? '' : String(c.quantity) })),
+  };
+}
+function textileToPayload(t: TextileDetails): StoredTextileDetails | null {
+  const colors = t.colors.filter((c) => c.name.trim()).map((c) => ({ name: c.name.trim(), code: c.code.trim() || null, quantity: numOrNull(c.quantity) }));
+  const sizes = t.sizes.split(',').map((s) => s.trim()).filter(Boolean);
+  const empty = !t.fabricType && !t.composition && !t.width && !t.gsm && !t.lengthPerRoll && !t.pattern && !t.designCode.trim() && !t.imageUrl && sizes.length === 0 && colors.length === 0;
+  if (empty) return null;
+  return {
+    fabricType: t.fabricType.trim() || null, composition: t.composition.trim() || null,
+    width: numOrNull(t.width), widthUnit: t.widthUnit, gsm: numOrNull(t.gsm),
+    lengthPerRoll: numOrNull(t.lengthPerRoll), lengthUnit: t.lengthUnit, pattern: t.pattern.trim() || null, colors,
+    designCode: t.designCode.trim() || null, sizes, imageUrl: t.imageUrl || null,
+  };
+}
+// Shrinks a picked picture to at most 900px (JPEG) so uploads stay small, then stores it and returns its public URL.
+async function uploadProductImage(file: File): Promise<string> {
+  if (!file.type.startsWith('image/')) throw new Error('Choose an image file (JPG, PNG or WebP).');
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, 900 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale); canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+  const res = await api<{ data: { url: string } }>('/products/image', { method: 'POST', body: JSON.stringify({ dataUrl }) });
+  return res.data.url;
+}
+const textileSizeText = (t?: StoredTextileDetails | null) => [
+  t?.width ? `${t.width} ${t.widthUnit ?? 'in'} wide` : '',
+  t?.gsm ? `${t.gsm} GSM` : '',
+].filter(Boolean).join(' · ');
+// Textile SKU suggestion, e.g. "TEX-COT-RED-482" (fabric type + first colour, else fabric name).
+function generateTextileCode(t: TextileDetails, productName: string, suffix: number): string {
+  const colour = t.colors.find((c) => c.name.trim())?.name ?? '';
+  return `TEX-${slugPart(t.fabricType || productName, 3)}-${slugPart(colour || productName, 4)}-${suffix}`;
+}
+
 type ProductForm = { 
   productCode: string;
   productName: string;
@@ -183,7 +253,7 @@ type ProductForm = {
   originCountry: string;
   supplierName: string;
   currency: string;
-} & FmcgMeta;
+} & FmcgMeta & { textile: TextileDetails };
 
 const blankForm: ProductForm = {
   productCode: '',
@@ -202,6 +272,7 @@ const blankForm: ProductForm = {
   supplierName: '',
   currency: 'INR',
   ...blankFmcgMeta,
+  textile: blankTextile,
 };
 
 // Related-orders lookup: match by product_code against sale_order_items, the
@@ -213,6 +284,7 @@ export function ProductsPage() {
   const { matchesActiveIndustry, activeIndustryTypeId } = useIndustryScope();
   const { activeIndustry } = useIndustry();
   const isTrading = activeIndustry === 'trading';
+  const isTextile = activeIndustry === 'textile';
   const [supplierNames, setSupplierNames] = useState<string[]>([]);
   const [currencyCodes, setCurrencyCodes] = useState<string[]>(['INR']);
   const [items, setItems] = useState<Product[]>([]);
@@ -235,6 +307,14 @@ export function ProductsPage() {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [imageBusy, setImageBusy] = useState(false);
+  async function pickTextileImage(file: File | undefined) {
+    if (!file) return;
+    setImageBusy(true);
+    try { setTextile({ imageUrl: await uploadProductImage(file) }); setMessage(''); }
+    catch (caught) { setMessage(caught instanceof Error ? caught.message : 'Unable to upload the image.'); }
+    finally { setImageBusy(false); }
+  }
   const [fmcgMetaMap, setFmcgMetaMap] = useState<Record<string, FmcgMeta>>({});
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
   const [savedBrands, setSavedBrands] = useState<string[]>(() => loadNameList(brandListKey(activeIndustry)));
@@ -395,6 +475,26 @@ export function ProductsPage() {
   const showBatchUi = BATCH_DEFAULT_INDUSTRIES.includes(activeIndustry)
     || industryItems.some((item) => tracksBatch(fmcgMetaMap[item.id] ?? blankFmcgMeta));
 
+  // Textile: suggest the SKU from fabric type + colour while adding (never overwrites a typed code).
+  useEffect(() => {
+    if (!isTextile || !modalOpen || editing || codeTouchedRef.current) return;
+    const code = generateTextileCode(form.textile, form.productName, codeSuffixRef.current);
+    setForm((current) => (current.productCode === code ? current : { ...current, productCode: code }));
+  }, [isTextile, modalOpen, editing, form.textile.fabricType, form.textile.colors, form.productName]);
+  function setTextile(patch: Partial<TextileDetails>) {
+    setForm((current) => {
+      const textile = { ...current.textile, ...patch };
+      // When colours carry quantities, the product's stock is their total.
+      const withQty = textile.colors.filter((c) => c.quantity.trim() !== '');
+      const stockQuantity = patch.colors && withQty.length > 0
+        ? String(withQty.reduce((sum, c) => sum + (Number(c.quantity) || 0), 0))
+        : current.stockQuantity;
+      return { ...current, textile, stockQuantity };
+    });
+  }
+  const setTextileColor = (index: number, patch: Partial<TextileColor>) =>
+    setTextile({ colors: form.textile.colors.map((c, i) => (i === index ? { ...c, ...patch } : c)) });
+
   function openCreate() {
     setEditing(null);
     setSavedBrands(loadNameList(brandListKey(activeIndustry)));
@@ -435,6 +535,7 @@ export function ProductsPage() {
       originCountry: product.origin_country ?? '',
       supplierName: product.supplier_name ?? '',
       currency: product.currency ?? 'INR',
+      textile: textileFromProduct(product),
     });
     setMessage('');
     setModalOpen(true);
@@ -472,7 +573,9 @@ export function ProductsPage() {
       category: form.category || null,
          sellingPrice: Number(form.sellingPrice),
       costPrice: form.costPrice === '' ? null : Number(form.costPrice),
-      stockQuantity: form.stockQuantity === '' ? null : Number(form.stockQuantity),
+      stockQuantity: isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '')
+        ? form.textile.colors.reduce((sum, c) => sum + (Number(c.quantity) || 0), 0)
+        : (form.stockQuantity === '' ? null : Number(form.stockQuantity)),
       ...(showBatchUi ? { shelfLifeDays: form.shelfLifeDays === '' ? null : Number(form.shelfLifeDays) } : {}),
       status: form.status,
       unit: form.unit || null,
@@ -485,6 +588,8 @@ export function ProductsPage() {
       mrp: form.mrp === '' ? null : Number(form.mrp),
       discountPercent: form.discountPercent === '' ? null : Number(form.discountPercent),
       industryTypeIds: [form.industryTypeId || activeIndustryTypeId || ''].filter(Boolean),
+      // Textile only — other industries never send this field.
+      ...(isTextile ? { textileDetails: textileToPayload(form.textile) } : {}),
     };
     try {
       const response = await api<{ data: Product }>(editing ? `/products/${editing.id}` : '/products', {
@@ -623,7 +728,7 @@ export function ProductsPage() {
         <div className="data-table-wrap">
           <table>
             <thead>
-<tr><th>Product</th><th>SKU / Barcode</th><th>Brand</th><th>Category</th>{isTrading && <th>HSN</th>}<th>{isTrading ? 'Purchase Price' : 'MRP'}</th>{activeIndustry === 'fmcg' && <th>Purchase Price</th>}<th>Selling Price</th><th>GST</th><th>Final Price</th><th>Stock</th>{showBatchUi && <th>Batch / Expiry</th>}<th>Status</th><th>Actions</th></tr>
+<tr><th>Product</th><th>SKU / Barcode</th><th>{isTextile ? 'Fabric' : 'Brand'}</th><th>Category</th>{isTextile && <th>Length / Colours</th>}{isTrading && <th>HSN</th>}<th>{isTrading ? 'Purchase Price' : 'MRP'}</th>{activeIndustry === 'fmcg' && <th>Purchase Price</th>}<th>Selling Price</th><th>GST</th><th>Final Price</th><th>Stock</th>{showBatchUi && <th>Batch / Expiry</th>}<th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {filteredItems.map((item) => {
@@ -633,15 +738,25 @@ export function ProductsPage() {
                 return (
                   <tr key={item.id}>
                                 <td>
+                      {isTextile && item.textile_details?.imageUrl && <img src={item.textile_details.imageUrl} alt="" style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 6, float: 'left', marginRight: 8 }} />}
                       <strong>{item.product_name}</strong>
+                      {isTextile && (item.textile_details?.sizes ?? []).length > 0 && <><br /><small className="text-faint-inline">Sizes: {(item.textile_details?.sizes ?? []).join(', ')}</small></>}
                       {isTrading && item.specification && <><br /><small className="text-faint-inline">{item.specification}</small></>}
                     </td>
                     <td>
                       <span style={{ fontFamily: 'var(--font-mono)' }}>{item.product_code}</span>
                       <br /><small className="text-faint-inline">{meta.barcode || 'No barcode'}</small>
                     </td>
-                    <td>{meta.brand || '—'}</td>
+                    <td>{isTextile ? (<>{item.textile_details?.fabricType || '—'}{textileSizeText(item.textile_details) && <><br /><small className="text-faint-inline">{textileSizeText(item.textile_details)}</small></>}</>) : (meta.brand || '—')}</td>
                     <td>{item.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</td>
+                    {isTextile && (
+                      <td>
+                        {item.textile_details?.lengthPerRoll ? `${item.textile_details.lengthPerRoll} ${item.textile_details.lengthUnit ?? 'm'} / roll` : '—'}
+                        {(item.textile_details?.colors ?? []).length > 0 && (
+                          <><br /><small className="text-faint-inline">{(item.textile_details?.colors ?? []).map((c) => c.name).join(', ')}</small></>
+                        )}
+                      </td>
+                    )}
                                           {isTrading && <td>{item.hsn_code || '—'}</td>}
 <td>{isTrading ? (item.cost_price == null ? '—' : formatMoney(Number(item.cost_price))) : formatMoney(Number(meta.mrp || item.selling_price))}</td>
                     {activeIndustry === 'fmcg' && <td>{item.cost_price == null ? '—' : formatMoney(Number(item.cost_price))}</td>}
@@ -727,7 +842,7 @@ export function ProductsPage() {
             <form className="master-modal-form" onSubmit={submit}>
               <div className="field-grid">
                                            <label>SKU / product code (auto-suggested)<input required placeholder="Auto-generated" value={form.productCode} onChange={(event) => { codeTouchedRef.current = true; setForm({ ...form, productCode: event.target.value }); }} /></label>
-                <label>Product name<input required value={form.productName} onChange={(event) => { const productName = event.target.value; setForm((current) => ({ ...current, productName, productCode: !editing && !codeTouchedRef.current ? generateProductCode(current.category, productName, codeSuffixRef.current) : current.productCode })); }} /></label>
+                <label>{isTextile ? 'Fabric name' : 'Product name'}<input required placeholder={isTextile ? 'e.g. Premium Cotton Poplin' : undefined} value={form.productName} onChange={(event) => { const productName = event.target.value; setForm((current) => ({ ...current, productName, productCode: !editing && !codeTouchedRef.current ? generateProductCode(current.category, productName, codeSuffixRef.current) : current.productCode })); }} /></label>
                 <label>
                              {/* Industry Type field removed — it's set globally via the
                       sidebar Industry Type picker, so every product created
@@ -762,10 +877,65 @@ export function ProductsPage() {
                     <option value="kg">Kg</option>
                     <option value="litre">Litre</option>
                     {isTrading && <option value="mt">MT (metric tonne)</option>}
+                    {isTextile && <><option value="m">Meter</option><option value="yd">Yard</option><option value="roll">Roll</option><option value="than">Than (piece)</option></>}
                     {savedUnits.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
                   </select>
                 </label>  
-<label>Pack size<input placeholder={PACK_SIZE_PLACEHOLDERS[activeIndustry] ?? 'e.g. 10 pcs per box'} value={form.packSize} onChange={(event) => setForm({ ...form, packSize: event.target.value })} /></label>
+{!isTextile && <label>Pack size<input placeholder={PACK_SIZE_PLACEHOLDERS[activeIndustry] ?? 'e.g. 10 pcs per box'} value={form.packSize} onChange={(event) => setForm({ ...form, packSize: event.target.value })} /></label>}
+                {isTextile && (
+                  <>
+                    <label>
+                      Fabric type
+                      <input list="fabric-type-options" placeholder="e.g. Cotton" value={form.textile.fabricType} onChange={(event) => setTextile({ fabricType: event.target.value })} />
+                      <datalist id="fabric-type-options">{FABRIC_TYPES.map((name) => <option key={name} value={name} />)}</datalist>
+                    </label>
+                    <label>Composition<input placeholder="e.g. 60% cotton, 40% polyester" value={form.textile.composition} onChange={(event) => setTextile({ composition: event.target.value })} /></label>
+                    <label>
+                      Width
+                      <span style={{ display: 'flex', gap: '.5rem' }}>
+                        <input min="0" type="number" step="0.01" placeholder="e.g. 44" value={form.textile.width} onChange={(event) => setTextile({ width: event.target.value })} />
+                        <select style={{ maxWidth: '5.5rem' }} value={form.textile.widthUnit} onChange={(event) => setTextile({ widthUnit: event.target.value as 'in' | 'cm' })}><option value="in">inch</option><option value="cm">cm</option></select>
+                      </span>
+                    </label>
+                    <label>GSM / weight<input min="0" type="number" step="0.01" placeholder="e.g. 120" value={form.textile.gsm} onChange={(event) => setTextile({ gsm: event.target.value })} /></label>
+                    <label>
+                      Length per roll / than
+                      <span style={{ display: 'flex', gap: '.5rem' }}>
+                        <input min="0" type="number" step="0.01" placeholder="e.g. 30" value={form.textile.lengthPerRoll} onChange={(event) => setTextile({ lengthPerRoll: event.target.value })} />
+                        <select style={{ maxWidth: '5.5rem' }} value={form.textile.lengthUnit} onChange={(event) => setTextile({ lengthUnit: event.target.value as 'm' | 'yd' })}><option value="m">meter</option><option value="yd">yard</option></select>
+                      </span>
+                    </label>
+                    <label>Pattern<input placeholder="e.g. Plain, Floral, Check" value={form.textile.pattern} onChange={(event) => setTextile({ pattern: event.target.value })} /></label>
+                    <label>Design code / name<input placeholder="e.g. DSN-2026-014 or Floral Zari" value={form.textile.designCode} onChange={(event) => setTextile({ designCode: event.target.value })} /></label>
+                    <label>
+                      Sizes (comma separated)
+                      <input list="textile-size-options" placeholder="e.g. S, M, L, XL or Free size" value={form.textile.sizes} onChange={(event) => setTextile({ sizes: event.target.value })} />
+                      <datalist id="textile-size-options">{['Free size', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'By metre'].map((name) => <option key={name} value={name} />)}</datalist>
+                    </label>
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <p className="ledger-heading" style={{ margin: '.4rem 0' }}>Design image</p>
+                      <div style={{ display: 'flex', gap: '.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                        {form.textile.imageUrl && <img src={form.textile.imageUrl} alt="Design" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 8, border: '1px solid #ddd' }} />}
+                        <input type="file" accept="image/jpeg,image/png,image/webp" disabled={imageBusy} onChange={(event) => { void pickTextileImage(event.target.files?.[0]); event.target.value = ''; }} />
+                        {imageBusy && <small>Uploading…</small>}
+                        {form.textile.imageUrl && !imageBusy && <button type="button" className="quiet-button" onClick={() => setTextile({ imageUrl: '' })}>Remove image</button>}
+                      </div>
+                    </div>
+                    <label>HSN code<input placeholder="e.g. 5208" value={form.hsnCode} onChange={(event) => setForm({ ...form, hsnCode: event.target.value })} /></label>
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <p className="ledger-heading" style={{ margin: '.4rem 0' }}>Colours &amp; stock ({form.unit === 'pcs' ? 'rolls / pieces' : form.unit})</p>
+                      {form.textile.colors.map((colour, index) => (
+                        <div key={index} style={{ display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr auto', gap: '.5rem', marginBottom: '.5rem' }}>
+                          <input placeholder="Colour name (e.g. Navy Blue)" value={colour.name} onChange={(event) => setTextileColor(index, { name: event.target.value })} />
+                          <input placeholder="Shade / code" value={colour.code} onChange={(event) => setTextileColor(index, { code: event.target.value })} />
+                          <input min="0" type="number" step="0.01" placeholder="Qty" value={colour.quantity} onChange={(event) => setTextileColor(index, { quantity: event.target.value })} />
+                          <button type="button" className="icon-action" aria-label="Remove colour" title="Remove colour" onClick={() => setTextile({ colors: form.textile.colors.filter((_, i) => i !== index) })}>×</button>
+                        </div>
+                      ))}
+                      <button type="button" className="quiet-button" onClick={() => setTextile({ colors: [...form.textile.colors, { name: '', code: '', quantity: '' }] })}>+ Add colour</button>
+                    </div>
+                  </>
+                )}
                 {isTrading && (
                   <>
                     <label>HSN code<input placeholder="e.g. 7306" value={form.hsnCode} onChange={(event) => setForm({ ...form, hsnCode: event.target.value })} /></label>
@@ -794,10 +964,10 @@ export function ProductsPage() {
 <label>{isTrading ? 'Selling price (₹)' : 'Selling price (₹) — auto from MRP & Discount'}<input required min="0" type="number" step="0.01" value={form.sellingPrice} readOnly={!isTrading} disabled={!isTrading && Boolean(form.mrp)} onChange={(event) => setForm({ ...form, sellingPrice: event.target.value })} /></label>
                 <label>Tax / GST (%)<input min="0" max="100" type="number" step="0.01" value={form.taxPercent} onChange={(event) => setForm({ ...form, taxPercent: event.target.value })} /></label>
                 <label>Final price incl. GST (₹)<input readOnly disabled value={form.sellingPrice && form.taxPercent ? (Number(form.sellingPrice) + (Number(form.sellingPrice) * Number(form.taxPercent)) / 100).toFixed(2) : form.sellingPrice} /></label>
-                <label>Opening stock<input min="0" type="number" step="1" value={form.stockQuantity} onChange={(event) => setForm({ ...form, stockQuantity: event.target.value })} /></label>
+                <label>{isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '') ? 'Total stock (sum of colours)' : 'Opening stock'}<input readOnly={isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '')} min="0" type="number" step="1" value={form.stockQuantity} onChange={(event) => setForm({ ...form, stockQuantity: event.target.value })} /></label>
                 <label>Minimum stock level<input min="0" type="number" step="1" value={form.minStockLevel} onChange={(event) => setForm({ ...form, minStockLevel: event.target.value })} /></label>
                 {showBatchUi && <label>Shelf life (days)<input min="1" type="number" step="1" placeholder="e.g. 180" value={form.shelfLifeDays} onChange={(event) => setForm({ ...form, shelfLifeDays: event.target.value })} /><small className="text-faint-inline">Expiry = manufacturing date + this</small></label>}
-                {activeIndustry !== 'fmcg' && (<>
+                {activeIndustry !== 'fmcg' && !isTextile && (<>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '.6rem' }}>
 <input type="checkbox" style={{ width: 'auto', padding: 0, border: 'none', boxShadow: 'none', background: 'none' }} checked={form.trackBatch} onChange={(event) => setForm({ ...form, trackBatch: event.target.checked })} />                  This product has batch / expiry
                 </label>
@@ -833,6 +1003,24 @@ export function ProductsPage() {
                 <dt>Barcode</dt><dd>{meta.barcode || 'Not recorded'}</dd>
                 <dt>Brand</dt><dd>{meta.brand || 'Not recorded'}</dd>
                 <dt>Category</dt><dd>{viewing.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</dd>
+                {isTextile && (() => {
+                  const t = viewing.textile_details;
+                  const colors = t?.colors ?? [];
+                  return (
+                    <>
+                      <dt>Fabric type</dt><dd>{t?.fabricType || 'Not recorded'}{t?.composition ? ` · ${t.composition}` : ''}</dd>
+                      <dt>Width / GSM</dt><dd>{textileSizeText(t) || 'Not recorded'}</dd>
+                      <dt>Length per roll</dt><dd>{t?.lengthPerRoll ? `${t.lengthPerRoll} ${t.lengthUnit ?? 'm'}` : 'Not recorded'}</dd>
+                      <dt>Pattern</dt><dd>{t?.pattern || 'Not recorded'}</dd>
+                      <dt>Design</dt><dd>{t?.designCode || 'Not recorded'}</dd>
+                      <dt>Sizes</dt><dd>{(t?.sizes ?? []).length === 0 ? 'Not recorded' : (t?.sizes ?? []).join(', ')}</dd>
+                      {t?.imageUrl && (<><dt>Image</dt><dd><img src={t.imageUrl} alt={viewing.product_name} style={{ maxWidth: 220, borderRadius: 8, border: '1px solid #ddd' }} /></dd></>)}
+                      <dt>HSN code</dt><dd>{viewing.hsn_code || 'Not recorded'}</dd>
+                      <dt>Colours</dt>
+                      <dd>{colors.length === 0 ? 'Not recorded' : colors.map((c) => `${c.name}${c.code ? ` (${c.code})` : ''}${c.quantity != null ? ` — ${c.quantity}` : ''}`).join(', ')}</dd>
+                    </>
+                  );
+                })()}
                             {isTrading && (
                   <>
                     <dt>HSN code</dt><dd>{viewing.hsn_code || 'Not recorded'}</dd>

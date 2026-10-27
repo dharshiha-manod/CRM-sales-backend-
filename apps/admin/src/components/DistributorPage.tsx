@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { collectionsInInr, ordersInInr } from '../lib/inr';
 import { kpiClick } from '../lib/kpiClick';
 import { KpiDetailModal } from './KpiDetailModal';
+import { useIndustryScope } from '../industry/useIndustryScope';
 import './MasterDataPages.css';
 
 type Assignment = { id: string; status: string; sales_representatives?: { employee_code: string; user_profiles?: { display_name?: string | null } | null } | null };
@@ -12,6 +13,7 @@ type Client = {
   client_name: string;
   client_type: string;
   outlet_type?: string | null;
+  industry_type_id?: string | null;
   status: 'active' | 'inactive';
   priority: 'low' | 'normal' | 'high' | 'critical';
   city?: string | null;
@@ -20,7 +22,9 @@ type Client = {
   credit_days?: number | null;
   sales_representative_client_assignments?: Assignment[];
 };
-type Order = { id: string; order_number: string; status: string; total_amount: number; created_at: string; client_id?: string };
+type Order = { id: string; order_number: string; status: string; total_amount: number; created_at: string; client_id?: string; distributor_id?: string | null; clients?: { client_name?: string } | null; sale_order_items?: { quantity: number; products?: { unit?: string | null } | null }[] };
+type Roll = { order_id?: string | null; length_meters?: number | null };
+const isMetre = (unit?: string | null) => !unit || /^(m|mtr|mtrs|meter|meters|metre|metres)$/i.test(unit.trim());
 type Collection = { id: string; amount: number; mode: string; collected_at: string; client_id?: string };
 
 const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
@@ -43,9 +47,11 @@ function initials(name: string): string {
 }
 
 export function DistributorPage({ industryLabel = 'FMCG' }: { industryLabel?: string } = {}) {
+  const { activeIndustryTypeId } = useIndustryScope();
   const [clients, setClients] = useState<Client[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [rolls, setRolls] = useState<Roll[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState('');
@@ -66,9 +72,15 @@ export function DistributorPage({ industryLabel = 'FMCG' }: { industryLabel?: st
         api<{ data: Order[] }>('/orders').catch(() => ({ data: [] })),
         api<{ data: Collection[] }>('/collections').catch(() => ({ data: [] })),
       ]);
-      setClients((clientsRes.data ?? []).filter((c) => (c.outlet_type ?? '').toLowerCase() === 'distributor'));
+      // Only distributors that belong to the active industry (Textile) — never other industries' distributors.
+      const scoped = (clientsRes.data ?? []).filter((c) => (c.outlet_type ?? '').toLowerCase() === 'distributor' && c.industry_type_id === activeIndustryTypeId);
+      setClients(scoped);
      setOrders(ordersInInr(ordersRes).data ?? []);
 setCollections(collectionsInInr(collectionsRes).data ?? []);
+      if (industryLabel.toLowerCase() === 'textile') {
+        const rollsRes = await api<{ data: Roll[] }>(`/textile/fabric-rolls?industryTypeId=${activeIndustryTypeId}`).catch(() => ({ data: [] as Roll[] }));
+        setRolls(rollsRes.data ?? []);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to load distributor data.');
     } finally {
@@ -76,8 +88,10 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
     }
   }
   useEffect(() => {
+    if (!activeIndustryTypeId) return;
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndustryTypeId]);
 
   function ledger(clientId: string) {
     const clientOrders = orders.filter((o) => o.client_id === clientId && o.status !== 'cancelled');
@@ -89,6 +103,16 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
     return { orderCount: clientOrders.length, totalSales, totalCollected, outstanding, lastOrderDate: lastOrder?.created_at ?? null };
   }
 
+  /** Orders this distributor delivers to the end clients (Model B): count, ordered metres and metres of rolls issued against them. */
+  function handled(distributorId: string) {
+    const list = orders.filter((o) => o.distributor_id === distributorId && o.status !== 'cancelled');
+    const ids = new Set(list.map((o) => o.id));
+    const metres = list.reduce((sum, o) => sum + (o.sale_order_items ?? []).filter((i) => isMetre(i.products?.unit)).reduce((s, i) => s + Number(i.quantity || 0), 0), 0);
+    const rollRows = rolls.filter((r) => r.order_id && ids.has(r.order_id));
+    const rollMetres = rollRows.reduce((sum, r) => sum + Number(r.length_meters ?? 0), 0);
+    return { list, count: list.length, metres, rollCount: rollRows.length, rollMetres };
+  }
+
   function creditTone(client: Client, outstanding: number): 'healthy' | 'watch' | 'over' {
     if (!client.credit_limit) return 'healthy';
     const pct = outstanding / client.credit_limit;
@@ -98,9 +122,9 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
   }
 
   const rows = useMemo(() => {
-    return clients.map((c) => ({ client: c, ...ledger(c.id), rep: activeRep(c) }));
+    return clients.map((c) => ({ client: c, ...ledger(c.id), rep: activeRep(c), handled: handled(c.id) }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clients, orders, collections]);
+  }, [clients, orders, collections, rolls]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -141,6 +165,7 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
   const outstandingRows = rows.filter((r) => r.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding);
 
   const viewingLedger = viewing ? ledger(viewing.id) : null;
+  const viewingHandled = viewing ? handled(viewing.id) : null;
   const viewingOrders = viewing ? orders.filter((o) => o.client_id === viewing.id).slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) : [];
   const viewingCollections = viewing ? collections.filter((c) => c.client_id === viewing.id).slice().sort((a, b) => new Date(b.collected_at).getTime() - new Date(a.collected_at).getTime()) : [];
 
@@ -224,6 +249,7 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
                 <th>Representative</th>
                 <th>Credit terms</th>
                 <th>Orders</th>
+                <th>Handled for clients</th>
                 <th>Outstanding</th>
                 <th>Status</th>
                 <th>Actions</th>
@@ -237,6 +263,7 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
                   <td><span className="skeleton-block" style={{ width: '60%' }} /></td>
                   <td><span className="skeleton-block" style={{ width: '65%' }} /></td>
                   <td><span className="skeleton-block" style={{ width: '30%' }} /></td>
+                  <td><span className="skeleton-block" style={{ width: '40%' }} /></td>
                   <td><span className="skeleton-block" style={{ width: '55%' }} /></td>
                   <td><span className="skeleton-block" style={{ width: '50%' }} /></td>
                   <td><span className="skeleton-block" style={{ width: '70%' }} /></td>
@@ -255,13 +282,14 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
                 <th>Representative</th>
                 <th>Credit terms</th>
                 <th>Orders</th>
+                <th>Handled for clients</th>
                 <th>Outstanding</th>
                 <th>Status</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map(({ client, orderCount, totalSales, outstanding, rep }) => {
+              {filteredRows.map(({ client, orderCount, totalSales, outstanding, rep, handled: h }) => {
                 const tone = creditTone(client, outstanding);
                 const pct = client.credit_limit ? Math.min(100, Math.round((outstanding / client.credit_limit) * 100)) : 0;
                 return (
@@ -285,6 +313,10 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
                     <td>
                       {orderCount}
                       <small style={{ display: 'block', color: 'var(--text-faint)' }}>{money(totalSales)}</small>
+                    </td>
+                    <td>
+                      {h.count}
+                      <small style={{ display: 'block', color: 'var(--text-faint)' }}>{h.metres.toLocaleString('en-IN', { maximumFractionDigits: 2 })} m</small>
                     </td>
                     <td>
                       <div className="coverage-cell">
@@ -316,7 +348,7 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
               })}
               {filteredRows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="empty-row">
+                  <td colSpan={9} className="empty-row">
                     <div className="empty-state">
                       <span className="empty-state-icon">▤</span>
                       <p>
@@ -355,6 +387,10 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
               <dd>{viewing.gstin || '—'}</dd>
               <dt>Credit terms</dt>
               <dd>{viewing.credit_limit != null ? `${money(viewing.credit_limit)} · ${viewing.credit_days ?? 0} days` : '—'}</dd>
+              <dt>Orders handled for clients</dt>
+              <dd>{viewingHandled?.count ?? 0}</dd>
+              <dt>Metres distributed</dt>
+              <dd>{(viewingHandled?.metres ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })} m ({viewingHandled?.rollCount ?? 0} roll(s) · {(viewingHandled?.rollMetres ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })} m issued)</dd>
               <dt>Total sales</dt>
               <dd>{money(viewingLedger.totalSales)}</dd>
               <dt>Total collected</dt>
@@ -362,6 +398,24 @@ setCollections(collectionsInInr(collectionsRes).data ?? []);
               <dt>Outstanding</dt>
               <dd className={viewingLedger.outstanding > 0 ? 'text-warn' : ''}>{money(viewingLedger.outstanding)}</dd>
             </dl>
+
+            <h5 className="ledger-heading">Orders delivered to clients</h5>
+            <div className="data-table-wrap">
+              <table>
+                <thead><tr><th>Order no.</th><th>Client</th><th>Status</th><th>Metres</th></tr></thead>
+                <tbody>
+                  {(viewingHandled?.list ?? []).slice(0, 8).map((o) => (
+                    <tr key={o.id}>
+                      <td>{o.order_number}</td>
+                      <td>{o.clients?.client_name ?? '—'}</td>
+                      <td><span className={`status-badge status-${o.status}`}>{o.status}</span></td>
+                      <td>{(o.sale_order_items ?? []).filter((i) => isMetre(i.products?.unit)).reduce((s, i) => s + Number(i.quantity || 0), 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })} m</td>
+                    </tr>
+                  ))}
+                  {(viewingHandled?.list.length ?? 0) === 0 && <tr><td colSpan={4} className="empty-row">No client orders assigned to this distributor yet.</td></tr>}
+                </tbody>
+              </table>
+            </div>
 
             <h5 className="ledger-heading">Recent orders</h5>
             <div className="data-table-wrap">

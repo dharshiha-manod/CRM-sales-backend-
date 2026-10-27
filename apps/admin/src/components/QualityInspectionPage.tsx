@@ -15,7 +15,7 @@ const config: TextileModuleConfig = {
   searchableKeys: ['inspection_code', 'roll_number', 'inspector_name'],
   fields: [
     { key: 'inspection_code', label: 'Inspection code', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'QC' },
-    { key: 'roll_number', label: 'Fabric roll number', type: 'lookup', lookupResource: '/textile/fabric-rolls', lookupLabelKey: 'fabric_type', required: true, listColumn: true },
+    { key: 'roll_number', label: 'Fabric roll number', type: 'lookup', lookupResource: '/textile/fabric-rolls', lookupLabelKey: 'roll_number', lookupSecondaryLabelKey: 'fabric_type', required: true, listColumn: true },
     { key: 'inspection_date', label: 'Inspection date', type: 'date', required: true, listColumn: true },
     { key: 'inspector_name', label: 'Inspector', type: 'text', listColumn: true },
     { key: 'grade', label: 'Grade', type: 'select', options: GRADES, group: 'Inspection result' },
