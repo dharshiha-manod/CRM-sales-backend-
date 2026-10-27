@@ -36,7 +36,7 @@ describe('School logic is School-only', () => {
     tables.school_academic_years = [{ id: 'ay1' }];
     tables.school_terms = [{ id: 't2' }];
     const ctx = await loadSchoolContext('org', { id: 'c1', industry_type_id: 'i1' }, ['p1']);
-    expect(ctx?.rules).toEqual([{ id: 'r1', product_id: 'p1', discount_type: 'percentage', discount_percent: 12, fixed_price: null, min_quantity: 0 }]);
+    expect(ctx?.rules).toEqual([{ id: 'r1', apply_to: 'school', product_id: 'p1', discount_type: 'percentage', discount_percent: 12, fixed_price: null, min_quantity: 0 }]);
     expect(ctx?.period).toEqual({ academic_year_id: 'ay1', term_id: 't2' });
   });
   it('no academic year running means no stamp (orders are still allowed)', async () => {

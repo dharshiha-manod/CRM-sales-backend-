@@ -12,14 +12,14 @@ import { assertWithinCreditLimit } from '../lib/credit.js';
 import { documentCurrencyForClient, isFmcgIndustry, toBase } from '../lib/fmcg-market.js';
 import { planAllocations, takeStockForOrder } from '../lib/stock.js';
 import { bestSchemeFor, loadLiveSchemes } from '../lib/fmcg-schemes.js';
-import { loadSchoolContext, schoolRuleFor, schoolStamp } from '../lib/school.js';
+import { applySchoolAdvance, loadSchoolContext, schoolRuleFor, schoolStamp } from '../lib/school.js';
 
 const fail = (error: unknown): never => { throw error; };
-type ItemInput = { productId: string; quantity: number; discountPercent: number };
+type ItemInput = { productId: string; quantity: number; discountPercent: number; colour?: string | null };
 type CreateInput = { items: ItemInput[]; validUntil?: string | null; notes?: string | null };
 type PublicDecision = { decision: 'accepted' | 'rejected'; reason?: string; items?: Array<{ id: string; quantity: number }> };
-const FULL = '*, clients(id, client_code, client_name, email, industry_type_id), organizations(name), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, category, unit, cost_price, selling_price, mrp, discount_percent))';
-const PUBLIC = 'id, organization_id, quotation_number, status, valid_until, total_amount, currency_code, tax_amount, created_at, clients(client_name, industry_type_id), organizations(name), quotation_items(id, quantity, unit_price, discount_percent, discount_amount, subtotal, tax_percent, tax_amount, products(product_code, product_name))';
+const FULL = '*, clients(id, client_code, client_name, email, industry_type_id), organizations(name), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, category, unit, cost_price, selling_price, mrp, discount_percent, textile_details))';
+const PUBLIC = 'id, organization_id, quotation_number, status, valid_until, total_amount, currency_code, tax_amount, created_at, clients(client_name, industry_type_id), organizations(name), quotation_items(id, quantity, unit_price, discount_percent, discount_amount, subtotal, tax_percent, tax_amount, colour, products(product_code, product_name, unit))';
 
 function scopeCheck(scope: IndustryScope | undefined, client: unknown) {
   if (scope) assertRecordInScope(scope, (client as { industry_type_id?: string | null } | null)?.industry_type_id, new AppError(404, 'QUOTATION_NOT_FOUND', 'Quotation not found in this organization.'));
@@ -106,7 +106,7 @@ export async function createFromRequirement(organizationId: string, representati
     const subtotal = gross - discount_amount;
     const tax_percent = fromList?.tax != null ? fromList.tax : Number(product.tax_percent ?? 0);
     const tax_amount = Math.round(subtotal * tax_percent) / 100;
-    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_percent: discountPercent, discount_amount, subtotal, tax_percent, tax_amount, ...(applied ? { scheme_id: applied.schemeId, free_quantity: applied.freeQuantity } : {}) };
+    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_percent: discountPercent, discount_amount, subtotal, tax_percent, tax_amount, ...(item.colour ? { colour: item.colour } : {}), ...(applied ? { scheme_id: applied.schemeId, free_quantity: applied.freeQuantity } : {}) };
   });
   const quotationNumber = `QT-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const subtotalSum = lines.reduce((sum, line) => sum + line.subtotal, 0);
@@ -138,7 +138,7 @@ export async function getQuotation(organizationId: string, id: string, scope?: I
   scopeCheck(scope, data.clients); return data;
 }
 export async function listQuotations(organizationId: string, filters: { representativeId?: string; status?: string; clientId?: string; industryTypeId?: string } = {}) {
-  const select = filters.industryTypeId ? '*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, mrp, discount_percent))' : FULL;
+  const select = filters.industryTypeId ? '*, clients!inner(client_code, client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name)), quotation_items(*, products(product_code, product_name, category, unit, cost_price, selling_price, mrp, discount_percent, textile_details))' : FULL;
   let query = supabaseAdmin.from('quotations').select(select).eq('organization_id', organizationId).order('created_at', { ascending: false }).limit(200);
   if (filters.representativeId) query = query.eq('representative_id', filters.representativeId);
   if (filters.status) query = query.eq('status', filters.status);
@@ -174,7 +174,7 @@ export async function convertToOrder(organizationId: string, representativeId: s
   // notes text alone isn't enough, the frontend only trusts quotation_id.
   const { data: order, error } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: number, client_id: quotation.client_id, representative_id: quotation.representative_id, discount_amount: quotation.discount_amount, tax_amount: quotation.tax_amount, total_amount: quotation.total_amount, notes: `Converted from quotation ${quotation.quotation_number}`, status: 'confirmed', quotation_id: quotation.id, ...(quotation.currency_code ? { currency_code: quotation.currency_code, exchange_rate: quotation.exchange_rate, base_total: quotation.base_total } : {}), ...(quotation.academic_year_id ? { academic_year_id: quotation.academic_year_id, term_id: quotation.term_id ?? null } : {}) }).select().single();
   if (error) fail(error);
-  const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal, tax_percent: item.tax_percent ?? 0, tax_amount: item.tax_amount ?? 0, ...(item.scheme_id ? { scheme_id: item.scheme_id, free_quantity: item.free_quantity ?? 0 } : {}) }));
+  const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal, tax_percent: item.tax_percent ?? 0, tax_amount: item.tax_amount ?? 0, ...(item.colour ? { colour: item.colour } : {}), ...(item.scheme_id ? { scheme_id: item.scheme_id, free_quantity: item.free_quantity ?? 0 } : {}) }));
   const { error: itemError } = await supabaseAdmin.from('sale_order_items').insert(items);
   if (itemError) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); fail(itemError); }
   // Claim the quotation first (only one request can win), so a double-click can never create two orders or take stock twice.
@@ -198,6 +198,7 @@ export async function convertToOrder(organizationId: string, representativeId: s
   // Conversion is automatic after approval. Mark it explicitly so every
   // consumer can present this quotation as completed rather than actionable.
   const { error: updateError } = await supabaseAdmin.from('quotations').update({ status: 'converted', converted_order_id: order.id }).eq('id', id).eq('organization_id', organizationId); if (updateError) fail(updateError);
+  await applySchoolAdvance(organizationId, await loadSchoolContext(organizationId, { id: quotation.client_id as string | null, industry_type_id: (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null }, []), order);
   if (quotation.requirement_id) await supabaseAdmin.from('requirements').update({ status: 'converted' }).eq('id', quotation.requirement_id).eq('organization_id', organizationId);
   return getQuotation(organizationId, id, scope);
 }
@@ -205,6 +206,11 @@ export async function sendQuotation(organizationId: string, representativeId: st
   const quotation = await getQuotation(organizationId, id, scope);
   if (representativeId && quotation.representative_id !== representativeId) throw new AppError(404, 'QUOTATION_NOT_FOUND', 'Quotation not found in this organization.');
   if (!['draft', 'sent'].includes(quotation.status)) throw new AppError(422, 'INVALID_QUOTATION_STATUS', 'Only a draft or sent quotation can be shared.');
+
+  // Textile only: a fabric that comes in colours must have one chosen before the client sees the quotation.
+  const uncoloured = ((quotation.quotation_items ?? []) as Array<{ colour?: string | null; products?: { product_name?: string | null; textile_details?: { colors?: unknown[] } | null } | null }>)
+    .find((line) => (line.products?.textile_details?.colors ?? []).length > 0 && !line.colour);
+  if (uncoloured) throw new AppError(422, 'COLOUR_REQUIRED', `Pick a colour for ${uncoloured.products?.product_name ?? 'each fabric line'} before sending the quotation.`);
 
   if (quotation.requirement_id) {
     const { data: requirement } = await supabaseAdmin
@@ -534,3 +540,23 @@ export async function approveQuotation(organizationId: string, managerUserId: st
   return finalizeApprovedQuotation(organizationId, id, scope);
 }
 export async function denyQuotation(organizationId: string, managerUserId: string, id: string, reason: string, scope?: IndustryScope) { const quotation = await getQuotation(organizationId, id, scope); if (quotation.status !== 'client_accepted') throw new AppError(422, 'QUOTATION_NOT_AWAITING_APPROVAL', 'Only a client-accepted quotation can be denied.'); const { data, error } = await supabaseAdmin.from('quotations').update({ status: 'rejected', approved_by: managerUserId, rejection_reason: reason }).eq('id', id).eq('organization_id', organizationId).eq('status', 'client_accepted').select().maybeSingle(); if (error) fail(error); if (!data) throw new AppError(409, 'QUOTATION_NOT_AWAITING_APPROVAL', 'This quotation is no longer awaiting approval.'); return data; }
+
+/**
+ * Textile only: choose the colour of one line on a DRAFT quotation. The colour must be one of the colours saved on the
+ * product (Products > Colours), so a product without textile colours can never get one.
+ */
+export async function setQuotationItemColour(organizationId: string, representativeId: string | null, id: string, itemId: string, colour: string, scope?: IndustryScope) {
+  const quotation = await getQuotation(organizationId, id, scope);
+  if (representativeId && quotation.representative_id !== representativeId) throw new AppError(404, 'QUOTATION_NOT_FOUND', 'Quotation not found in this organization.');
+  if (quotation.status !== 'draft') throw new AppError(422, 'INVALID_QUOTATION_STATUS', 'The colour can only be changed while the quotation is a draft.');
+  const item = (quotation.quotation_items as Array<{ id: string; product_id: string }> | null)?.find((line) => line.id === itemId);
+  if (!item) throw new AppError(404, 'QUOTATION_ITEM_NOT_FOUND', 'That quotation line was not found.');
+  const { data: product, error: productError } = await supabaseAdmin.from('products').select('textile_details').eq('organization_id', organizationId).eq('id', item.product_id).maybeSingle();
+  if (productError) fail(productError);
+  const colours = ((product as { textile_details?: { colors?: Array<{ name: string }> } | null } | null)?.textile_details?.colors ?? []).map((c) => c.name);
+  const match = colours.find((name) => name.trim().toLowerCase() === colour.trim().toLowerCase());
+  if (!match) throw new AppError(422, 'INVALID_COLOUR', 'That colour is not available for this product. Add it in Products first.');
+  const { error } = await supabaseAdmin.from('quotation_items').update({ colour: match }).eq('id', itemId).eq('quotation_id', id);
+  if (error) fail(error);
+  return getQuotation(organizationId, id, scope);
+}

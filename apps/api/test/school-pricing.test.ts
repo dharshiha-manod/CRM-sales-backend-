@@ -44,3 +44,32 @@ describe('school pricing rules', () => {
     expect(products.get('p2')?.selling_price).toBe(620);
   });
 });
+
+describe('school pricing rules - who the rule is for', () => {
+  const base = { discount_type: 'percentage' as const, fixed_price: null, min_quantity: 0 };
+  const scoped: SchoolContext = {
+    industryTypeId: 'school-1', period: null,
+    rules: [
+      { ...base, id: 'all-all', apply_to: 'all', product_id: null, discount_percent: 5 },
+      { ...base, id: 'type-all', apply_to: 'school_type', product_id: null, discount_percent: 8 },
+      { ...base, id: 'type-p1', apply_to: 'school_type', product_id: 'p1', discount_percent: 10 },
+      { ...base, id: 'school-p1', apply_to: 'school', product_id: 'p1', discount_percent: 3 },
+    ],
+  };
+  it('an all-products rule applies to any product', () => {
+    expect(schoolRuleFor({ ...scoped, rules: [scoped.rules[0]] }, 'p77', 1, 100)?.id).toBe('all-all');
+  });
+  it('the most specific rule wins: one school > school type > all schools', () => {
+    expect(schoolRuleFor(scoped, 'p1', 1, 100)?.id).toBe('school-p1'); // even though its discount is smaller
+    expect(schoolRuleFor({ ...scoped, rules: scoped.rules.slice(0, 3) }, 'p1', 1, 100)?.id).toBe('type-p1');
+    expect(schoolRuleFor({ ...scoped, rules: scoped.rules.slice(0, 2) }, 'p1', 1, 100)?.id).toBe('type-all');
+  });
+  it('a one-product rule beats an all-products rule of the same scope', () => {
+    expect(schoolRuleFor(scoped, 'p2', 1, 100)?.id).toBe('type-all');
+  });
+  it('the order path applies a type-wide percentage rule to a product with no rule of its own', () => {
+    const products = new Map([['p5', { id: 'p5', selling_price: 200 }]]);
+    const out = applySchoolPricingToOrder({ ...scoped, rules: [scoped.rules[1]] }, [{ productId: 'p5', quantity: 2, discountPercent: 0 }], products);
+    expect(out.items[0].discountPercent).toBe(8);
+  });
+});

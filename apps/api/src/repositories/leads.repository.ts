@@ -168,6 +168,12 @@ export async function continueLeadChain(organizationId: string, leadId: string, 
     }
   }
    const quantity = matchedProduct && matchedProduct.selling_price > 0 ? Math.max(1, Math.round(expectedValue / matchedProduct.selling_price)) : 1;
+  // Textile only (a product with no textile colours gives null): pick the colour named in the lead's interest, or the product's only colour.
+  const textileColour = (() => {
+    const colours = ((matchedProduct as unknown as { textile_details?: { colors?: Array<{ name: string }> } | null } | null)?.textile_details?.colors ?? []).map((c) => c.name).filter(Boolean);
+    const wanted = (interested ?? '').toLowerCase();
+    return colours.find((name) => wanted.includes(name.trim().toLowerCase())) ?? (colours.length === 1 ? colours[0] : null);
+  })();
   const marker = `Auto-created when lead ${lead.lead_code} was qualified.`;
   let requirement: { id: string; status: string } | null = null;
   const { data: existing, error: existingError } = await supabaseAdmin
@@ -211,7 +217,7 @@ export async function continueLeadChain(organizationId: string, leadId: string, 
     }
     try {
       const quotation = await createFromRequirement(organizationId, representativeId, requirement.id, {
-        items: [{ productId: matchedProduct.id, quantity, discountPercent: 0 }],
+        items: [{ productId: matchedProduct.id, quantity, discountPercent: 0, ...(textileColour ? { colour: textileColour } : {}) }],
         notes: 'Auto-generated when lead was qualified.',
       });
       result.quotationNumber = (quotation as { quotation_number?: string }).quotation_number;

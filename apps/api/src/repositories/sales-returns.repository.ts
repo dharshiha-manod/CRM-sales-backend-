@@ -7,6 +7,7 @@ import { assertRecordInScope, type IndustryScope } from '../lib/industry-scope.j
 import { isFmcgIndustry, toBase } from '../lib/fmcg-market.js';
 import { restockFromOrder } from '../lib/stock.js';
 import { completeOrderIfSettled } from '../lib/order-completion.js';
+import { isSchoolIndustry } from '../lib/school.js';
 
 const fail = (error: unknown): never => { throw error; };
 const SELECT = '*, sale_orders(order_number, currency_code), clients(client_code, client_name), products(product_code, product_name)';
@@ -41,14 +42,16 @@ export async function listReturns(org: string, opts: { industryTypeId?: string |
 
 export async function createReturn(org: string, userId: string, scope: IndustryScope, input: ReturnInput, representativeId?: string, updateId?: string) {
   const notFound = new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
-  const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, status, client_id, representative_id, currency_code, exchange_rate, clients!inner(industry_type_id)').eq('id', input.orderId).eq('organization_id', org).maybeSingle();
+  const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, status, client_id, representative_id, currency_code, exchange_rate, dispatch_status, clients!inner(industry_type_id)').eq('id', input.orderId).eq('organization_id', org).maybeSingle();
   if (error) fail(error);
   if (!order || !order.client_id) throw notFound;
   const industryTypeId = (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null;
   assertRecordInScope(scope, industryTypeId, notFound);
   if (representativeId && order.representative_id !== representativeId) throw notFound;
-  if (!(await isFmcgIndustry(org, industryTypeId))) throw new AppError(422, 'NOT_FMCG', 'Returns & damage are only available in the FMCG industry.');
+  const isSchool = await isSchoolIndustry(org, industryTypeId); // School orders use the same return / damage + approval flow
+  if (!isSchool && !(await isFmcgIndustry(org, industryTypeId))) throw new AppError(422, 'NOT_FMCG', 'Returns & damage are only available in the FMCG industry.');
   if (['cancelled', 'rejected', 'pending_approval'].includes(String(order.status))) throw new AppError(422, 'ORDER_NOT_RETURNABLE', `A ${String(order.status).replace('_', ' ')} order has nothing to return.`);
+  if (isSchool && !['dispatched', 'delivered'].includes(String((order as { dispatch_status?: string | null }).dispatch_status ?? 'pending'))) throw new AppError(422, 'NOT_DISPATCHED', 'These goods have not been dispatched yet, so there is nothing to return. Cancel the order instead.');
 
   const { data: lines, error: lineError } = await supabaseAdmin.from('sale_order_items').select('id, quantity, free_quantity, subtotal, tax_amount').eq('order_id', order.id).eq('product_id', input.productId);
   if (lineError) fail(lineError);

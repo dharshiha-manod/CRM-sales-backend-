@@ -5,6 +5,7 @@ export const quotationService = {
   get: repository.getQuotation,
   list: repository.listQuotations,
   update: repository.updateQuotation,
+  setItemColour: repository.setQuotationItemColour,
   send: repository.sendQuotation,
   publicGet: repository.getPublicQuotation,
   publicDecision: repository.recordPublicDecision,

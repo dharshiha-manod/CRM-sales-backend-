@@ -4,11 +4,12 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { getOrderConfig, industryTypeIdOfClient } from '../lib/settings.js';
 import { assertRecordInScope, type IndustryScope } from '../lib/industry-scope.js';
 import { assertCreditOnApproval, assertWithinCreditLimit } from '../lib/credit.js'; // <-- NEW (assertCreditOnApproval added)
-import { documentCurrencyForClient, isFmcgIndustry, toBase, type DocumentCurrency } from '../lib/fmcg-market.js';
+import { documentCurrencyForClient, industryCodeOf, isFmcgIndustry, toBase, type DocumentCurrency } from '../lib/fmcg-market.js';
 import { bestSchemeFor, loadLiveSchemes, type LiveScheme } from '../lib/fmcg-schemes.js';
 import { applyAllocations, planAllocations, readAllocation, releaseStockForOrder, takeStockForOrder, type Allocation } from '../lib/stock.js';
 import { billedTotalsForCoreOrders } from './trading.repository.js';
-import { applySchoolPricingToOrder, loadSchoolContext, schoolStamp } from '../lib/school.js';
+import { refundedByOrder } from './fmcg-refunds.repository.js';
+import { applySchoolAdvance, applySchoolPricingToOrder, isSchoolIndustry, loadSchoolContext, restoreSchoolAdvance, schoolStamp } from '../lib/school.js';
 const fail = (error: unknown): never => { throw error; };
 type OrderItem = { productId: string; quantity: number; discountPercent: number; freeQuantity?: number };
 
@@ -30,7 +31,7 @@ function buildOrderLines(items: OrderItem[], productById: Map<string, { id: stri
     const gross = unitPrice * item.quantity;
     const applied = doc && !item.discountPercent ? bestSchemeFor(schemes, product.id, item.quantity, unitPrice, doc.exchange_rate) : null;
     const discountAmount = applied ? applied.discountAmount : Math.round(gross * item.discountPercent) / 100;
-    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_amount: discountAmount, subtotal: gross - discountAmount, ...(applied ? { scheme_id: applied.schemeId } : {}), ...(doc && (Number(item.freeQuantity) > 0 || applied) ? { free_quantity: Number(item.freeQuantity) > 0 ? Number(item.freeQuantity) : applied?.freeQuantity ?? 0 } : {}) };
+    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_amount: discountAmount, subtotal: gross - discountAmount, ...((item as { colour?: string | null }).colour ? { colour: (item as { colour?: string | null }).colour } : {}), ...(applied ? { scheme_id: applied.schemeId } : {}), ...(doc && (Number(item.freeQuantity) > 0 || applied) ? { free_quantity: Number(item.freeQuantity) > 0 ? Number(item.freeQuantity) : applied?.freeQuantity ?? 0 } : {}) };
   });
 }
 
@@ -48,6 +49,16 @@ async function takeStockOrUndo(organizationId: string, orderId: string, isFmcg: 
     await supabaseAdmin.from('sale_orders').delete().eq('id', orderId).eq('organization_id', organizationId);
     throw error;
   }
+}
+
+/** Textile only: the distributor on an order must be an Active record of the Textile Distributor master (same industry). Distributors are not CRM clients. */
+async function assertTextileDistributor(organizationId: string, distributorId: string, industryTypeId: string | null) {
+  if ((await industryCodeOf(organizationId, industryTypeId)) !== 'textile') throw new AppError(422, 'DISTRIBUTOR_TEXTILE_ONLY', 'Distributor delivery is available for Textile orders only.');
+  const { data, error } = await supabaseAdmin.from('textile_distributors').select('id, industry_type_id, status').eq('id', distributorId).eq('organization_id', organizationId).maybeSingle();
+  if (error) fail(error);
+  const d = data as { industry_type_id?: string | null; status?: string | null } | null;
+  if (!d || d.industry_type_id !== industryTypeId) throw new AppError(422, 'INVALID_DISTRIBUTOR', 'Select a valid distributor from Distributor Management.');
+  if (d.status !== 'Active') throw new AppError(422, 'DISTRIBUTOR_INACTIVE', 'The selected distributor is inactive.');
 }
 
 export function formatOrderNumber(format: string): string {
@@ -108,10 +119,11 @@ export async function createOrderFromVisit(organizationId: string, representativ
   if (lineError) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); fail(lineError); }
 
   if (initialStatus === 'confirmed') await takeStockOrUndo(organizationId, order.id as string, Boolean(doc));
+  await applySchoolAdvance(organizationId, schoolCtx, order);
   return { ...order, items: savedLines, stock_deducted: initialStatus === 'confirmed' && Boolean(doc) };
 }
 
-export async function createManualOrder(organizationId: string, scope: IndustryScope, input: { clientId?: string | null; clientName?: string | null; representativeId: string; items: OrderItem[]; notes?: string | null }) {
+export async function createManualOrder(organizationId: string, scope: IndustryScope, input: { clientId?: string | null; clientName?: string | null; representativeId: string; distributorId?: string | null; items: OrderItem[]; notes?: string | null }) {
   if (!input.clientId) throw new AppError(422, 'ORDER_REQUIRES_ASSIGNED_CLIENT', 'Select an existing client. Orders for clients outside the client list are not supported yet.');
 
   const { data: client, error: clientError } = await supabaseAdmin.from('clients').select('id, industry_type_id').eq('id', input.clientId).eq('organization_id', organizationId).maybeSingle();
@@ -119,6 +131,7 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
   const clientNotFound = new AppError(404, 'CLIENT_NOT_FOUND', 'The selected client was not found.');
   if (!client) throw clientNotFound;
   assertRecordInScope(scope, client.industry_type_id as string | null, clientNotFound);
+  if (input.distributorId) await assertTextileDistributor(organizationId, input.distributorId, client.industry_type_id as string | null);
 
   const { data: rep, error: repError } = await supabaseAdmin.from('sales_representatives').select('id').eq('id', input.representativeId).eq('organization_id', organizationId).eq('status', 'active').maybeSingle();
   if (repError) fail(repError);
@@ -158,18 +171,19 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
   // Check stock BEFORE saving anything, so a short-stock order never gets created (same as the visit path).
   if (doc && initialStatus === 'confirmed') await planAllocations(organizationId, lines.map((l) => ({ product_id: l.product_id, quantity: l.quantity, free_quantity: (l as { free_quantity?: number }).free_quantity ?? 0 })));
 
-  const { data: order, error: orderError } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: orderNumber, visit_id: null, client_id: client.id, representative_id: rep.id, discount_amount: discount, total_amount: total, notes: input.notes, status: initialStatus, ...(doc ? { ...doc, base_total: totalInr } : {}), ...schoolStamp(schoolCtx) }).select().single();
+  const { data: order, error: orderError } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: orderNumber, visit_id: null, client_id: client.id, representative_id: rep.id, ...(input.distributorId ? { distributor_id: input.distributorId } : {}), discount_amount: discount, total_amount: total, notes: input.notes, status: initialStatus, ...(doc ? { ...doc, base_total: totalInr } : {}), ...schoolStamp(schoolCtx) }).select().single();
   if (orderError) fail(orderError);
 
   const { data: savedLines, error: lineError } = await supabaseAdmin.from('sale_order_items').insert(lines.map((line) => ({ ...line, order_id: order.id }))).select();
   if (lineError) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); fail(lineError); }
 
   if (initialStatus === 'confirmed') await takeStockOrUndo(organizationId, order.id as string, Boolean(doc));
+  await applySchoolAdvance(organizationId, schoolCtx, order);
   return { ...order, items: savedLines, stock_deducted: initialStatus === 'confirmed' && Boolean(doc) };
 }
 
 export async function listOrders(organizationId: string, representativeId?: string, industryTypeId?: string | null) {
-  let query = supabaseAdmin.from('sale_orders').select('*, clients!inner(client_code, client_name, industry_type_id, country_code, credit_limit, credit_days, industry_types(name)), sales_representatives(employee_code, user_profiles(display_name)), sale_order_items(quantity, free_quantity, scheme_id, unit_price, discount_amount, subtotal, tax_amount, products(id, product_code, product_name, mrp, discount_percent))').eq('organization_id', organizationId).order('created_at', { ascending: false }).limit(100);
+  let query = supabaseAdmin.from('sale_orders').select('*, clients!inner(client_code, client_name, city, industry_type_id, country_code, credit_limit, credit_days, industry_types(name)), sales_representatives(employee_code, user_profiles(display_name)), sale_order_items(quantity, free_quantity, scheme_id, unit_price, discount_amount, subtotal, tax_amount, colour, products(id, product_code, product_name, unit, mrp, discount_percent))').eq('organization_id', organizationId).order('created_at', { ascending: false }).limit(100);
   if (industryTypeId) query = query.eq('clients.industry_type_id', industryTypeId);
   const { data, error } = await query; if (error) return fail(error);
   const orders = (data ?? []) as unknown as Array<Record<string, unknown> & { id: string }>;
@@ -177,7 +191,37 @@ export async function listOrders(organizationId: string, representativeId?: stri
   const credits = await approvedReturnCredits(organizationId, orders.map((o) => o.id));
   // Trading orders: what their final (Sent / Paid) invoices add up to. 0 for every other order.
   const billed = await billedTotalsForCoreOrders(organizationId, orders.map((o) => o.id));
-  return orders.map((o) => ({ ...o, returns_credit: credits.get(o.id)?.credit ?? 0, returns_credit_base: credits.get(o.id)?.base ?? 0, billed_total: billed.get(o.id) ?? 0 }));
+  // How much of that credit has already been paid back to the client (only orders that have a credit are looked up).
+  const refunded = await refundedByOrder(organizationId, orders.filter((o) => (credits.get(o.id)?.credit ?? 0) > 0).map((o) => o.id));
+  // Textile: show which distributor delivers the order. Orders without one (every other industry) are returned exactly as before.
+  const distIds = [...new Set(orders.map((o) => o.distributor_id).filter((v): v is string => typeof v === 'string' && v.length > 0))];
+  const distById = new Map<string, { distributor_code: string; distributor_name: string }>();
+  if (distIds.length > 0) {
+    const { data: dists } = await supabaseAdmin.from('textile_distributors').select('id, distributor_code, distributor_name').eq('organization_id', organizationId).in('id', distIds);
+    for (const d of (dists ?? []) as Array<{ id: string; distributor_code: string; distributor_name: string }>) distById.set(d.id, d);
+  }
+  return orders.map((o) => ({ ...o, refunded_amount: refunded.get(o.id) ?? 0, returns_credit: credits.get(o.id)?.credit ?? 0, returns_credit_base: credits.get(o.id)?.base ?? 0, billed_total: billed.get(o.id) ?? 0, ...(o.distributor_id ? { distributor_code: distById.get(o.distributor_id as string)?.distributor_code ?? null, distributor_name: distById.get(o.distributor_id as string)?.distributor_name ?? null } : {}) }));
+}
+
+/** Textile only: assign (or clear, with null) the distributor who delivers this order to the client. */
+export async function assignOrderDistributor(organizationId: string, scope: IndustryScope, id: string, distributorId: string | null) {
+  const { data: order, error: fetchError } = await supabaseAdmin.from('sale_orders').select('id, status, client_id, clients!inner(industry_type_id)').eq('id', id).eq('organization_id', organizationId).maybeSingle();
+  if (fetchError) fail(fetchError);
+  const notFound = new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
+  if (!order) throw notFound;
+  const industryTypeId = (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null;
+  assertRecordInScope(scope, industryTypeId, notFound);
+  if (order.status === 'cancelled' || order.status === 'completed') throw new AppError(422, 'ORDER_NOT_EDITABLE', `A ${order.status} order cannot be changed.`);
+  if (distributorId) await assertTextileDistributor(organizationId, distributorId, industryTypeId);
+  else if ((await industryCodeOf(organizationId, industryTypeId)) !== 'textile') throw new AppError(422, 'DISTRIBUTOR_TEXTILE_ONLY', 'Distributor delivery is available for Textile orders only.');
+  const { data, error } = await supabaseAdmin.from('sale_orders').update({ distributor_id: distributorId }).eq('id', id).eq('organization_id', organizationId).select('id, order_number, distributor_id').single();
+  if (error) return fail(error);
+  let names: { distributor_code: string | null; distributor_name: string | null } = { distributor_code: null, distributor_name: null };
+  if (distributorId) {
+    const { data: d } = await supabaseAdmin.from('textile_distributors').select('distributor_code, distributor_name').eq('id', distributorId).eq('organization_id', organizationId).maybeSingle();
+    if (d) names = { distributor_code: (d as { distributor_code: string }).distributor_code, distributor_name: (d as { distributor_name: string }).distributor_name };
+  }
+  return { ...data, ...names };
 }
 
 /** order id -> total approved return/damage credit (in the order's currency and in INR). */
@@ -196,7 +240,7 @@ export async function approvedReturnCredits(organizationId: string, orderIds: st
 }
 
 export async function cancelOrder(organizationId: string, scope: IndustryScope, id: string, reason?: string | null) {
-  const { data: order, error: fetchError } = await supabaseAdmin.from('sale_orders').select('id, status, notes, stock_deducted, clients!inner(industry_type_id)').eq('id', id).eq('organization_id', organizationId).maybeSingle();
+  const { data: order, error: fetchError } = await supabaseAdmin.from('sale_orders').select('id, status, notes, stock_deducted, dispatch_status, client_id, clients!inner(industry_type_id)').eq('id', id).eq('organization_id', organizationId).maybeSingle();
   if (fetchError) fail(fetchError);
   const notFound = new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
   if (!order) throw notFound;
@@ -210,10 +254,16 @@ export async function cancelOrder(organizationId: string, scope: IndustryScope, 
   }
 
   await assertNoReturns(organizationId, id, 'cancelled');
+  // School: goods that already left (dispatched / delivered) cannot be cancelled - undo the dispatch first or record a return.
+  if (['dispatched', 'delivered'].includes(String((order as { dispatch_status?: string | null }).dispatch_status ?? '')) && await isSchoolIndustry(organizationId, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
+    throw new AppError(422, 'ORDER_ALREADY_DISPATCHED', 'This order has already been dispatched. Move it back to Pending first, or record a sales return.');
+  }
   if (order.stock_deducted) await releaseStockForOrder(organizationId, id);
   const notes = reason?.trim() ? `${order.notes ? order.notes + '\n' : ''}Cancelled: ${reason.trim()}` : order.notes;
   const { data, error } = await supabaseAdmin.from('sale_orders').update({ status: 'cancelled', notes }).eq('id', id).eq('organization_id', organizationId).select().single();
   if (error) { if (order.stock_deducted) await takeStockForOrder(organizationId, id).catch(() => undefined); return fail(error); }
+  // School only: the advance this order had used up goes back to the school (no-op for every other industry).
+  await restoreSchoolAdvance(organizationId, id, order.client_id as string, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null);
   return data;
 }
 
@@ -235,11 +285,14 @@ export async function approveOrder(organizationId: string, scope: IndustryScope,
       throw stockError;
     }
   }
+  // School only: orders waiting for approval skip the advance at creation, so use it up now that the order is confirmed (no-op for every other industry).
+  const approvedSchoolCtx = await loadSchoolContext(organizationId, { id: order.client_id as string, industry_type_id: (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null }, []);
+  await applySchoolAdvance(organizationId, approvedSchoolCtx, data);
   return data;
 }
 
 export async function updateOrder(organizationId: string, scope: IndustryScope, id: string, input: { items?: OrderItem[]; notes?: string | null }) {
-  const { data: order, error: fetchError } = await supabaseAdmin.from('sale_orders').select('id, status, client_id, total_amount, base_total, currency_code, stock_deducted, clients!inner(industry_type_id)').eq('id', id).eq('organization_id', organizationId).maybeSingle();
+  const { data: order, error: fetchError } = await supabaseAdmin.from('sale_orders').select('id, status, client_id, total_amount, base_total, currency_code, stock_deducted, tax_amount, dispatch_status, clients!inner(industry_type_id)').eq('id', id).eq('organization_id', organizationId).maybeSingle();
   if (fetchError) fail(fetchError);
   const notFound = new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
   if (!order) throw notFound;
@@ -260,6 +313,12 @@ export async function updateOrder(organizationId: string, scope: IndustryScope, 
   if (input.items) {
     await assertNoReturns(organizationId, id, 'edited');
     await assertNoActiveShipments(organizationId, id, 'edited');
+    // School only: once the goods have left the store the lines are locked, and an order whose total includes tax
+    // (converted from a quotation) cannot be re-priced here because this edit path has no tax. Notes stay editable.
+    if (await isSchoolIndustry(organizationId, orderIndustryTypeId)) {
+      if (['dispatched', 'delivered'].includes(String((order as { dispatch_status?: string | null }).dispatch_status ?? ''))) throw new AppError(422, 'ORDER_DISPATCHED', 'The goods on this order have already been dispatched. Undo the dispatch first, or record a sales return.');
+      if (Number((order as { tax_amount?: number | null }).tax_amount ?? 0) > 0) throw new AppError(422, 'ORDER_HAS_TAX', 'This order includes tax from its quotation, so its items cannot be edited here. Cancel it and create a new quotation instead. Notes can still be edited.');
+    }
     const productIds = input.items.map((item) => item.productId);
     const { data: products, error: productError } = await supabaseAdmin.from('products').select('id, product_code, product_name, selling_price').eq('organization_id', organizationId).eq('status', 'active').in('id', productIds);
     if (productError) fail(productError);
@@ -313,6 +372,6 @@ export async function updateOrder(organizationId: string, scope: IndustryScope, 
 
   if (Object.keys(update).length === 0) return order;
 
-  const { data, error } = await supabaseAdmin.from('sale_orders').update(update).eq('id', id).eq('organization_id', organizationId).select('*, sale_order_items(quantity, free_quantity, scheme_id, unit_price, discount_amount, subtotal, products(id, product_code, product_name, mrp, discount_percent))').single();
+  const { data, error } = await supabaseAdmin.from('sale_orders').update(update).eq('id', id).eq('organization_id', organizationId).select('*, sale_order_items(quantity, free_quantity, scheme_id, unit_price, discount_amount, subtotal, colour, products(id, product_code, product_name, unit, mrp, discount_percent))').single();
   return error ? fail(error) : data;
 }

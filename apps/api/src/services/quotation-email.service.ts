@@ -3,7 +3,10 @@ import { env } from '../config/env.js';
 import { AppError } from '../errors/app-error.js';
 import { logger } from '../lib/logger.js';
 
-type Line = { quantity: number; unit_price: number; subtotal: number; products?: { product_name?: string | null } | null };
+type Line = { quantity: number; unit_price: number; subtotal: number; colour?: string | null; products?: { product_name?: string | null; unit?: string | null } | null };
+// Textile lines carry a colour; their name and quantity then read "Premium Cotton Poplin - Navy Blue" and "300 m". Other lines are unchanged.
+const lineName = (line: Line) => `${line.products?.product_name ?? 'Product'}${line.colour ? ` - ${line.colour}` : ''}`;
+const lineQty = (line: Line) => `${line.quantity}${line.colour && line.products?.unit ? ` ${line.products.unit}` : ''}`;
 export type DeliveredQuotation = { quotation_number: string; total_amount: number; tax_amount?: number | null; currency_code?: string | null; valid_until?: string | null; clients?: { client_name?: string | null; email?: string | null } | null; organizations?: { name?: string | null } | null; quotation_items?: Line[] | null };
 export type DeliveryResult = { messageId: string; accepted: string[]; rejected: string[] };
 type EmailTemplate = { logo_url?: string | null; subject: string; body: string; footer?: string | null } | null;
@@ -19,7 +22,7 @@ const moneyHtmlIn = (code: string) => (value: number) => (code === 'INR' ? `&#83
 
 function quotationPdf(quote: DeliveredQuotation): Buffer {
   const money = moneyIn(currencyOf(quote));
-  const rows = [`${quote.organizations?.name ?? 'Sales CRM'} - QUOTATION`, `Quotation: ${quote.quotation_number}`, `Prepared for: ${quote.clients?.client_name ?? 'Client'}`, quote.valid_until ? `Valid until: ${quote.valid_until}` : '', '', 'Item                                      Qty       Unit price       Amount', ...(quote.quotation_items ?? []).map((line) => `${(line.products?.product_name ?? 'Product').slice(0, 38).padEnd(40)} ${String(line.quantity).padEnd(8)} ${money(line.unit_price).padEnd(16)} ${money(line.subtotal)}`), '', `Total: ${money(quote.total_amount)}`].filter(Boolean);
+  const rows = [`${quote.organizations?.name ?? 'Sales CRM'} - QUOTATION`, `Quotation: ${quote.quotation_number}`, `Prepared for: ${quote.clients?.client_name ?? 'Client'}`, quote.valid_until ? `Valid until: ${quote.valid_until}` : '', '', 'Item                                      Qty       Unit price       Amount', ...(quote.quotation_items ?? []).map((line) => `${lineName(line).slice(0, 38).padEnd(40)} ${lineQty(line).padEnd(8)} ${money(line.unit_price).padEnd(16)} ${money(line.subtotal)}`), '', `Total: ${money(quote.total_amount)}`].filter(Boolean);
   const stream = `BT\n/F1 12 Tf\n50 780 Td\n${rows.map((row, index) => `${index ? '0 -18 Td\n' : ''}(${escapePdf(row)}) Tj`).join('\n')}\nET`;
   const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`];
   let pdf = '%PDF-1.4\n'; const offsets = [0]; objects.forEach((object, index) => { offsets.push(Buffer.byteLength(pdf)); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
@@ -44,7 +47,7 @@ export async function sendQuotationEmail(quote: DeliveredQuotation, publicLink: 
   const logo = logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(company)}" style="max-height:48px;max-width:180px;display:block;border:0">` : `<span style="font-size:20px;font-weight:700;color:#ffffff;letter-spacing:.3px">${escapeHtml(company)}</span>`;
   const th = 'padding:12px 14px;background:#f1f5f9;color:#475569;font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;border-bottom:1px solid #e2e8f0';
   const td = 'padding:14px;border-bottom:1px solid #eef2f7;font-size:14px;color:#1f2937';
-  const items = (quote.quotation_items ?? []).map((line) => `<tr><td style="${td}">${escapeHtml(line.products?.product_name ?? 'Product')}</td><td align="center" style="${td}">${line.quantity}</td><td align="right" style="${td}">${moneyHtml(line.unit_price)}</td><td align="right" style="${td};font-weight:600">${moneyHtml(line.subtotal)}</td></tr>`).join('');
+  const items = (quote.quotation_items ?? []).map((line) => `<tr><td style="${td}">${escapeHtml(lineName(line))}</td><td align="center" style="${td}">${escapeHtml(lineQty(line))}</td><td align="right" style="${td}">${moneyHtml(line.unit_price)}</td><td align="right" style="${td};font-weight:600">${moneyHtml(line.subtotal)}</td></tr>`).join('');
   const defaultBody = `<p style="margin:0 0 12px">Dear {{client_name}},</p><p style="margin:0 0 12px">Thank you for your interest. Please find your quotation below. You can review the full details and accept or decline it online using the button at the bottom of this email.</p>`;
   const body = interpolate(template?.body ?? defaultBody);
   const validLine = quote.valid_until ? `<tr><td style="padding:2px 0;color:#64748b;font-size:13px">Valid until</td><td style="padding:2px 0 2px 16px;font-size:13px;font-weight:600;color:#0f172a">${escapeHtml(quote.valid_until)}</td></tr>` : '';

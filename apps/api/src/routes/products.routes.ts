@@ -5,6 +5,7 @@ import { requireRoles } from '../middleware/authorize.js';
 export const productsRouter = Router();
 productsRouter.get('/products', authenticate, requireRoles('super_admin', 'admin', 'sales_manager', 'sales_representative'), products.list);
 productsRouter.post('/products', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), products.create);
+productsRouter.post('/products/image', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), products.uploadImage);
 productsRouter.patch('/products/:id', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), products.update);
 productsRouter.post('/products/:id/stock', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), products.changeStock);
 productsRouter.delete('/products/:id', authenticate, requireRoles('super_admin', 'admin'), products.remove);

@@ -2,7 +2,7 @@ import type { RequestHandler } from 'express';
 import { AppError } from '../errors/app-error.js';
 import { fieldActivityService } from '../services/field-activity.service.js';
 import { quotationService } from '../services/quotations.service.js';
-import { publicQuotationDecisionSchema, quotationCreateSchema, quotationDenySchema, quotationUpdateSchema } from '../validation/quotations.schemas.js';
+import { publicQuotationDecisionSchema, quotationCreateSchema, quotationDenySchema, quotationItemColourSchema, quotationUpdateSchema } from '../validation/quotations.schemas.js';
 import { env } from '../config/env.js';
 import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 
@@ -47,6 +47,15 @@ export const quotations: Record<string, RequestHandler> = {
       : null;
     const data = await quotationService.update(organizationId, representativeId, req.auth!.sub!, id(req.params.id), quotationUpdateSchema.parse(req.body), req.industryScope!);
     res.json({ data });
+  },
+  setItemColour: async (req, res) => {
+    const organizationId = org(req);
+    const representativeId = req.organizationRole === 'sales_representative'
+      ? (await fieldActivityService.currentRepresentative(organizationId, req.auth!.sub!)).id
+      : null;
+    const itemId = Array.isArray(req.params.itemId) ? req.params.itemId[0] : req.params.itemId;
+    const { colour } = quotationItemColourSchema.parse(req.body);
+    res.json({ data: await quotationService.setItemColour(organizationId, representativeId, id(req.params.id), String(itemId), colour, req.industryScope!) });
   },
   send: async (req, res) => {
     // Never derive a customer-facing URL from CORS origins or the current

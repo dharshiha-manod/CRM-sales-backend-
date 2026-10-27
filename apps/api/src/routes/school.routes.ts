@@ -7,9 +7,12 @@ import { authenticate } from '../middleware/authenticate.js';
 import { requireRoles } from '../middleware/authorize.js';
 import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 import { isSchoolIndustry } from '../lib/school.js';
+import { returnSchema } from '../repositories/sales-returns.repository.js';
+import { refundSchema } from '../repositories/fmcg-refunds.repository.js';
 import {
+  createSchoolRefund, createSchoolReturn, decideSchoolReturn, deleteSchoolReturn, listSchoolOrderReturns, schoolOrderRefunds,
   createAcademicYear, createPricingRule, createTerm, deleteAcademicYear, deletePricingRule, deleteTerm, listAcademicYears, listPricingRules,
-  ruleSchema, schoolLedger, schoolSalesSummary, termSchema, updateAcademicYear, updatePricingRule, updateTerm, yearSchema,
+  deliverySchema, ruleSchema, schoolLedger, schoolSalesSummary, termSchema, updateAcademicYear, updatePricingRule, updateSchoolDelivery, updateTerm, yearSchema,
 } from '../repositories/school.repository.js';
 
 type Req = Parameters<RequestHandler>[0];
@@ -55,3 +58,24 @@ schoolRouter.get('/school/sales-summary', authenticate, manage, async (req, res)
   res.json({ data: await schoolSalesSummary(org(req), await schoolId(req), { academicYearId: optionalUuid(req.query.academicYearId), termId: optionalUuid(req.query.termId) }) }));
 schoolRouter.get('/school/schools/:id/ledger', authenticate, manage, async (req, res) =>
   res.json({ data: await schoolLedger(org(req), await schoolId(req), idParam(req), { academicYearId: optionalUuid(req.query.academicYearId), termId: optionalUuid(req.query.termId) }) }));
+
+// Delivery of a School order: Pending -> Dispatched (stock goes out) -> Delivered (who received it)
+schoolRouter.patch('/school/orders/:id/delivery', authenticate, manage, async (req, res) =>
+  res.json({ data: await updateSchoolDelivery(org(req), await schoolId(req), idParam(req), deliverySchema.parse(req.body ?? {})) }));
+
+// Returns & damage for a delivered / dispatched School order (approved entries become a credit note on the order)
+schoolRouter.get('/school/orders/:id/returns', authenticate, manage, async (req, res) =>
+  res.json({ data: await listSchoolOrderReturns(org(req), await schoolId(req), idParam(req)) }));
+schoolRouter.post('/school/returns', authenticate, manage, async (req, res) =>
+  res.status(201).json({ data: await createSchoolReturn(org(req), req.auth!.sub as string, req.industryScope!, await schoolId(req), returnSchema.parse(req.body ?? {})) }));
+schoolRouter.post('/school/returns/:id/decision', authenticate, manage, async (req, res) => {
+  const { status } = z.object({ status: z.enum(['approved', 'rejected']) }).parse(req.body ?? {});
+  res.json({ data: await decideSchoolReturn(org(req), req.auth!.sub as string, req.industryScope!, await schoolId(req), idParam(req), status) });
+});
+schoolRouter.delete('/school/returns/:id', authenticate, manage, async (req, res) => { await deleteSchoolReturn(org(req), req.industryScope!, await schoolId(req), idParam(req)); res.status(204).send(); });
+
+// Refund: pay back what a school overpaid after an approved return credit
+schoolRouter.get('/school/orders/:id/refunds', authenticate, manage, async (req, res) =>
+  res.json({ data: await schoolOrderRefunds(org(req), await schoolId(req), idParam(req)) }));
+schoolRouter.post('/school/refunds', authenticate, manage, async (req, res) =>
+  res.status(201).json({ data: await createSchoolRefund(org(req), req.auth!.sub as string, req.industryScope!, await schoolId(req), refundSchema.parse(req.body ?? {})) }));

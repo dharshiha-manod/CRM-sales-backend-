@@ -1,4 +1,5 @@
 import { AppError } from '../errors/app-error.js';
+import { isSchoolIndustry } from '../lib/school.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { assertRecordInScope, resolveIndustryTypeId } from '../lib/industry-scope.js';
@@ -136,7 +137,7 @@ async function withAchievement<T extends {
     if (!buckets.has(key)) buckets.set(key, { representativeId: r.representative_id, industryTypeId: r.industry_type_id, start: r.period_start, end: r.period_end });
   }
 
-  type Agg = { ordersAmount: number; ordersCount: number; itemQty: number; collections: number; visits: number; newCustomers: number };
+  type Agg = { ordersAmount: number; ordersCount: number; itemQty: number; collections: number; visits: number; newCustomers: number; students?: number };
   const agg = new Map<string, Agg>();
 
   await Promise.all([...buckets.entries()].map(async ([key, b]) => {
@@ -178,6 +179,22 @@ async function withAchievement<T extends {
       itemQty = (items ?? []).reduce((sum, i) => sum + Number(i.quantity), 0);
     }
 
+    // School only: admission / enrollment targets count real students (the strength of the schools newly assigned to the rep).
+    let students: number | undefined;
+    if (rows.some((r) => bucketKey(r) === key && (r.target_type === 'admission_target' || r.target_type === 'student_enrollment')) && await isSchoolIndustry(organizationId, b.industryTypeId)) {
+      const { data: assigned, error: assignedError } = await supabaseAdmin.from('sales_representative_client_assignments')
+        .select('clients!inner(industry_type_id, industry_details)')
+        .eq('organization_id', organizationId).eq('sales_representative_id', b.representativeId)
+        .eq('clients.industry_type_id', b.industryTypeId).eq('status', 'active')
+        .gte('assigned_at', startTs).lte('assigned_at', endTs);
+      if (assignedError) fail(assignedError);
+      students = (assigned ?? []).reduce((sum, row) => {
+        const related = (row as unknown as { clients?: unknown }).clients;
+        const client = (Array.isArray(related) ? related[0] : related) as { industry_details?: { studentStrength?: unknown } | null } | null | undefined;
+        return sum + (Number(client?.industry_details?.studentStrength ?? 0) || 0);
+      }, 0);
+    }
+
     agg.set(key, {
       // base_total is the INR value of the order (a USD order's total_amount is in dollars); older orders fall back to total_amount.
       ordersAmount: (orders.data ?? []).reduce((sum, o) => sum + Number(o.base_total ?? o.total_amount), 0),
@@ -186,6 +203,7 @@ async function withAchievement<T extends {
       collections: (collections.data ?? []).reduce((sum, c) => sum + Number(c.amount) * (Number((c as { sale_orders?: { exchange_rate?: number | null } | null }).sale_orders?.exchange_rate ?? 1) || 1), 0),
       visits: visits.count ?? 0,
       newCustomers: newCustomers.count ?? 0,
+      students,
     });
   }));
 
@@ -206,6 +224,7 @@ async function withAchievement<T extends {
     else if (QUANTITY_TYPES.has(r.target_type)) achieved = a.itemQty;
     else if (COLLECTION_TYPES.has(r.target_type)) achieved = a.collections;
     else if (VISIT_TYPES.has(r.target_type)) achieved = a.visits;
+    else if ((r.target_type === 'admission_target' || r.target_type === 'student_enrollment') && a.students !== undefined) achieved = a.students;
     else if (CUSTOMER_TYPES.has(r.target_type)) achieved = a.newCustomers;
     else if (r.target_type === 'followups') achieved = a.visits;
     return { ...r, achieved_value: achieved, activity: { orders: a.ordersCount, collections: a.collections, visits: a.visits, newCustomers: a.newCustomers } };

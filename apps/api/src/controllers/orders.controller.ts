@@ -2,7 +2,7 @@ import type { RequestHandler } from 'express';
 import { AppError } from '../errors/app-error.js';
 import { fieldActivityService } from '../services/field-activity.service.js';
 import { orderService } from '../services/orders.service.js';
-import { orderCreateSchema, orderManualCreateSchema, orderCancelSchema, orderUpdateSchema } from '../validation/orders.schemas.js';
+import { orderCreateSchema, orderManualCreateSchema, orderCancelSchema, orderUpdateSchema, orderDistributorSchema } from '../validation/orders.schemas.js';
 import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 
 const org = (req: Parameters<RequestHandler>[0]) => { const value = req.header('x-organization-id'); if (!value) throw new AppError(400, 'ORGANIZATION_CONTEXT_REQUIRED', 'x-organization-id is required'); return value; };
@@ -18,5 +18,6 @@ export const orders: Record<string, RequestHandler> = {
   },
   cancel: async (req, res) => { const { reason } = orderCancelSchema.parse(req.body); res.json({ data: await orderService.cancel(org(req), req.industryScope!, id(req.params.id), reason) }); },
   approve: async (req, res) => { res.json({ data: await orderService.approve(org(req), req.industryScope!, id(req.params.id)) }); },
+  assignDistributor: async (req, res) => { res.json({ data: await orderService.assignDistributor(org(req), req.industryScope!, id(req.params.id), orderDistributorSchema.parse(req.body).distributorId) }); },
   update: async (req, res) => { res.json({ data: await orderService.update(org(req), req.industryScope!, id(req.params.id), orderUpdateSchema.parse(req.body)) }); }
 };

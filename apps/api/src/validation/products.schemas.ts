@@ -21,6 +21,25 @@ export const productCreateSchema = z.object({
   shelfLifeDays: z.number().int().positive().max(36500).optional().nullable(),
   /** Reorder level: at or below this many units the product shows up in FMCG low-stock alerts. */   // <-- NEW
   minStockLevel: z.number().nonnegative().optional().nullable(),                                       // <-- NEW
+  /** Textile only: fabric type, width, GSM, length per roll and the colour list. Stored as one JSON column. */
+  textileDetails: z.object({
+    fabricType: z.string().trim().max(80).optional().nullable(),
+    composition: z.string().trim().max(160).optional().nullable(),
+    width: z.number().nonnegative().max(100000).optional().nullable(),
+    widthUnit: z.enum(['in', 'cm']).optional().nullable(),
+    gsm: z.number().nonnegative().max(100000).optional().nullable(),
+    lengthPerRoll: z.number().nonnegative().max(1000000).optional().nullable(),
+    lengthUnit: z.enum(['m', 'yd']).optional().nullable(),
+    pattern: z.string().trim().max(120).optional().nullable(),
+    designCode: z.string().trim().max(80).optional().nullable(),
+    sizes: z.array(z.string().trim().min(1).max(30)).max(30).optional(),
+    imageUrl: z.string().trim().url().max(600).optional().nullable(),
+    colors: z.array(z.object({
+      name: z.string().trim().min(1).max(80),
+      code: z.string().trim().max(40).optional().nullable(),
+      quantity: z.number().nonnegative().max(100000000).optional().nullable(),
+    })).max(100).optional(),
+  }).optional().nullable(),
   industryTypeIds: z.array(z.string().uuid()).max(50).optional(),
 });
 export const productUpdateSchema = productCreateSchema.partial();
@@ -30,3 +49,5 @@ export const productStockChangeSchema = z.object({
   delta: z.number().finite().refine((n) => n !== 0, 'Quantity change cannot be zero.'),
   allowNegative: z.boolean().optional().default(false),
 });
+// Textile product picture, sent as a small data URL (the admin shrinks it first) and stored in Supabase Storage.
+export const productImageSchema = z.object({ dataUrl: z.string().max(1_400_000).regex(/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/, 'Upload a JPG, PNG or WebP image.') });

@@ -10,4 +10,5 @@ ordersRouter.get('/orders', authenticate, requireRoles('super_admin', 'admin', '
 ordersRouter.post('/orders', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), orders.createManual);
 ordersRouter.post('/orders/:id/cancel', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), orders.cancel);
 ordersRouter.post('/orders/:id/approve', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), orders.approve);
+ordersRouter.patch('/orders/:id/distributor', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), orders.assignDistributor);
 ordersRouter.patch('/orders/:id', authenticate, requireRoles('super_admin', 'admin', 'sales_manager'), orders.update);
