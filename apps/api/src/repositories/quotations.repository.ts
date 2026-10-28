@@ -10,7 +10,7 @@ import { getQuotationEmailTemplate } from './quotation-email-templates.repositor
 import { ensureLogisticsPlan } from '../lib/logistics-plan.js';
 import { assertWithinCreditLimit } from '../lib/credit.js';
 import { documentCurrencyForClient, isFmcgIndustry, toBase } from '../lib/fmcg-market.js';
-import { planAllocations, takeStockForOrder } from '../lib/stock.js';
+import { planAllocations, takeStockForOrder, tracksOrderStock } from '../lib/stock.js';
 import { bestSchemeFor, loadLiveSchemes } from '../lib/fmcg-schemes.js';
 import { applySchoolAdvance, loadSchoolContext, schoolRuleFor, schoolStamp } from '../lib/school.js';
 
@@ -165,7 +165,7 @@ export async function convertToOrder(organizationId: string, representativeId: s
   await assertWithinCreditLimit(organizationId, quotation.client_id as string | null, Number(quotation.base_total ?? quotation.total_amount ?? 0));
    const quotationValue = Number(quotation.base_total ?? quotation.total_amount ?? 0);
   if (quotationValue < orderConfig.minOrderValue) throw new AppError(422, 'ORDER_BELOW_MINIMUM', `Order total (₹${quotationValue}) is below the minimum order value of ₹${orderConfig.minOrderValue} set in Settings.`);
-  if (await isFmcgIndustry(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
+  if (await tracksOrderStock(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
     await planAllocations(organizationId, (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ product_id: item.product_id as string, quantity: item.quantity, free_quantity: item.free_quantity ?? 0 })));
   }
   const number = await uniqueOrderNumber(organizationId, orderConfig.numberingFormat);
@@ -182,14 +182,14 @@ export async function convertToOrder(organizationId: string, representativeId: s
   if (claimError) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); fail(claimError); }
   if (!claimed) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); return getQuotation(organizationId, id, scope); }
   // FMCG orders take stock (first-expiry-first-out). If stock is short the order is removed and the quotation goes back to approved.
-  if (await isFmcgIndustry(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
+  if (await tracksOrderStock(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
     try { await takeStockForOrder(organizationId, order.id as string); } catch (stockError) {
       await supabaseAdmin.from('quotations').update({ status: quotation.status, converted_order_id: null }).eq('id', id).eq('organization_id', organizationId);
       await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId);
       throw stockError;
     }
   }
-  if (await isFmcgIndustry(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
+  if (await tracksOrderStock(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
     try { await takeStockForOrder(organizationId, order.id as string); } catch (stockError) {
       await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId);
       throw stockError;

@@ -8,6 +8,7 @@ import { requireRoles } from '../middleware/authorize.js';
 import { assertRecordInScope, resolveIndustryTypeId } from '../lib/industry-scope.js';
 import { TEXTILE_RESOURCES, type TextileResource } from '../lib/textile-resources.js';
 import { createMovement } from '../repositories/inventory.repository.js';
+import { syncProductStockFromRolls } from '../lib/textile-rolls.js';
 
 export const textileRouter = Router();
 const manager = requireRoles('super_admin', 'admin', 'sales_manager');
@@ -153,32 +154,6 @@ async function syncVariantStockToInventory(req: Req, variant: Row, delta: number
   });
 }
 
-// Roll -> Product link: a product's colour quantities and total stock are the remaining metres of its 'In stock' rolls.
-// Best effort: a failure here never blocks saving the roll.
-async function syncProductStockFromRolls(orgId: string, productCode: unknown) {
-  if (typeof productCode !== 'string' || !productCode) return;
-  try {
-    const { data: product } = await supabaseAdmin.from('products').select('id, textile_details')
-      .eq('organization_id', orgId).eq('product_code', productCode).maybeSingle();
-    if (!product) return;
-    const { data: rolls } = await supabaseAdmin.from('textile_fabric_rolls').select('colour, length_meters')
-      .eq('organization_id', orgId).eq('product_code', productCode).eq('status', 'In stock');
-    const list = (rolls ?? []) as { colour: string | null; length_meters: number | null }[];
-    const byColour = new Map<string, number>();
-    let total = 0;
-    for (const roll of list) {
-      const metres = Number(roll.length_meters) || 0;
-      total += metres;
-      const key = String(roll.colour ?? '').trim().toLowerCase();
-      byColour.set(key, (byColour.get(key) ?? 0) + metres);
-    }
-    const details = ((product as { textile_details?: Row | null }).textile_details ?? {}) as { colors?: { name: string; code?: string | null; quantity?: number | null }[] };
-    const colors = (details.colors ?? []).map((c) => ({ ...c, quantity: byColour.get(String(c.name).trim().toLowerCase()) ?? 0 }));
-    await supabaseAdmin.from('products').update({ stock_quantity: total, textile_details: { ...details, colors } })
-      .eq('organization_id', orgId).eq('id', (product as { id: string }).id);
-  } catch { /* keep roll saving even if the product sync fails */ }
-}
-
 async function afterSave(table: string, orgId: string, row: Row) {
   if (table === 'textile_fabric_rolls') await syncProductStockFromRolls(orgId, row.product_code);
   if (table === 'textile_quality_inspections') await syncRollFromInspection(orgId, row);
@@ -203,16 +178,6 @@ async function assertCanDelete(table: string, orgId: string, row: Row) {
       throw new AppError(409, 'RECORD_IN_USE', `This design is used by ${variants} colour/size variant(s) and ${samples} sample(s). Remove or reassign them first.`);
     }
   }
-  if (table === 'textile_distributors') {
-    const { count, error } = await supabaseAdmin.from('sale_orders').select('id', { count: 'exact', head: true }).eq('organization_id', orgId).eq('distributor_id', row.id as string);
-    if (error) throw error;
-    if (count) throw new AppError(409, 'RECORD_IN_USE', `This distributor is assigned to ${count} order(s). Reassign them first, or mark the distributor Inactive.`);
-  }
-    if (table === 'textile_distributors') {
-    const { count, error } = await supabaseAdmin.from('sale_orders').select('id', { count: 'exact', head: true }).eq('organization_id', orgId).eq('distributor_id', row.id as string);
-    if (error) throw error;
-    if (count) throw new AppError(409, 'RECORD_IN_USE', `This distributor is assigned to ${count} order(s). Reassign them first, or mark the distributor Inactive.`);
-  }
   if (table === 'textile_fabric_rolls') {
     if (row.order_id && ['Issued', 'Sold'].includes(String(row.status))) {
       throw new AppError(409, 'RECORD_IN_USE', `This roll is ${String(row.status)} against order ${String(row.order_number ?? '')}. Release it from the order first.`);
@@ -225,17 +190,19 @@ async function assertCanDelete(table: string, orgId: string, row: Row) {
 // ---- Fabric roll <-> Order link ------------------------------------------------
 // Roll.status follows its order: confirmed order -> Issued, dispatched / delivered / completed -> Sold,
 // cancelled -> released back to In stock. Orders themselves are never modified from here.
-type OrderRow = { id: string; order_number: string; status: string; dispatch_status?: string | null };
+type OrderRow = { id: string; order_number: string; status: string; dispatch_status?: string | null; textile_delivery_status?: string | null };
 const today = () => new Date().toISOString().slice(0, 10);
 function rollStatusForOrder(o: OrderRow): 'Issued' | 'Sold' | 'Release' {
   if (o.status === 'cancelled') return 'Release';
   if (o.status === 'completed' || ['dispatched', 'delivered'].includes(String(o.dispatch_status ?? ''))) return 'Sold';
+  // Delivery tracking: once the fabric has left for the client, the rolls are sold.
+  if (['dispatched', 'out_for_delivery', 'delivered'].includes(String(o.textile_delivery_status ?? ''))) return 'Sold';
   return 'Issued';
 }
 
 async function loadOrderForRoll(orgId: string, industryTypeId: string, orderId: string): Promise<OrderRow> {
   const { data, error } = await supabaseAdmin.from('sale_orders')
-    .select('id, order_number, status, dispatch_status, clients!inner(industry_type_id)')
+    .select('id, order_number, status, dispatch_status, textile_delivery_status, clients!inner(industry_type_id)')
     .eq('organization_id', orgId).eq('id', orderId).maybeSingle();
   if (error) throw error;
   const row = data as (OrderRow & { clients: { industry_type_id?: string | null } | { industry_type_id?: string | null }[] }) | null;
@@ -245,6 +212,39 @@ async function loadOrderForRoll(orgId: string, industryTypeId: string, orderId: 
   }
   if (row.status === 'cancelled') throw new AppError(400, 'INVALID_REFERENCE', 'A cancelled order cannot be allocated to a roll.');
   return row;
+}
+
+// A roll may only be allocated when: its latest inspection is Pass, it is the same product as an order line,
+// and the order still needs more metres of that product.
+async function assertRollCanBeAllocated(orgId: string, industryTypeId: string, orderId: string, roll: { id?: string; roll_number?: unknown; product_code?: unknown }) {
+  const rollNumber = typeof roll.roll_number === 'string' ? roll.roll_number : '';
+  const productCode = typeof roll.product_code === 'string' ? roll.product_code : '';
+  if (!productCode) throw new AppError(400, 'VALIDATION_ERROR', 'Set the product code on this roll before allocating it to an order.');
+
+  const { data: insp, error: ie } = await supabaseAdmin.from('textile_quality_inspections').select('status')
+    .eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('roll_number', rollNumber)
+    .order('inspection_date', { ascending: false }).order('created_at', { ascending: false }).limit(1);
+  if (ie) throw ie;
+  const latest = (insp as { status: string }[] | null)?.[0];
+  if (!latest) throw new AppError(400, 'INSPECTION_REQUIRED', `Roll ${rollNumber} has no quality inspection. Inspect it (Pass) before allocating it to an order.`);
+  if (latest.status !== 'Pass') throw new AppError(400, 'INSPECTION_REQUIRED', `Roll ${rollNumber} did not pass its latest quality inspection.`);
+
+  const { data: lines, error: le } = await supabaseAdmin.from('sale_order_items')
+    .select('quantity, free_quantity, products(product_code)').eq('order_id', orderId);
+  if (le) throw le;
+  let needed = 0; let matched = false;
+  for (const l of (lines ?? []) as unknown as { quantity: number | null; free_quantity: number | null; products: { product_code?: string } | { product_code?: string }[] | null }[]) {
+    const p = Array.isArray(l.products) ? l.products[0] : l.products;
+    if (p?.product_code === productCode) { matched = true; needed += (Number(l.quantity) || 0) + (Number(l.free_quantity) || 0); }
+  }
+  if (!matched) throw new AppError(400, 'VALIDATION_ERROR', `This order has no line for product ${productCode}. The roll must be the same product as the order.`);
+
+  let q = supabaseAdmin.from('textile_fabric_rolls').select('length_meters')
+    .eq('organization_id', orgId).eq('order_id', orderId).eq('product_code', productCode).in('status', ['Issued', 'Sold']);
+  if (roll.id) q = q.neq('id', roll.id);
+  const { data: others } = await q;
+  const allocated = ((others ?? []) as { length_meters: number | null }[]).reduce((s, r) => s + (Number(r.length_meters) || 0), 0);
+  if (allocated >= needed) throw new AppError(409, 'ORDER_FULLY_ALLOCATED', `This order is already fully covered (${allocated} m allocated of ${needed} m ordered).`);
 }
 
 // Prepares the order-link columns of a Fabric Roll before it is saved. `existing` is null on create.
@@ -267,6 +267,11 @@ async function prepareRollOrderLink(orgId: string, industryTypeId: string, paylo
   if (oldStatus === 'Damaged' || payload.status === 'Damaged') throw new AppError(400, 'VALIDATION_ERROR', 'A damaged roll cannot be allocated to an order.');
   if (oldStatus === 'Sold') throw new AppError(409, 'ROLL_ALREADY_SOLD', 'This roll is already sold and cannot be moved to another order.');
   const order = await loadOrderForRoll(orgId, industryTypeId, newOrderId);
+  await assertRollCanBeAllocated(orgId, industryTypeId, order.id, {
+    id: existing?.id as string | undefined,
+    roll_number: payload.roll_number ?? existing?.roll_number,
+    product_code: payload.product_code ?? existing?.product_code,
+  });
   payload.order_id = order.id;
   payload.order_number = order.order_number;
   const next = rollStatusForOrder(order);
@@ -285,7 +290,7 @@ async function syncRollsFromOrders(orgId: string, industryTypeId: string | null)
     const list = (rolls ?? []) as { id: string; status: string; order_id: string; product_code?: string | null }[];
     if (!list.length) return;
     const ids = [...new Set(list.map((r) => r.order_id))];
-    const { data: orders } = await supabaseAdmin.from('sale_orders').select('id, order_number, status, dispatch_status')
+    const { data: orders } = await supabaseAdmin.from('sale_orders').select('id, order_number, status, dispatch_status, textile_delivery_status')
       .eq('organization_id', orgId).in('id', ids);
     const byId = new Map(((orders ?? []) as OrderRow[]).map((o) => [o.id, o]));
     for (const roll of list) {
@@ -350,37 +355,6 @@ textileRouter.get('/textile/fabric-rolls-summary', authenticate, reader, async (
   } });
 });
 
-// Distributor performance: orders assigned to each distributor, metres to deliver, rolls issued against those orders.
-const isMetreUnit = (unit: unknown) => !unit || /^(m|mtr|mtrs|meter|meters|metre|metres)$/i.test(String(unit).trim());
-async function withDistributorStats(orgId: string, rows: Row[]): Promise<Row[]> {
-  if (!rows.length) return rows;
-  try {
-    const ids = rows.map((r) => String(r.id));
-    const { data: orders, error } = await supabaseAdmin.from('sale_orders')
-      .select('id, distributor_id, sale_order_items(quantity, products(unit))')
-      .eq('organization_id', orgId).in('distributor_id', ids).neq('status', 'cancelled');
-    if (error) throw error;
-    type O = { id: string; distributor_id: string; sale_order_items?: { quantity: number; products?: { unit?: string | null } | { unit?: string | null }[] | null }[] };
-    const list = (orders ?? []) as unknown as O[];
-    const orderIds = list.map((o) => o.id);
-    const rolls: { order_id: string; length_meters: number | null }[] = [];
-    for (let i = 0; i < orderIds.length; i += 100) {
-      const { data } = await supabaseAdmin.from('textile_fabric_rolls').select('order_id, length_meters').eq('organization_id', orgId).in('order_id', orderIds.slice(i, i + 100));
-      rolls.push(...((data ?? []) as { order_id: string; length_meters: number | null }[]));
-    }
-    return rows.map((r) => {
-      const mine = list.filter((o) => o.distributor_id === r.id);
-      const mineIds = new Set(mine.map((o) => o.id));
-      const metres = mine.reduce((sum, o) => sum + (o.sale_order_items ?? []).reduce((s, i) => {
-        const p = Array.isArray(i.products) ? i.products[0] : i.products;
-        return isMetreUnit(p?.unit) ? s + (Number(i.quantity) || 0) : s;
-      }, 0), 0);
-      const myRolls = rolls.filter((x) => mineIds.has(x.order_id));
-      return { ...r, orders_handled: mine.length, metres_ordered: metres, rolls_issued: myRolls.length, metres_issued: myRolls.reduce((s, x) => s + (Number(x.length_meters) || 0), 0) };
-    });
-  } catch { return rows; } // stats are a bonus: never block the distributor list
-}
-
 // ---- generic CRUD ------------------------------------------------------------
 
 for (const r of TEXTILE_RESOURCES) {
@@ -388,7 +362,6 @@ for (const r of TEXTILE_RESOURCES) {
   const notFound = () => new AppError(404, 'RECORD_NOT_FOUND', `${r.path} record was not found.`);
   const isVariants = r.table === 'textile_variants';
   const isRolls = r.table === 'textile_fabric_rolls';
-  const isDistributors = r.table === 'textile_distributors';
   const readRoles = r.table === 'textile_quality_inspections' ? manager : reader; // reps: read-only, not on Quality
 
   textileRouter.get(base, authenticate, readRoles, async (req, res) => {
@@ -398,7 +371,7 @@ for (const r of TEXTILE_RESOURCES) {
     if (industryTypeId) q = q.eq('industry_type_id', industryTypeId);
     const { data, error } = await q;
     if (error) throw error;
-    res.json({ data: isVariants ? await withInventoryStatus(org(req), (data ?? []) as Row[]) : isDistributors ? await withDistributorStats(org(req), (data ?? []) as Row[]) : data });
+    res.json({ data: isVariants ? await withInventoryStatus(org(req), (data ?? []) as Row[]) : data });
   });
 
   textileRouter.get(`${base}/:id`, authenticate, readRoles, async (req, res) => {
