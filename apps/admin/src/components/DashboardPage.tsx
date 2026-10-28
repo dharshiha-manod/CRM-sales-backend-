@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { collectionsInInr, ordersInInr } from '../lib/inr';
 import { useIndustryScope } from '../industry/useIndustryScope';
+import { PharmaInsightsPanel } from './PharmaInsightsPanel';
 import './DashboardPage.css';
 type RecentVisit = { id: string; status: string; check_in_time: string; outcome?: string | null; clients?: { client_code?: string; client_name?: string } | null; sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null };
 type Data = { totalClients: number; totalRepresentatives: number; activeRepresentatives: number; visitsToday: number; completedVisitsToday: number; activeVisits: number; ordersToday: number; salesToday: number; collectionsToday: number; recentVisits: RecentVisit[] };
@@ -296,6 +297,7 @@ export function DashboardPage() {
         ))}
        </div>
 
+      {activeIndustry === 'pharma' && activeIndustryTypeId && <PharmaInsightsPanel industryTypeId={activeIndustryTypeId} />}
       {activeIndustry === 'trading' && (
         <section className="ops-panel">
           <header><div><p className="eyebrow">TRADING</p><h2>Deal pipeline</h2></div></header>

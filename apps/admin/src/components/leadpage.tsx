@@ -141,6 +141,7 @@ const priorityLabels: Record<string, string> = { low: 'Low', normal: 'Normal', h
 const companyNameLabels: Partial<Record<IndustryKey, string>> = {
   school: 'School name',
   textile: 'Business name',
+  pharma: 'Account name',
   trading: 'Company name',
   vehicle: 'Dealer name',
 };
@@ -210,9 +211,15 @@ const customerTypeConfig: Record<IndustryKey, FieldConfig> = {
     fieldLabel: 'Customer type',
     options: [
       ['retailer', 'Retail pharmacy'],
+      ['chain_pharmacy', 'Chain pharmacy'],
       ['hospital', 'Hospital'],
-      ['distributor', 'Distributor'],
-      ['institution', 'Institution'],
+      ['clinic', 'Clinic / Nursing home'],
+      ['medical_college', 'Medical college / Teaching hospital'],
+      ['diagnostic_lab', 'Diagnostic lab'],
+      ['distributor', 'Distributor / Stockist'],
+      ['super_stockist', 'Super stockist'],
+      ['wholesaler', 'Wholesaler'],
+      ['institution', 'Institution (Govt / Trust / Corporate)'],
     ],
   },
   textile: {
@@ -1261,7 +1268,7 @@ async function suggestRep() {
             <thead>
               <tr>
                           <th>Lead</th>
-{activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && <th>{fieldLabelText(shopTypeConfig, activeIndustry)}</th>}
+{activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && activeIndustry !== 'pharma' && <th>{fieldLabelText(shopTypeConfig, activeIndustry)}</th>}
                 <th>Representative</th>
                 <th>Contact</th>
                 <th>Email</th>
@@ -1280,7 +1287,7 @@ async function suggestRep() {
                                       <td>
                       <strong>{lead.company_name}</strong>
                       <small className="lead-code">{lead.lead_code}</small>
-                    </td>{activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && <td>{optionLabel(shopTypeConfig, activeIndustry, meta.shopType)}</td>}
+                    </td>{activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && activeIndustry !== 'pharma' && <td>{optionLabel(shopTypeConfig, activeIndustry, meta.shopType)}</td>}
                     <td>{(() => { const repLabel = lead.sales_representatives?.user_profiles?.display_name ?? lead.sales_representatives?.employee_code; return repLabel ? <span className="lp-rep"><i>{repLabel.slice(0, 1).toUpperCase()}</i>{repLabel}</span> : <span className="lp-unassigned">Unassigned</span>; })()}</td>
                     <td>
                       {lead.contact_name && <span>{lead.contact_name}</span>}
@@ -1437,7 +1444,7 @@ async function suggestRep() {
                   <dd>{unpackFmcgMeta(selected.notes).meta.areaRoute || '—'}</dd>
                 </>
               )}
-                        {activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && (
+                        {activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && activeIndustry !== 'pharma' && (
                 <>
                   <dt>{fieldLabelText(shopTypeConfig, activeIndustry)}</dt>
                   <dd>{optionLabel(shopTypeConfig, activeIndustry, unpackFmcgMeta(selected.notes).meta.shopType)}</dd>
@@ -1771,7 +1778,7 @@ async function suggestRep() {
                       <input placeholder="e.g. Route 4 - MG Road belt" value={form.areaRoute} onChange={(e) => setForm({ ...form, areaRoute: e.target.value })} />
                     </label>
                   )}
-               {activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && (
+               {activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && activeIndustry !== 'pharma' && (
                     <label>
                       {fieldLabelText(shopTypeConfig, activeIndustry)}
                       <LeadTypeComboBox

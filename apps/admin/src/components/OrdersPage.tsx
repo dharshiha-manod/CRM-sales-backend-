@@ -12,6 +12,8 @@ import { SchoolPeriodTag } from './SchoolPeriodTag';
 import { SchoolDeliveryBadge, SchoolDeliveryPanel } from './SchoolDeliveryPanel';
 import { SchoolReturnsPanel } from './SchoolReturnsPanel';
 import { SchoolRefundPanel } from './SchoolRefundPanel';
+import { TextileDeliveryBadge, TextileDeliveryPanel } from './TextileDeliveryPanel';
+import { TextileRollsPanel } from './TextileRollsPanel';
 
 const ORDER_DOC_TYPES = ['Commercial Invoice', 'Packing List', 'Delivery Note', 'Bill of Lading', 'Other'];
 
@@ -47,6 +49,11 @@ type Order = {
   distributor_id?: string | null; // Textile only
   distributor_code?: string | null;
   distributor_name?: string | null;
+  client_id?: string | null;
+  textile_delivery_status?: string | null; // Textile distributor delivery
+  textile_dispatched_at?: string | null; textile_delivered_at?: string | null; textile_received_by?: string | null; textile_delivery_note?: string | null;
+  textile_commission_percent?: number | null; textile_commission_amount?: number | null;
+  textile_settlement_status?: string | null; textile_settled_at?: string | null; textile_settlement_ref?: string | null;
   quotation_id?: string | null; // not populated by every API response — rendered/matched only if present
   clients?: { client_code?: string; client_name?: string; country_code?: string | null; industry_types?: { name?: string } | null } | null;
   incoterm?: string | null;
@@ -70,7 +77,6 @@ type VisitRef = {
   clients?: { client_name?: string } | null;
 };
 type AddClient = { id: string; client_code: string; client_name: string; outlet_type?: string | null; status?: string | null; sales_representative_client_assignments?: Array<{ status: string; sales_representative_id: string }> | null };
-type DistOption = { id: string; distributor_code: string; distributor_name: string; status: string };
 type AddProduct = { id: string; product_code: string; product_name: string; selling_price: number; unit?: string | null; textile_details?: { colors?: { name: string; code?: string | null }[] } | null };
 type AddRep = { id: string; employee_code: string; status: string; user_profiles?: { display_name?: string | null } | null };
 type AddOrderLine = { productId: string; quantity: string; discountPercent: string; freeQuantity: string; colour: string };
@@ -231,19 +237,6 @@ export function OrdersPage() {
   const [addSaving, setAddSaving] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [addSuccess, setAddSuccess] = useState<string | null>(null);
-  // Textile only: the distributor who delivers the order to the client (Model B).
-  const [addDistributorId, setAddDistributorId] = useState('');
-  const [distOptions, setDistOptions] = useState<DistOption[]>([]);
-  const [distSaving, setDistSaving] = useState(false);
-  const [distError, setDistError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!isTextile || !activeIndustryTypeId) return;
-    let cancelled = false;
-    api<{ data: DistOption[] }>(`/textile/distributors?industryTypeId=${activeIndustryTypeId}`)
-      .then((res) => { if (!cancelled) setDistOptions((res.data ?? []).filter((d) => d.status === 'Active')); })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [isTextile, activeIndustryTypeId]);
 
   async function load() {
     setLoading(true);
@@ -358,7 +351,6 @@ export function OrdersPage() {
        setAddClientId('');
     setAddClientMode('existing');
     setAddClientName('');
-    setAddDistributorId('');
     setAddLines([emptyAddLine]);
     setAddNotes('');
     setAddRepId('');
@@ -414,7 +406,6 @@ export function OrdersPage() {
           clientId: addClientMode === 'existing' ? addClientId : null,
           clientName: addClientMode === 'outside' ? addClientName.trim() : null,
           representativeId: addRepId,
-          ...(isTextile && addClientMode === 'existing' && addDistributorId ? { distributorId: addDistributorId } : {}),
           items: validLines.map((line) => ({
             productId: line.productId,
             quantity: Number(line.quantity),
@@ -432,20 +423,6 @@ export function OrdersPage() {
       setAddError(caught instanceof Error ? caught.message : 'Unable to create this order.');
     } finally {
       setAddSaving(false);
-    }
-  }
-  async function saveDistributor(value: string) {
-    if (!selected) return;
-    setDistSaving(true);
-    setDistError(null);
-    try {
-      const res = await api<{ data: { distributor_id: string | null; distributor_code: string | null; distributor_name: string | null } }>(`/orders/${selected.id}/distributor`, { method: 'PATCH', body: JSON.stringify({ distributorId: value || null }) });
-      setSelected((s) => (s ? { ...s, distributor_id: res.data.distributor_id, distributor_code: res.data.distributor_code, distributor_name: res.data.distributor_name } : s));
-      await load();
-    } catch (caught) {
-      setDistError(caught instanceof Error ? caught.message : 'Unable to save the distributor.');
-    } finally {
-      setDistSaving(false);
     }
   }
   function clearFilters() {
@@ -733,7 +710,7 @@ export function OrdersPage() {
                         <td>{itemCount} {itemCount === 1 ? 'Item' : 'Items'}</td>
                         <td>{currency(order.total_amount, order.currency_code ?? 'INR')}{order.currency_code && order.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(order.base_total ?? 0))}</small>}{payableOf(order) > Number(order.total_amount) + 0.005 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Invoiced {currency(payableOf(order), order.currency_code ?? 'INR')} (with extra charges)</small>}{Number(order.returns_credit ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Returns credit − {currency(Number(order.returns_credit), order.currency_code ?? 'INR')}</small>}{activeIndustry === 'school' && Number(order.refunded_amount ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--green)' }}>Refunded {currency(Number(order.refunded_amount), order.currency_code ?? 'INR')}</small>}{activeIndustry === 'school' && Number(order.returns_credit ?? 0) > 0 && (collected[order.order_number] ?? 0) - Number(order.refunded_amount ?? 0) + Number(order.returns_credit ?? 0) - Number(order.total_amount) > 0.005 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--red)' }}>Refund due {currency((collected[order.order_number] ?? 0) - Number(order.refunded_amount ?? 0) + Number(order.returns_credit ?? 0) - Number(order.total_amount), order.currency_code ?? 'INR')}</small>}</td>
                         <td><span className={`status-badge status-${ps.tone === 'good' ? 'paid' : ps.tone === 'warn' ? 'quoted' : 'overdue'}`}>{ps.tone === 'good' ? 'Paid' : ps.tone === 'warn' ? 'Partial' : 'Outstanding'}</span></td>
-                        <td><span className={`status-badge status-${order.status}`}>{order.status}</span>{activeIndustry === 'school' && <SchoolDeliveryBadge order={order} />}</td>
+                        <td><span className={`status-badge status-${order.status}`}>{order.status}</span>{activeIndustry === 'school' && <SchoolDeliveryBadge order={order} />}{isTextile && <TextileDeliveryBadge order={order} />}</td>
                         {activeIndustry === 'fmcg' && (
                           <td>
                             {order.status === 'confirmed' || order.status === 'completed'
@@ -911,26 +888,8 @@ export function OrdersPage() {
                 </div>
               </div>
 
-              {isTextile && (
-                <div className="qd-panel">
-                  <div className="qd-panel-head">
-                    <span>Distributor delivery</span>
-                    <span className={`qd-pill ${selected.distributor_id ? 'ok' : 'warn'}`}>{selected.distributor_id ? 'Assigned' : 'Direct'}</span>
-                  </div>
-                  <div className="qd-fields">
-                    <label>
-                      Distributor
-                      <select value={selected.distributor_id ?? ''} disabled={distSaving || selected.status === 'cancelled' || selected.status === 'completed'} onChange={(e) => void saveDistributor(e.target.value)}>
-                        <option value="">No distributor — deliver directly</option>
-                        {selected.distributor_id && !distOptions.some((d) => d.id === selected.distributor_id) && <option value={selected.distributor_id}>{selected.distributor_code ?? ''} {selected.distributor_name ?? 'Distributor'}</option>}
-                        {distOptions.map((d) => <option key={d.id} value={d.id}>{d.distributor_code} — {d.distributor_name}</option>)}
-                      </select>
-                    </label>
-                  </div>
-                  {distError && <p className="error-message">{distError}</p>}
-                  <small className="text-faint-inline">Fabric rolls allocated to this order are delivered to {selected.clients?.client_name ?? 'the client'} through the selected distributor.</small>
-                </div>
-              )}
+              {isTextile && selected.status !== 'cancelled' && <TextileDeliveryPanel key={`tdeliv-${selected.id}`} order={selected} onSaved={(saved) => { setSelected((s) => (s ? { ...s, ...saved } : s)); void load(); }} />}
+              {isTextile && <TextileRollsPanel key={`trolls-${selected.id}`} order={selected} onChanged={(patch) => { setSelected((s) => (s ? { ...s, ...patch } : s)); void load(); }} />}
 
               {notesText && (
                 <div className="qd-notes">
@@ -1075,15 +1034,6 @@ export function OrdersPage() {
                     {addReps.map((r) => <option key={r.id} value={r.id}>{r.user_profiles?.display_name || r.employee_code}</option>)}
                   </select>
                 </label>
-                {isTextile && addClientMode === 'existing' && (
-                  <label className="order-builder-field">
-                    <span>Distributor (delivers to the client)</span>
-                    <select value={addDistributorId} onChange={(e) => setAddDistributorId(e.target.value)}>
-                      <option value="">No distributor — deliver directly</option>
-                      {distOptions.map((d) => <option key={d.id} value={d.id}>{d.distributor_code} — {d.distributor_name}</option>)}
-                    </select>
-                  </label>
-                )}
                 <strong>Products</strong>
                 <div className="order-line order-line-header" aria-hidden="true">
                   <span className="order-line-label">Product</span>

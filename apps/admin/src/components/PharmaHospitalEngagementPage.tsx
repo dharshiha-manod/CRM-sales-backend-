@@ -1,4 +1,5 @@
 import { PharmaMasterPage, PharmaModuleConfig } from './PharmaMasterPage';
+import { fillRepFromClient, hospitalField, repField } from './pharmaLookups';
 
 const ENGAGEMENT_TYPES = ['Hospital visit', 'Doctor meeting', 'Product presentation', 'Sample distribution', 'CME', 'Tender', 'Formulary listing', 'Conference', 'Follow-up'];
 const STATUSES = ['Visit scheduled', 'Visit completed', 'Interaction recorded', 'Follow-up created', 'Follow-up completed'];
@@ -16,12 +17,12 @@ const config: PharmaModuleConfig = {
   searchableKeys: ['engagement_code', 'hospital_name', 'doctor_name', 'contact_person', 'department', 'sales_rep'],
   fields: [
     { key: 'engagement_code', label: 'Engagement code', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'HE' },
-    { key: 'hospital_name', label: 'Hospital', type: 'text', required: true, listColumn: true },
+    hospitalField('hospital_name', 'Hospital', { required: true, listColumn: true, autoFillMap: { city: 'location' }, onLookupChange: fillRepFromClient('sales_rep', 'contact_person') }),
     { key: 'contact_person', label: 'Contact person', type: 'text', listColumn: true },
     { key: 'doctor_name', label: 'Doctor / HCP', type: 'text', listColumn: true, group: 'Contacts' },
     { key: 'specialty', label: 'Specialty', type: 'text', group: 'Contacts' },
     { key: 'department', label: 'Department', type: 'text', group: 'Contacts', placeholder: 'e.g. Cardiology' },
-    { key: 'sales_rep', label: 'Assigned sales rep', type: 'text', listColumn: true, group: 'Contacts' },
+    repField('sales_rep', 'Assigned sales rep', { listColumn: true, group: 'Contacts' }),
     { key: 'engagement_type', label: 'Activity type', type: 'select', options: ENGAGEMENT_TYPES, listColumn: true, group: 'Engagement details' },
     { key: 'purpose', label: 'Purpose', type: 'text', group: 'Engagement details' },
     { key: 'visit_date', label: 'Visit / event date', type: 'date', group: 'Engagement details' },

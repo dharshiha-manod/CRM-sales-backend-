@@ -46,7 +46,6 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'fabric-roll', label: 'Fabric Roll Management', icon: '▤' },
     { id: 'textile-sample', label: 'Textile Sample Management', icon: '▣' },
     { id: 'quality-inspection', label: 'Quality & Inspection Management', icon: '✔' },
-    { id: 'distributor', label: 'Distributor Management', icon: '▤' },
   ],
   school: [
     { id: 'school-management', label: 'School Management', icon: '◎' },

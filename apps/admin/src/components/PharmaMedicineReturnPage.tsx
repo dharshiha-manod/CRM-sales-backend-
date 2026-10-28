@@ -1,4 +1,8 @@
 import { PharmaMasterPage, PharmaModuleConfig } from './PharmaMasterPage';
+import { fillRepFromClient, hospitalField, repField } from './pharmaLookups';
+
+// Picking a return reason suggests the only safe disposition (never overwrites one already chosen).
+const REASON_TO_DISPOSITION: Record<string, string> = { Expired: 'Expired', 'Near expiry': 'Quarantine', Damaged: 'Damaged', 'Quality issue': 'Quarantine', Recall: 'Quarantine' };
 
 const REASONS = ['Expired', 'Near expiry', 'Damaged', 'Wrong product', 'Wrong quantity', 'Quality issue', 'Recall', 'Excess stock', 'Customer return', 'Other'];
 const INSPECTION_STATUSES = ['Pending', 'Passed', 'Failed'];
@@ -21,16 +25,21 @@ const config: PharmaModuleConfig = {
   fields: [
     { key: 'return_code', label: 'Return number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'RET' },
     { key: 'product_name', label: 'Product', type: 'text', required: true, listColumn: true },
-{ key: 'batch_number', label: 'Batch number', type: 'lookup', lookupResource: '/pharma/batches', lookupLabelKey: 'product_name', autoFillMap: { product_name: 'product_name' }, listColumn: true },
+    { key: 'batch_number', label: 'Batch number', type: 'lookup', lookupResource: '/pharma/batches', lookupLabelKey: 'product_name', lookupSecondaryLabelKey: 'batch_number', autoFillMap: { product_name: 'product_name', unit: 'unit', warehouse_location: 'warehouse' }, listColumn: true },
     { key: 'quantity', label: 'Quantity', type: 'number', listColumn: true },
     { key: 'unit', label: 'Unit', type: 'text', group: 'Return details' },
-    { key: 'customer_hospital', label: 'Customer / hospital / distributor', type: 'text', listColumn: true, group: 'Return details' },
+    hospitalField('customer_hospital', 'Customer / hospital / distributor', { listColumn: true, group: 'Return details', onLookupChange: fillRepFromClient('sales_rep') }),
     { key: 'invoice_reference', label: 'Invoice / order reference', type: 'text', group: 'Return details' },
-    { key: 'sales_rep', label: 'Sales rep', type: 'text', group: 'Return details' },
+    repField('sales_rep', 'Sales rep', { group: 'Return details' }),
     { key: 'warehouse', label: 'Warehouse', type: 'text', group: 'Return details' },
-    { key: 'reason', label: 'Return reason', type: 'select', options: REASONS, group: 'Return details' },
+    { key: 'reason', label: 'Return reason', type: 'select', options: REASONS, group: 'Return details', onValueChange: (value, form) => (!form.disposition && REASON_TO_DISPOSITION[value] ? { disposition: REASON_TO_DISPOSITION[value] } : undefined) },
     { key: 'return_date', label: 'Return date', type: 'date', group: 'Return details' },
-    { key: 'inspection_status', label: 'Inspection status', type: 'select', options: INSPECTION_STATUSES, listColumn: true, group: 'Inspection & disposition' },
+    { key: 'inspection_status', label: 'Inspection status', type: 'select', options: INSPECTION_STATUSES, listColumn: true, group: 'Inspection & disposition', onValueChange: (value, form) => {
+      if (form.disposition) return undefined;
+      if (value === 'Failed') return { disposition: 'Quarantine' };
+      if (value === 'Passed' && form.reason && !REASON_TO_DISPOSITION[form.reason]) return { disposition: 'Saleable' };
+      return undefined;
+    } },
     { key: 'disposition', label: 'Disposition', type: 'select', options: DISPOSITIONS, listColumn: true, group: 'Inspection & disposition' },
     { key: 'status', label: 'Return status', type: 'select', options: STATUSES, group: 'Inspection & disposition' },
     { key: 'notes', label: 'Remarks', type: 'textarea', group: 'Inspection & disposition' },

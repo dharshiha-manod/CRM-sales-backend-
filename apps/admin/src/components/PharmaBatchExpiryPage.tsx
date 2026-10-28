@@ -1,8 +1,16 @@
 import { PharmaMasterPage, PharmaModuleConfig } from './PharmaMasterPage';
+import { addDaysIso } from '../lib/batchExpiry';
+import { repField } from './pharmaLookups';
+
+// Expiry = manufacture date + the product's shelf life (days).
+function expiryPatch(form: Record<string, string>): Record<string, string> | undefined {
+  const days = Number(form.shelf_life_days);
+  return form.manufacture_date && days > 0 ? { expiry_date: addDaysIso(form.manufacture_date, days) } : undefined;
+}
 
 // Auto-expiry classification thresholds (days remaining):
 // <0 Expired · 0-30 Critical Expiry · 31-90 Expiring Soon · >90 Valid
-const STATUSES = ['Valid', 'Expiring Soon', 'Critical Expiry', 'Expired'];
+const STATUSES = ['Valid', 'Expiring Soon', 'Critical Expiry', 'Expired', 'Quarantined', 'Recalled'];
 
 function daysToExpiry(expiryDate: unknown): number | null {
   if (!expiryDate) return null;
@@ -23,8 +31,9 @@ const config: PharmaModuleConfig = {
   fields: [
     { key: 'batch_number', label: 'Batch number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'BAT' },
     { key: 'product_name', label: 'Product', type: 'text', required: true, listColumn: true },
-    { key: 'product_code', label: 'Product code', type: 'text', listColumn: true },
-    { key: 'manufacture_date', label: 'Manufacture date', type: 'date', listColumn: true, group: 'Batch details' },
+    { key: 'product_code', label: 'Product code', type: 'lookup', lookupResource: '/products', industryScoped: true, lookupLabelKey: 'product_name', lookupSecondaryLabelKey: 'product_code', autoFillMap: { product_name: 'product_name', unit: 'unit', supplier_name: 'supplier', shelf_life_days: 'shelf_life_days' }, onLookupChange: (_m, setForm) => setForm((prev) => ({ ...prev, ...(expiryPatch(prev) ?? {}) })), listColumn: true },
+    { key: 'shelf_life_days', label: 'Shelf life (days)', type: 'number', readOnly: true, group: 'Batch details', helpText: 'From the product. Expiry = manufacture date + this.' },
+    { key: 'manufacture_date', label: 'Manufacture date', type: 'date', listColumn: true, group: 'Batch details', onValueChange: (_v, form) => expiryPatch(form) },
     { key: 'expiry_date', label: 'Expiry date', type: 'date', required: true, listColumn: true, group: 'Batch details' },
     {
       key: 'expiry_status',
@@ -45,7 +54,7 @@ const config: PharmaModuleConfig = {
     { key: 'quantity', label: 'Available quantity', type: 'number', group: 'Batch details' },
     { key: 'unit', label: 'Unit', type: 'text', group: 'Batch details', placeholder: 'e.g. strips, vials, boxes' },
     { key: 'supplier', label: 'Supplier', type: 'text', group: 'Batch details' },
-    { key: 'sales_rep', label: 'Sales rep allocation', type: 'text', group: 'Batch details' },
+    repField('sales_rep', 'Sales rep allocation', { group: 'Batch details' }),
     { key: 'warehouse_location', label: 'Warehouse / location', type: 'text', group: 'Batch details', placeholder: 'e.g. Cold storage A-3' },
     { key: 'status', label: 'Status', type: 'select', options: STATUSES, group: 'Batch details' },
     { key: 'notes', label: 'Notes', type: 'textarea', group: 'Batch details' },

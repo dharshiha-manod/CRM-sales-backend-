@@ -17,7 +17,7 @@ const config: PharmaModuleConfig = {
   fields: [
     { key: 'recall_code', label: 'Recall number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'RCL' },
     { key: 'product_name', label: 'Product', type: 'text', required: true, listColumn: true },
-{ key: 'batch_number', label: 'Batch number', type: 'lookup', lookupResource: '/pharma/batches', lookupLabelKey: 'product_name', autoFillMap: { product_name: 'product_name' }, required: true, listColumn: true },
+    { key: 'batch_number', label: 'Batch number', type: 'lookup', lookupResource: '/pharma/batches', lookupLabelKey: 'product_name', lookupSecondaryLabelKey: 'batch_number', autoFillMap: { product_name: 'product_name', quantity: 'affected_quantity', sales_rep: 'assigned_team' }, required: true, listColumn: true },
     { key: 'severity', label: 'Recall severity', type: 'select', options: SEVERITIES, listColumn: true },
     { key: 'reason', label: 'Recall reason', type: 'textarea', group: 'Recall details' },
     { key: 'recall_date', label: 'Recall date', type: 'date', group: 'Recall details' },

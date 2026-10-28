@@ -3,7 +3,7 @@ import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
 import { kpiClick } from '../lib/kpiClick';
-import { lockedUnitsByProduct } from '../lib/batchExpiry';
+import { addDaysIso, lockedUnitsByProduct, previewBatchNo } from '../lib/batchExpiry';
 import { useOrgSettings } from '../settings/useOrgSettings';
 import { loadNameList, brandListKey, categoryListKey, unitListKey } from './BrandsCategoriesPage';
 import './MasterDataPages.css';
@@ -475,6 +475,18 @@ export function ProductsPage() {
   const showBatchUi = BATCH_DEFAULT_INDUSTRIES.includes(activeIndustry)
     || industryItems.some((item) => tracksBatch(fmcgMetaMap[item.id] ?? blankFmcgMeta));
 
+  // Pharma only: expiry = manufacturing date + shelf life (days), until the user types an expiry themselves.
+  const expiryTouchedRef = useRef(false);
+  useEffect(() => {
+    if (!modalOpen) { expiryTouchedRef.current = false; return; }
+    if (activeIndustry !== 'pharma' || !form.trackBatch) return;
+    if (expiryTouchedRef.current || (editing && form.expiryDate)) return;
+    const days = Number(form.shelfLifeDays);
+    if (!form.mfgDate || !days || days <= 0) return;
+    const next = addDaysIso(form.mfgDate, days);
+    if (next !== form.expiryDate) setForm((f) => ({ ...f, expiryDate: next }));
+  }, [activeIndustry, modalOpen, editing, form.trackBatch, form.mfgDate, form.shelfLifeDays]);
+
   // Textile: suggest the SKU from fabric type + colour while adding (never overwrites a typed code).
   useEffect(() => {
     if (!isTextile || !modalOpen || editing || codeTouchedRef.current) return;
@@ -550,6 +562,10 @@ export function ProductsPage() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (activeIndustry === 'pharma' && form.trackBatch && !form.expiryDate) {
+      setMessage('Enter the expiry date, or enter the manufacturing date and shelf life so it is calculated.');
+      return;
+    }
        // Industry Type is set globally via the sidebar picker, not per-product.
     setSaving(true);
     setMessage('');
@@ -579,7 +595,7 @@ export function ProductsPage() {
       ...(showBatchUi ? { shelfLifeDays: form.shelfLifeDays === '' ? null : Number(form.shelfLifeDays) } : {}),
       status: form.status,
       unit: form.unit || null,
-      taxPercent: form.taxPercent === '' ? null : Number(form.taxPercent),
+      taxPercent: form.taxPercent === '' ? (activeIndustry === 'pharma' ? 0 : null) : Number(form.taxPercent),
       hsnCode: form.hsnCode || null,
       specification: form.specification || null,
       originCountry: form.originCountry || null,
@@ -598,7 +614,45 @@ export function ProductsPage() {
       });
       const productId = editing ? editing.id : response.data.id;
       saveFmcgMeta(productId, fmcgMeta);
-      setMessage(editing ? 'Product updated successfully.' : 'Product added successfully.');
+      let pharmaBatchNote = '';
+      // Pharma only: the batch entered on the product becomes (or updates) a real record in Pharma > Batch & Expiry.
+      if (activeIndustry === 'pharma' && form.trackBatch && form.expiryDate) {
+        try {
+          const list = await api<{ data: { id: string; batch_number: string }[] }>('/pharma/batches');
+          const existingBatches = list.data ?? [];
+          // Blank batch number -> auto-generate <product code>-<yymmdd>-<running no.>
+          const batchNo = form.batchNumber.trim()
+            || previewBatchNo(form.productCode, form.mfgDate, existingBatches.map((b) => b.batch_number));
+          const match = existingBatches.find((b) => b.batch_number.toLowerCase() === batchNo.toLowerCase());
+          const batchFields = {
+            batch_number: batchNo,
+            product_code: form.productCode,
+            product_name: form.productName,
+            manufacture_date: form.mfgDate || null,
+            expiry_date: form.expiryDate,
+            unit: form.unit || null,
+          };
+          if (match) {
+            // Same batch number already on file: update its dates (quantity is left alone — it is managed by Batch & Expiry).
+            await api(`/pharma/batches/${match.id}`, { method: 'PATCH', body: JSON.stringify(batchFields) });
+            pharmaBatchNote = ' Batch updated in Batch & Expiry.';
+          } else {
+            await api('/pharma/batches', {
+              method: 'POST',
+              body: JSON.stringify({
+                ...batchFields,
+                quantity: form.stockQuantity === '' ? 0 : Number(form.stockQuantity),
+                ...(activeIndustryTypeId ? { industry_type_id: activeIndustryTypeId } : {}),
+              }),
+            });
+            pharmaBatchNote = ` Batch ${batchNo} added to Batch & Expiry.`;
+          }
+        } catch (batchError) {
+          const text = batchError instanceof Error ? batchError.message : 'Unknown error';
+          pharmaBatchNote = ` Batch was not saved to Batch & Expiry: ${text}`;
+        }
+      }
+      setMessage((editing ? 'Product updated successfully.' : 'Product added successfully.') + pharmaBatchNote);
       closeModal(true);
       await load();
     } catch (error) {
@@ -973,9 +1027,9 @@ export function ProductsPage() {
                 </label>
                 {form.trackBatch && (
                   <>
-                    <label>Batch number<input value={form.batchNumber} onChange={(event) => setForm({ ...form, batchNumber: event.target.value })} /></label>
+                    <label>Batch number<input placeholder="Leave blank to auto-generate" value={form.batchNumber} onChange={(event) => setForm({ ...form, batchNumber: event.target.value })} /></label>
                     <label>Manufacturing date<input type="date" value={form.mfgDate} onChange={(event) => setForm({ ...form, mfgDate: event.target.value })} /></label>
-                    <label>Expiry date<input type="date" value={form.expiryDate} onChange={(event) => setForm({ ...form, expiryDate: event.target.value })} /></label>
+                    <label>Expiry date<input type="date" required value={form.expiryDate} onChange={(event) => { expiryTouchedRef.current = true; setForm({ ...form, expiryDate: event.target.value }); }} /></label>
                   </>
                 )}
                 </>)}

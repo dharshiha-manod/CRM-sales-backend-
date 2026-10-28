@@ -1,11 +1,14 @@
 /**
- * Pharma's 6 modules (Sample, Batch & Expiry, Product Promotion, Hospital
- * Engagement, Medicine Return, Recall) are config-driven, same as Textile.
- * The underlying engine has nothing textile-specific in it — reuse it here
- * instead of duplicating ~370 lines. Add a new module by adding a config
- * file below; never duplicate TextileMasterPage.tsx.
+ * Pharma's 6 modules reuse the config-driven engine in TextileMasterPage (nothing textile-specific in it).
+ * This wrapper only switches OFF the demo rows: Pharma shows real database records, never fake samples.
+ * Textile itself is untouched.
  */
-export { TextileMasterPage as PharmaMasterPage } from './TextileMasterPage';
+import { TextileMasterPage } from './TextileMasterPage';
+import type { TextileModuleConfig } from './TextileMasterPage';
+
+export function PharmaMasterPage({ config }: { config: TextileModuleConfig }) {
+  return <TextileMasterPage config={{ ...config, sampleRecords: undefined }} />;
+}
 export type {
   TextileModuleConfig as PharmaModuleConfig,
   TextileRecord as PharmaRecord,

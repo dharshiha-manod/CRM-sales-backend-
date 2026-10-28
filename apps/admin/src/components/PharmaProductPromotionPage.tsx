@@ -1,4 +1,5 @@
 import { PharmaMasterPage, PharmaModuleConfig } from './PharmaMasterPage';
+import { fillRepFromClient, hospitalField, repField } from './pharmaLookups';
 
 const PROMO_TYPES = ['Sample drive', 'Gift', 'Literature / detailing', 'Product demo', 'New product introduction', 'CME sponsorship', 'Conference'];
 const RESPONSES = ['Positive', 'Neutral', 'Negative', 'No response yet'];
@@ -18,13 +19,13 @@ const config: PharmaModuleConfig = {
   fields: [
     { key: 'promotion_code', label: 'Promotion code', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'PRM' },
     { key: 'campaign_name', label: 'Campaign name', type: 'text', required: true, listColumn: true },
-    { key: 'product_name', label: 'Product', type: 'text', required: true, listColumn: true },
+    { key: 'product_name', label: 'Product', type: 'lookup', lookupResource: '/products', industryScoped: true, lookupLabelKey: 'product_name', lookupSecondaryLabelKey: 'product_code', required: true, listColumn: true, autoFillMap: { category: 'product_category' }, onLookupChange: (matched, setForm) => setForm((prev) => ({ ...prev, campaign_name: prev.campaign_name || `${String(matched.product_name ?? '')} campaign` })) },
     { key: 'product_category', label: 'Product category', type: 'text', group: 'Campaign' },
     { key: 'promotion_type', label: 'Promotion type', type: 'select', options: PROMO_TYPES, listColumn: true, group: 'Campaign' },
     { key: 'target_segment', label: 'Target segment', type: 'text', group: 'Campaign', placeholder: 'e.g. Cardiologists, Chennai' },
-    { key: 'sales_rep', label: 'Sales representative', type: 'text', listColumn: true, group: 'Campaign' },
+    repField('sales_rep', 'Sales representative', { listColumn: true, group: 'Campaign' }),
     { key: 'doctor_name', label: 'Doctor / HCP', type: 'text', group: 'Campaign' },
-    { key: 'hospital_name', label: 'Hospital / clinic', type: 'text', group: 'Campaign' },
+    hospitalField('hospital_name', 'Hospital / clinic', { group: 'Campaign', onLookupChange: fillRepFromClient('sales_rep') }),
     { key: 'promotional_material', label: 'Promotional material', type: 'text', group: 'Campaign', placeholder: 'e.g. brochure, visual aid' },
     { key: 'samples_provided', label: 'Samples provided', type: 'number', group: 'Campaign' },
     { key: 'start_date', label: 'Campaign start date', type: 'date', group: 'Schedule & budget' },

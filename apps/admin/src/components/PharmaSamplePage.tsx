@@ -1,4 +1,5 @@
 import { PharmaMasterPage, PharmaModuleConfig } from './PharmaMasterPage';
+import { fillRepFromClient, hospitalField, repField } from './pharmaLookups';
 
 const STATUSES = ['Available', 'Assigned', 'Taken for visit', 'Distributed', 'Acknowledged', 'Returned'];
 const SAMPLE_TYPES = ['Physician sample', 'Trial pack', 'Promotional sample'];
@@ -16,16 +17,16 @@ const config: PharmaModuleConfig = {
   searchableKeys: ['sample_code', 'product_name', 'product_code', 'doctor_name', 'hospital_name', 'sales_rep'],
   fields: [
     { key: 'sample_code', label: 'Sample code', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'SMP' },
-    { key: 'product_name', label: 'Product', type: 'text', required: true, listColumn: true },
-    { key: 'product_code', label: 'Product code', type: 'text', listColumn: true },
+    { key: 'product_name', label: 'Product', type: 'text', required: true, listColumn: true, readOnly: true, placeholder: 'Fills in when you pick the batch' },
+    { key: 'product_code', label: 'Product code', type: 'text', listColumn: true, readOnly: true },
     { key: 'sample_type', label: 'Sample type', type: 'select', options: SAMPLE_TYPES, group: 'Distribution details' },
-{ key: 'batch_number', label: 'Batch number', type: 'lookup', lookupResource: '/pharma/batches', lookupLabelKey: 'product_name', autoFillMap: { product_name: 'product_name', expiry_date: 'expiry_date' }, group: 'Distribution details' },
-    { key: 'expiry_date', label: 'Expiry date', type: 'date', group: 'Distribution details' },
+    { key: 'batch_number', label: 'Batch number', type: 'lookup', required: true, lookupResource: '/pharma/batches', lookupLabelKey: 'product_name', lookupSecondaryLabelKey: 'batch_number', autoFillMap: { product_name: 'product_name', product_code: 'product_code', expiry_date: 'expiry_date' }, lookupFilter: (b, form) => (!['Expired', 'Recalled', 'Quarantined'].includes(String(b.status)) && Number(b.quantity) > 0) || String(b.batch_number) === form.batch_number, helpText: 'Only batches that can be issued are listed, earliest expiry first.', group: 'Distribution details' },
+    { key: 'expiry_date', label: 'Expiry date', type: 'date', readOnly: true, group: 'Distribution details' },
     { key: 'quantity_issued', label: 'Quantity issued', type: 'number', listColumn: true, group: 'Distribution details' },
     { key: 'quantity_remaining', label: 'Quantity remaining', type: 'number', listColumn: true, group: 'Distribution details' },
-    { key: 'sales_rep', label: 'Sales representative', type: 'text', listColumn: true, group: 'Distribution details' },
+    repField('sales_rep', 'Sales representative', { listColumn: true, group: 'Distribution details' }),
     { key: 'doctor_name', label: 'Doctor / HCP', type: 'text', listColumn: true, group: 'Distribution details' },
-    { key: 'hospital_name', label: 'Hospital / clinic', type: 'text', listColumn: true, group: 'Distribution details' },
+    hospitalField('hospital_name', 'Hospital / clinic', { listColumn: true, group: 'Distribution details', autoFillMap: { city: 'location' }, onLookupChange: fillRepFromClient('sales_rep') }),
     { key: 'location', label: 'Location', type: 'text', group: 'Distribution details' },
     { key: 'visit_reference', label: 'Visit reference', type: 'text', group: 'Distribution details' },
     { key: 'purpose', label: 'Purpose of sample', type: 'text', group: 'Distribution details' },

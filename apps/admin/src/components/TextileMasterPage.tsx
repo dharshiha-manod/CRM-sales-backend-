@@ -81,7 +81,7 @@ export interface FieldDef {
    */
   lookupSecondaryLabelKey?: string;
   /**
-   * for type: 'multi-lookup' — keeps only the options that belong with the current form (e.g. only the
+   * for type: 'lookup' / 'multi-lookup' — keeps only the options that belong with the current form (e.g. only the
    * documents of the selected shipment). Runs on every render, so it follows the form as it changes.
    */
   lookupFilter?: (option: TextileRecord, form: Record<string, string>) => boolean;
@@ -1369,7 +1369,7 @@ function renderInput(
     // many rows sharing one code (Currency Management keeps a row per dated
     // rate, so USD appears once per rate change) and the dropdown should
     // still offer USD once.
-    const options = dedupeByValue(lookupData[f.key] ?? [], f);
+    const options = dedupeByValue(lookupData[f.key] ?? [], f).filter((o) => !f.lookupFilter || f.lookupFilter(o, form) || String(o[f.lookupValueKey ?? f.key] ?? o.id) === value);
     const handleLookupChange = (v: string) => {
       let matchedForCallback: TextileRecord | undefined;
       setForm((prev) => {
