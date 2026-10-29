@@ -186,6 +186,31 @@ async function logSampleEngagement(orgId: string, industryTypeId: string, sample
   } catch { /* best effort */ }
 }
 
+/** Raises ONE follow-up for a customer / hospital. The client is matched by name inside this industry; the rep is the given employee code,
+ *  else the client's active assigned rep. Silent when no client or rep can be matched. The title is the de-duplication key and is checked
+ *  across every status, so a follow-up the rep already completed is never raised a second time. */
+async function raiseFollowUp(orgId: string, industryTypeId: string, o: { customer: string; repCode?: string; title: string; priority: string; notes?: string | null }) {
+  try {
+    if (!o.customer) return;
+    const { data: client } = await supabaseAdmin.from('clients').select('id').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('client_name', o.customer).limit(1).maybeSingle();
+    if (!client) return;
+    let repId: string | null = null;
+    if (o.repCode) {
+      const { data: rep } = await supabaseAdmin.from('sales_representatives').select('id').eq('organization_id', orgId).eq('employee_code', o.repCode).maybeSingle();
+      repId = (rep as { id?: string } | null)?.id ?? null;
+    }
+    if (!repId) {
+      const { data: link } = await supabaseAdmin.from('sales_representative_client_assignments').select('sales_representative_id').eq('organization_id', orgId).eq('client_id', client.id).eq('status', 'active').limit(1).maybeSingle();
+      repId = (link as { sales_representative_id?: string } | null)?.sales_representative_id ?? null;
+    }
+    if (!repId) return;
+    const { data: already } = await supabaseAdmin.from('follow_ups').select('id').eq('organization_id', orgId).eq('client_id', client.id).eq('title', o.title).limit(1).maybeSingle();
+    if (already) return;
+    const dueAt = new Date(Math.max(Date.parse(`${today()}T09:00:00+05:30`), Date.now() + 5 * 60000)).toISOString();
+    await createFollowUp(orgId, { clientId: client.id as string, representativeId: repId, title: o.title, dueAt, priority: o.priority, followUpType: 'visit', notes: o.notes ?? null });
+  } catch { /* the pharma record is already saved; the follow-up stays manual */ }
+}
+
 // ---- per-module rules ----------------------------------------------------------
 interface Ctx { orgId: string; industryTypeId: string; payload: Row; existing: Row | null; actor?: string | null }
 type Prepare = (c: Ctx) => Promise<void>;
@@ -354,14 +379,29 @@ const prepareRecall: Prepare = async ({ orgId, industryTypeId, payload, existing
   }
   if (m.status === 'Closed' && !m.completion_date) payload.completion_date = today();
 };
-const afterRecall: After = async ({ orgId, industryTypeId, saved }) => reconcileBatchAfterRecall(orgId, industryTypeId, saved.batch_number, 'saved');
+/** A recall marks its batch Recalled AND puts one follow-up per affected customer in front of the rep (collect / quarantine the stock), so nothing depends on someone remembering to chase it. */
+const afterRecall: After = async ({ orgId, industryTypeId, saved }) => {
+  await reconcileBatchAfterRecall(orgId, industryTypeId, saved.batch_number, 'saved');
+  if (saved.status === 'Closed') return;
+  const names = [...new Set(str(saved.affected_customers).split(/\r?\n/).map((n) => n.trim()).filter(Boolean))].slice(0, 25);
+  const priority = saved.severity === 'Critical' ? 'critical' : saved.severity === 'High' ? 'high' : 'normal';
+  for (const customer of names) {
+    await raiseFollowUp(orgId, industryTypeId, { customer, repCode: str(saved.assigned_team), priority, title: `Recall ${str(saved.recall_code)}: collect batch ${str(saved.batch_number)} — ${customer}`, notes: str(saved.action_required) || null });
+  }
+};
+/** A campaign follow-up date becomes a real Follow-up for the hospital's rep (same idea as Hospital Engagement). */
+const afterPromotion: After = async ({ orgId, industryTypeId, saved }) => {
+  const due = str(saved.follow_up_date);
+  if (!due || due < today() || !str(saved.hospital_name) || ['Completed', 'Cancelled'].includes(String(saved.status))) return;
+  await raiseFollowUp(orgId, industryTypeId, { customer: str(saved.hospital_name), repCode: str(saved.sales_rep), priority: 'normal', title: `Promotion follow-up: ${str(saved.hospital_name)} (${str(saved.promotion_code)}) · ${due}`, notes: str(saved.feedback) || null });
+};
 
 const PREPARE: Record<string, Prepare | undefined> = {
   pharma_batches: prepareBatch, pharma_samples: prepareSample, pharma_promotions: preparePromotion,
   pharma_hospital_engagements: prepareEngagement, pharma_medicine_returns: prepareReturn, pharma_recalls: prepareRecall,
 };
 const AFTER: Record<string, After | undefined> = {
-  pharma_batches: afterBatch, pharma_samples: afterSample, pharma_hospital_engagements: afterEngagement, pharma_medicine_returns: afterReturn, pharma_recalls: afterRecall,
+  pharma_batches: afterBatch, pharma_samples: afterSample, pharma_promotions: afterPromotion, pharma_hospital_engagements: afterEngagement, pharma_medicine_returns: afterReturn, pharma_recalls: afterRecall,
 };
 
 async function assertCanDelete(r: PharmaResource, orgId: string, row: Row) {
@@ -406,8 +446,8 @@ export async function pharmaSummary(orgId: string, industryTypeId: string | null
   const withDays = live.map((x) => ({ batch_number: x.batch_number, product_name: x.product_name, quantity: num(x.quantity), expiry_date: x.expiry_date, days_left: daysLeft(x.expiry_date), status: x.status }));
   const expiring = withDays.filter((x) => x.days_left !== null && x.days_left <= 90 && !['Recalled', 'Quarantined'].includes(String(x.status))).sort((a, c) => (a.days_left ?? 0) - (c.days_left ?? 0));
   return {
-    batches: { total: batches.length, expired: expiring.filter((x) => (x.days_left ?? 0) < 0).length, critical: expiring.filter((x) => (x.days_left ?? 0) >= 0 && (x.days_left ?? 0) <= 30).length, expiringSoon: expiring.filter((x) => (x.days_left ?? 0) > 30).length, unitsAtRisk: expiring.reduce((sum, x) => sum + x.quantity, 0), list: expiring.slice(0, 15) },
-    recalls: { open: recalls.filter((x) => x.status !== 'Closed').length, critical: recalls.filter((x) => x.status !== 'Closed' && ['Critical', 'High'].includes(String(x.severity))).length, list: recalls.filter((x) => x.status !== 'Closed').slice(0, 10) },
+    batches: { alertList: expiring.slice(0, 50), total: batches.length, expired: expiring.filter((x) => (x.days_left ?? 0) < 0).length, critical: expiring.filter((x) => (x.days_left ?? 0) >= 0 && (x.days_left ?? 0) <= 30).length, expiringSoon: expiring.filter((x) => (x.days_left ?? 0) > 30).length, unitsAtRisk: expiring.reduce((sum, x) => sum + x.quantity, 0), list: expiring.slice(0, 15) },
+    recalls: { alertList: recalls.filter((x) => x.status !== 'Closed').slice(0, 50), open: recalls.filter((x) => x.status !== 'Closed').length, critical: recalls.filter((x) => x.status !== 'Closed' && ['Critical', 'High'].includes(String(x.severity))).length, list: recalls.filter((x) => x.status !== 'Closed').slice(0, 10) },
     samples: { unitsIssued: samples.reduce((sum, x) => sum + num(x.quantity_issued), 0), unitsRemaining: samples.reduce((sum, x) => sum + num(x.quantity_remaining), 0), distributed: samples.filter((x) => ['Distributed', 'Acknowledged'].includes(String(x.status))).length },
     promotions: { active: promos.filter((x) => ['Active', 'Feedback captured'].includes(String(x.status))).length, total: promos.length },
     returns: { awaitingInspection: returns.filter((x) => !['Approved', 'Rejected', 'Closed'].includes(String(x.status)) && String(x.inspection_status ?? 'Pending') === 'Pending').length, total: returns.length },
@@ -419,13 +459,20 @@ pharmaRouter.get('/pharma/summary', authenticate, reader, async (req, res) => {
   await refreshBatchStatuses(org(req), industryTypeId);
   res.json({ data: await pharmaSummary(org(req), industryTypeId) });
 });
-/** Flat alert list (same idea as /fmcg/alerts) for the Notifications page and the mobile app. */
+/** Flat alert list (same idea as /fmcg/alerts) for the Notifications page and the mobile app. Every alert has a stable id so read / dismissed state survives a refresh. */
 pharmaRouter.get('/pharma/alerts', authenticate, reader, async (req, res) => {
   const industryTypeId = resolveIndustryTypeId(req.industryScope!, typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : null);
+  await refreshBatchStatuses(org(req), industryTypeId);
   const sum = await pharmaSummary(org(req), industryTypeId);
   const alerts = [
-    ...sum.batches.list.map((x) => ({ type: 'expiry', level: (x.days_left ?? 0) < 0 ? 'expired' : (x.days_left ?? 0) <= 30 ? 'critical' : 'warning', title: `${x.product_name} · batch ${x.batch_number}`, message: (x.days_left ?? 0) < 0 ? `Expired ${Math.abs(x.days_left ?? 0)} day(s) ago — ${x.quantity} units on hand` : `Expires in ${x.days_left} day(s) — ${x.quantity} units on hand` })),
-    ...sum.recalls.list.map((x) => ({ type: 'recall', level: 'critical', title: `Recall ${x.recall_code}`, message: `${x.product_name} · batch ${x.batch_number} — ${x.status}` })),
+    ...sum.batches.alertList.map((x) => {
+      const d = x.days_left ?? 0;
+      const level = d < 0 ? 'expired' : d <= 30 ? 'critical' : 'warning';
+      return { id: `pharma-expiry-${str(x.batch_number)}-${level}`, type: 'expiry', level, batchNumber: x.batch_number, daysLeft: d, quantity: x.quantity, expiryDate: x.expiry_date, title: `${x.product_name} · batch ${x.batch_number}`, message: d < 0 ? `Expired ${Math.abs(d)} day(s) ago — ${x.quantity} units on hand` : `Expires in ${d} day(s) — ${x.quantity} units on hand` };
+    }),
+    ...sum.recalls.alertList.map((x) => ({ id: `pharma-recall-${str(x.recall_code)}`, type: 'recall', level: 'critical', batchNumber: x.batch_number, title: `Recall ${x.recall_code}`, message: `${x.product_name} · batch ${x.batch_number} — ${x.status}` })),
+    ...(sum.returns.awaitingInspection > 0 ? [{ id: `pharma-returns-inspect-${sum.returns.awaitingInspection}`, type: 'return', level: 'warning', title: 'Medicine returns awaiting inspection', message: `${sum.returns.awaitingInspection} returned medicine record(s) are waiting to be inspected.` }] : []),
+    ...(sum.engagements.followUpsDue > 0 ? [{ id: `pharma-followups-due-${today()}-${sum.engagements.followUpsDue}`, type: 'followup', level: 'warning', title: 'Hospital follow-ups due', message: `${sum.engagements.followUpsDue} hospital engagement follow-up(s) are due.` }] : []),
   ];
   res.json({ data: { alerts, followUpsDue: sum.engagements.followUpsDue, returnsAwaitingInspection: sum.returns.awaitingInspection } });
 });
