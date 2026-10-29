@@ -1,8 +1,10 @@
 import { PharmaMasterPage, PharmaModuleConfig } from './PharmaMasterPage';
+import { daysLeft } from '../lib/batchExpiry';
 import { fillRepFromClient, hospitalField, repField } from './pharmaLookups';
 
 const STATUSES = ['Available', 'Assigned', 'Taken for visit', 'Distributed', 'Acknowledged', 'Returned'];
 const SAMPLE_TYPES = ['Physician sample', 'Trial pack', 'Promotional sample'];
+const PURPOSES = ['New product introduction', 'Product detailing', 'Doctor request', 'Trial for patients', 'Prescription switch follow-up', 'Clinical evaluation', 'CME / conference', 'Hospital formulary / tender', 'Other'];
 
 const config: PharmaModuleConfig = {
   resource: '/pharma/samples',
@@ -22,14 +24,14 @@ const config: PharmaModuleConfig = {
     { key: 'sample_type', label: 'Sample type', type: 'select', options: SAMPLE_TYPES, group: 'Distribution details' },
     { key: 'batch_number', label: 'Batch number', type: 'lookup', required: true, lookupResource: '/pharma/batches', lookupLabelKey: 'product_name', lookupSecondaryLabelKey: 'batch_number', autoFillMap: { product_name: 'product_name', product_code: 'product_code', expiry_date: 'expiry_date' }, lookupFilter: (b, form) => (!['Expired', 'Recalled', 'Quarantined'].includes(String(b.status)) && Number(b.quantity) > 0) || String(b.batch_number) === form.batch_number, helpText: 'Only batches that can be issued are listed, earliest expiry first.', group: 'Distribution details' },
     { key: 'expiry_date', label: 'Expiry date', type: 'date', readOnly: true, group: 'Distribution details' },
-    { key: 'quantity_issued', label: 'Quantity issued', type: 'number', listColumn: true, group: 'Distribution details' },
-    { key: 'quantity_remaining', label: 'Quantity remaining', type: 'number', listColumn: true, group: 'Distribution details' },
+    { key: 'quantity_issued', label: 'Quantity issued', type: 'number', min: 1, listColumn: true, group: 'Distribution details' },
+    { key: 'quantity_remaining', label: 'Quantity remaining', type: 'number', min: 0, helpText: 'Leave blank to start equal to quantity issued.', listColumn: true, group: 'Distribution details' },
     repField('sales_rep', 'Sales representative', { listColumn: true, group: 'Distribution details' }),
     { key: 'doctor_name', label: 'Doctor / HCP', type: 'text', listColumn: true, group: 'Distribution details' },
     hospitalField('hospital_name', 'Hospital / clinic', { listColumn: true, group: 'Distribution details', autoFillMap: { city: 'location' }, onLookupChange: fillRepFromClient('sales_rep') }),
     { key: 'location', label: 'Location', type: 'text', group: 'Distribution details' },
     { key: 'visit_reference', label: 'Visit reference', type: 'text', group: 'Distribution details' },
-    { key: 'purpose', label: 'Purpose of sample', type: 'text', group: 'Distribution details' },
+    { key: 'purpose', label: 'Purpose of sample', type: 'combo', comboOptions: PURPOSES, placeholder: 'Pick from the list or type your own', group: 'Distribution details' },
     { key: 'issue_date', label: 'Issue date', type: 'date', group: 'Distribution details' },
     { key: 'status', label: 'Status', type: 'select', options: STATUSES, group: 'Distribution details' },
     { key: 'notes', label: 'Remarks', type: 'textarea', group: 'Distribution details' },
@@ -43,7 +45,7 @@ const config: PharmaModuleConfig = {
       label: 'Expiring samples',
       value: (r) => String(r.filter((x) => {
         if (!x.expiry_date) return false;
-        const days = (new Date(x.expiry_date as string).getTime() - Date.now()) / 86400000;
+        const days = daysLeft(String(x.expiry_date));
         return days >= 0 && days <= 30;
       }).length),
     },

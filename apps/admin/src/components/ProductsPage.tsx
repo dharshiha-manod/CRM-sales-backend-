@@ -618,12 +618,18 @@ export function ProductsPage() {
       // Pharma only: the batch entered on the product becomes (or updates) a real record in Pharma > Batch & Expiry.
       if (activeIndustry === 'pharma' && form.trackBatch && form.expiryDate) {
         try {
-          const list = await api<{ data: { id: string; batch_number: string }[] }>('/pharma/batches');
+          const list = await api<{ data: { id: string; batch_number: string; product_code?: string | null; manufacture_date?: string | null; quantity?: number | string | null }[] }>('/pharma/batches');
           const existingBatches = list.data ?? [];
           // Blank batch number -> auto-generate <product code>-<yymmdd>-<running no.>
-          const batchNo = form.batchNumber.trim()
+          // Saving the same product again must never create a second batch: with no number typed, reuse this product's batch that has the same manufacture date.
+          const ofProduct = existingBatches.filter((b) => b.product_code === form.productCode);
+          const typed = form.batchNumber.trim();
+          const sameLot = typed ? undefined : ofProduct.find((b) => String(b.manufacture_date ?? '').slice(0, 10) === (form.mfgDate || ''));
+          const batchNo = typed || sameLot?.batch_number
             || previewBatchNo(form.productCode, form.mfgDate, existingBatches.map((b) => b.batch_number));
           const match = existingBatches.find((b) => b.batch_number.toLowerCase() === batchNo.toLowerCase());
+          // A product with ONE batch: the stock typed on the product is that batch's quantity (otherwise Batch & Expiry resets product stock back to the batch's old quantity).
+          const soleBatch = !!match && ofProduct.length === 1 && ofProduct[0].id === match.id;
           const batchFields = {
             batch_number: batchNo,
             product_code: form.productCode,
@@ -632,6 +638,7 @@ export function ProductsPage() {
             expiry_date: form.expiryDate,
             unit: form.unit || null,
           };
+          if (match && soleBatch && form.stockQuantity !== '') Object.assign(batchFields, { quantity: Number(form.stockQuantity) });
           if (match) {
             // Same batch number already on file: update its dates (quantity is left alone — it is managed by Batch & Expiry).
             await api(`/pharma/batches/${match.id}`, { method: 'PATCH', body: JSON.stringify(batchFields) });

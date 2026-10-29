@@ -1,5 +1,5 @@
 import { PharmaMasterPage, PharmaModuleConfig } from './PharmaMasterPage';
-import { addDaysIso } from '../lib/batchExpiry';
+import { addDaysIso, daysLeft } from '../lib/batchExpiry';
 import { repField } from './pharmaLookups';
 
 // Expiry = manufacture date + the product's shelf life (days).
@@ -12,10 +12,13 @@ function expiryPatch(form: Record<string, string>): Record<string, string> | und
 // <0 Expired · 0-30 Critical Expiry · 31-90 Expiring Soon · >90 Valid
 const STATUSES = ['Valid', 'Expiring Soon', 'Critical Expiry', 'Expired', 'Quarantined', 'Recalled'];
 
+// Whole calendar days, exactly like the server (UTC dates), so a batch that expires today reads 0 days (Critical), never Expired.
 function daysToExpiry(expiryDate: unknown): number | null {
   if (!expiryDate) return null;
-  return Math.floor((new Date(expiryDate as string).getTime() - Date.now()) / 86400000);
+  return daysLeft(String(expiryDate));
 }
+// Only stock still on hand is a risk: the same rule the dashboard (Pharma insights) and the alerts use.
+const onHand = (x: Record<string, unknown>) => Number(x.quantity) > 0;
 
 const config: PharmaModuleConfig = {
   resource: '/pharma/batches',
@@ -65,19 +68,19 @@ const config: PharmaModuleConfig = {
       icon: '◷',
       iconClass: 'kpi-icon-amber',
       label: 'Expiring within 30 days',
-      value: (r) => String(r.filter((x) => { const d = daysToExpiry(x.expiry_date); return d !== null && d >= 0 && d <= 30; }).length),
+      value: (r) => String(r.filter((x) => { const d = daysToExpiry(x.expiry_date); return onHand(x) && d !== null && d >= 0 && d <= 30; }).length),
     },
     {
       icon: '◷',
       iconClass: 'kpi-icon-amber',
       label: 'Expiring within 60 days',
-      value: (r) => String(r.filter((x) => { const d = daysToExpiry(x.expiry_date); return d !== null && d >= 0 && d <= 60; }).length),
+      value: (r) => String(r.filter((x) => { const d = daysToExpiry(x.expiry_date); return onHand(x) && d !== null && d >= 0 && d <= 60; }).length),
     },
     {
       icon: '⊘',
       iconClass: 'kpi-icon-red',
       label: 'Expired',
-      value: (r) => String(r.filter((x) => { const d = daysToExpiry(x.expiry_date); return d !== null && d < 0; }).length),
+      value: (r) => String(r.filter((x) => { const d = daysToExpiry(x.expiry_date); return onHand(x) && d !== null && d < 0; }).length),
     },
     {
       icon: '⚠',

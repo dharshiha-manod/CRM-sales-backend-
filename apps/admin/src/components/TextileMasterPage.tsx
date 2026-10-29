@@ -35,6 +35,9 @@ export interface FieldDef {
   placeholder?: string;
   /** small grey hint shown under the field in the Add/Edit form (not in the list or detail view) */
   helpText?: string;
+  /** for type: 'number' — smallest / largest value the browser and submit will accept. */
+  min?: number;
+  max?: number;
   /** extra text added after the label in the Add/Edit form, worked out from the in-progress form (e.g. the currency symbol of the chosen currency) */
   labelSuffix?: (form: Record<string, string>) => string;
   /** groups fields under a <fieldset> legend; omit for the ungrouped top section */
@@ -522,6 +525,14 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
           }
         };
         if (vi > 0) { seqCursor += 1; generate(); }
+        for (const f of fields) {
+          const raw = values[f.key];
+          if (f.type === 'number' && raw !== '' && raw != null) {
+            const n = Number(raw);
+            if (f.min !== undefined && n < f.min) throw new Error(`${f.label} cannot be less than ${f.min}.`);
+            if (f.max !== undefined && n > f.max) throw new Error(`${f.label} cannot be more than ${f.max}.`);
+          }
+        }
         const payload: Record<string, unknown> = {};
         for (const f of fields) {
           const raw = values[f.key];
@@ -1420,7 +1431,7 @@ function renderInput(
   }
  // NEW
   if (f.type === 'number') {
-    return <input type="number" required={f.required} value={value} placeholder={f.placeholder} onChange={(e) => onChange(e.target.value)} />;
+    return <input type="number" required={f.required} min={f.min} max={f.max} step="any" value={value} placeholder={f.placeholder} onWheel={(e) => (e.target as HTMLInputElement).blur()} onChange={(e) => onChange(e.target.value)} />;
   }
   if (f.type === 'file') {
     return <FileUploadField value={value} required={f.required} bucket={f.fileBucket ?? 'trade-documents'} onChange={onChange} />;

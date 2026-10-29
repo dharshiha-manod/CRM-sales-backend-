@@ -147,6 +147,8 @@ type LiveFollowUp = {
 };
 type LiveProduct = { id: string; product_code: string; product_name: string; stock_quantity?: number | null; industry_type_id?: string | null };
 type LiveIndustryType = { id: string; code: string };
+// Real Pharma alerts from GET /pharma/alerts (batch expiry, open recalls, returns to inspect, hospital follow-ups due).
+type LivePharmaAlert = { id: string; type: 'expiry' | 'recall' | 'return' | 'followup'; level: 'expired' | 'critical' | 'warning'; title: string; message: string; batchNumber?: string; daysLeft?: number; quantity?: number; expiryDate?: string };
 type LivePurchaseEnquiry = {
   id: string; enquiry_number: string; product_name?: string | null; supplier_name?: string | null;
   status?: string | null; updated_at?: string | null; industry_type_id?: string | null;
@@ -187,7 +189,7 @@ function industryKeyFromCode(code?: string | null): NotifIndustry {
 
 function buildLiveNotifications(sources: {
   orders: LiveOrder[]; collections: LiveCollection[]; clients: LiveClient[]; followUps: LiveFollowUp[];
-  products: LiveProduct[]; industryTypes: LiveIndustryType[]; purchaseEnquiries: LivePurchaseEnquiry[];
+  products: LiveProduct[]; industryTypes: LiveIndustryType[]; purchaseEnquiries: LivePurchaseEnquiry[]; pharmaAlerts: LivePharmaAlert[];
 }): NotificationItem[] {
   const readIds = readIdSet(READ_KEY);
   const dismissed = readIdSet(DISMISSED_KEY);
@@ -277,7 +279,7 @@ function buildLiveNotifications(sources: {
         });
       }
     }
-    if (meta.expiryDate) {
+    if (meta.expiryDate && industry !== 'pharma') { // Pharma expiry comes from the real batches (see below), not this browser's saved notes
       const daysLeft = Math.ceil((new Date(meta.expiryDate).getTime() - now) / 86_400_000);
       if (daysLeft >= 0 && daysLeft <= 30) {
         const id = `expiry-${p.id}`;
@@ -309,6 +311,27 @@ function buildLiveNotifications(sources: {
     });
   }
 
+  // Pharma: alerts computed on the server from the real Batch & Expiry, Recall, Medicine Return and Hospital Engagement records.
+  for (const a of sources.pharmaAlerts) {
+    if (dismissed.has(a.id)) continue;
+    const kind = a.type;
+    const target = kind === 'recall' ? 'industry:pharma:recall' : kind === 'return' ? 'industry:pharma:medicine-return' : kind === 'followup' ? 'industry:pharma:hospital-engagement' : 'industry:pharma:batch-expiry';
+    const moduleName = kind === 'recall' ? 'Recall Management' : kind === 'return' ? 'Medicine Return' : kind === 'followup' ? 'Hospital Engagement' : 'Batch & Expiry';
+    const details: DetailField[] = [{ label: 'Alert', value: a.title }];
+    if (a.batchNumber) details.push({ label: 'Batch', value: a.batchNumber });
+    if (a.quantity !== undefined) details.push({ label: 'Units on hand', value: String(a.quantity) });
+    if (a.expiryDate) details.push({ label: 'Expiry', value: String(a.expiryDate).slice(0, 10) });
+    items.push({
+      id: a.id, category: kind === 'followup' ? 'followup' : 'inventory',
+      title: kind === 'expiry' ? 'Expiry Alert' : kind === 'recall' ? 'Product Recall' : a.title,
+      description: kind === 'expiry' ? `${a.title} — ${a.message}` : a.message,
+      module: moduleName, navigateTo: target, industry: 'pharma',
+      roles: kind === 'recall' || kind === 'followup' ? ['admin', 'manager', 'rep'] : ['admin', 'manager'],
+      timestamp: new Date().toISOString(), read: readIds.has(a.id), priority: a.level === 'warning' ? 'important' : 'critical',
+      details, primaryAction: kind === 'recall' ? 'View Recall' : kind === 'return' ? 'View Returns' : kind === 'followup' ? 'View Engagements' : 'View Batches',
+    });
+  }
+
   return items;
 }
 
@@ -333,10 +356,14 @@ async function loadLiveNotifications(): Promise<NotificationItem[]> {
     api<{ data: { settings?: unknown } | null }>('/organization-settings').catch(() => ({ data: null })),
     api<{ data: LivePurchaseEnquiry[] }>('/trading/purchase-enquiries').catch(() => ({ data: [] })),
   ]);
+  const pharmaType = (industryTypes.data ?? []).find((t) => String(t.code).toLowerCase() === 'pharma');
+  const pharmaAlerts = pharmaType
+    ? await api<{ data: { alerts?: LivePharmaAlert[] } }>(`/pharma/alerts?industryTypeId=${encodeURIComponent(pharmaType.id)}`).then((r) => r.data?.alerts ?? []).catch(() => [] as LivePharmaAlert[])
+    : [];
   const items = buildLiveNotifications({
     orders: orders.data ?? [], collections: collections.data ?? [], clients: clients.data ?? [],
     followUps: followUps.data ?? [], products: products.data ?? [], industryTypes: industryTypes.data ?? [],
-    purchaseEnquiries: purchaseEnquiries.data ?? [],
+    purchaseEnquiries: purchaseEnquiries.data ?? [], pharmaAlerts,
   });
   const inAppOff = new Set(
     hydrateSettingsState(orgSettings.data?.settings).notifications.filter((row) => !row.inApp).map((row) => row.category),
