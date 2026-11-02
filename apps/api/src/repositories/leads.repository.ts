@@ -26,6 +26,7 @@ type LeadMeta = {
   interestedProduct?: string;
   expectedOrderValue?: string;
   nextFollowUp?: string;
+  doctorSpecialty?: string;
 };
 type LeadForFollowUp = { id: string; company_name: string; representative_id: string | null; next_action_due_at: string | null; priority: string | null; notes: string | null };
 function parseLeadMeta(notes?: string | null): LeadMeta {
@@ -702,7 +703,9 @@ export async function convertLeadToClient(
   // client's "Outlet type", so nobody has to enter it a second time on the client page.
   const OUTLET_TYPE_VALUES = ['wholesaler', 'retailer', 'distributor', 'super_stockist', 'institution', 'manufacturer', 'other'];
   const leadCustomerType = String(parseLeadMeta(lead.notes).customerType ?? '').toLowerCase();
-  const outletType = OUTLET_TYPE_VALUES.includes(leadCustomerType) ? leadCustomerType : null;
+  // Pharma customer types that have no outlet type of their own map to the closest one; the exact type is kept in industry_details.
+  const PHARMA_OUTLET_MAP: Record<string, string> = { chain_pharmacy: 'retailer', hospital: 'institution', clinic: 'institution', medical_college: 'institution', diagnostic_lab: 'institution' };
+  const outletType = OUTLET_TYPE_VALUES.includes(leadCustomerType) ? leadCustomerType : (PHARMA_OUTLET_MAP[leadCustomerType] ?? null);
   // School only: the lead's "School type" (government / private / ...) is not a client type. A School client is always
   // typed "School" (that is what the School pages and reports look for) and keeps the school type in its profile.
   const isSchoolLead = await isSchoolIndustry(organizationId, lead.industry_type_id);
@@ -715,6 +718,7 @@ export async function convertLeadToClient(
       client_name: lead.company_name,
         client_type: isSchoolLead ? 'School' : input.clientType,
       ...(isSchoolLead && leadCustomerType ? { industry_details: { schoolType: leadCustomerType } } : {}),
+      ...(!isSchoolLead && PHARMA_OUTLET_MAP[leadCustomerType] ? { industry_details: { pharmaCustomerType: leadCustomerType } } : {}),
       outlet_type: outletType,
       industry_type_id: lead.industry_type_id,
       phone: lead.phone,
@@ -758,6 +762,7 @@ export async function convertLeadToClient(
       client_id: client.id,
       name: lead.contact_name || lead.company_name,
       is_primary: true,
+      ...(parseLeadMeta(lead.notes).doctorSpecialty ? { designation: parseLeadMeta(lead.notes).doctorSpecialty } : {}),
       email: lead.email ?? null,
       phone: lead.phone ?? null,
     });

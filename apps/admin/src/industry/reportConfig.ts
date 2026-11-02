@@ -27,7 +27,7 @@ export const REPORT_TERMS: Record<IndustryKey, ReportTerms> = {
     itemLabel: 'Medicine',
     itemLabelPlural: 'Medicines',
     insightsTitle: 'Pharma insights',
-    insightsNote: 'Medicine-wise sales based on confirmed orders. Batch/expiry tracking isn\u2019t wired to the backend yet.',
+    insightsNote: 'Medicine-wise sales based on confirmed orders. Batch, expiry and recall status are on the Pharma dashboard.',
   },
   school: {
     clientLabel: 'Institution',

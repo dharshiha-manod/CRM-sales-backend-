@@ -6,11 +6,16 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { requireRoles } from '../middleware/authorize.js';
 import { assertRecordInScope, resolveIndustryTypeId } from '../lib/industry-scope.js';
-import { BATCH_BLOCKED, PHARMA_RESOURCES, type PharmaResource } from '../lib/pharma-resources.js';
-import { daysLeft, expiryStatus, isBatchBlocked as isBlocked } from '../lib/pharma-rules.js';
+import { PHARMA_RESOURCES, type PharmaResource } from '../lib/pharma-resources.js';
+import { daysLeft, expiryStatus, isBatchBlocked as isBlocked, isSellable, statusMoveProblem, licenseDaysLeft, LICENSE_WARN_DAYS, PHARMA_BLOCK_SALE_DAYS } from '../lib/pharma-rules.js';
+import { getPharmaExpiryRules } from '../lib/settings.js';
+import { applyAllocations, readAllocation, releaseStockForOrder, takeStockForOrder, type Allocation } from '../lib/stock.js';
 export { expiryStatus };
 import { createManual as createFollowUp } from '../repositories/follow-ups.repository.js';
-
+import { fieldActivityService } from '../services/field-activity.service.js';
+import { createReturn, decideReturn } from '../repositories/sales-returns.repository.js';
+import { createRefund, listRefunds, refundSchema } from '../repositories/fmcg-refunds.repository.js';
+import { industryCodeOf } from '../lib/fmcg-market.js';
 export const pharmaRouter = Router();
 const manager = requireRoles('super_admin', 'admin', 'sales_manager');
 const writerRep = requireRoles('super_admin', 'admin', 'sales_manager', 'sales_representative');
@@ -93,14 +98,15 @@ async function findProduct(orgId: string, industryTypeId: string, col: 'product_
   }
   return null;
 }
-/** Product stock = sum of its saleable (not expired / recalled / quarantined) pharma batches. Best effort. */
+/** Product stock = sum of its SELLABLE pharma batches: not expired / recalled / quarantined, and not inside the "block sale within N days of expiry" window. Best effort. */
 async function syncProductStock(orgId: string, industryTypeId: string, productCode: unknown) {
   if (!str(productCode)) return;
   try {
     const product = await findProduct(orgId, industryTypeId, 'product_code', productCode);
     if (!product) return;
-    const { data } = await supabaseAdmin.from('pharma_batches').select('quantity, status').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('product_code', str(productCode));
-    const total = ((data ?? []) as Row[]).filter((b) => !BATCH_BLOCKED.includes(String(b.status))).reduce((s, b) => s + num(b.quantity), 0);
+    const minDays = Math.max(PHARMA_BLOCK_SALE_DAYS, (await getPharmaExpiryRules(orgId)).blockSaleWithinDaysOfExpiry);
+    const { data } = await supabaseAdmin.from('pharma_batches').select('quantity, status, expiry_date').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('product_code', str(productCode));
+    const total = ((data ?? []) as Row[]).filter((b) => isSellable(b, today(), minDays)).reduce((s, b) => s + num(b.quantity), 0);
     await supabaseAdmin.from('products').update({ stock_quantity: total }).eq('organization_id', orgId).eq('id', product.id);
   } catch { /* the pharma record is already saved */ }
 }
@@ -115,17 +121,21 @@ async function countWhere(table: string, orgId: string, column: string, value: u
 /** Keeps every batch's status in line with today's date (and open recalls). Best effort. */
 export async function refreshBatchStatuses(orgId: string, industryTypeId: string | null) {
   try {
-    let q = supabaseAdmin.from('pharma_batches').select('id, status, expiry_date, product_code, industry_type_id').eq('organization_id', orgId).not('status', 'in', '("Quarantined","Recalled")');
+    let q = supabaseAdmin.from('pharma_batches').select('id, status, batch_number, expiry_date, product_code, industry_type_id').eq('organization_id', orgId).not('status', 'in', '("Quarantined","Recalled")');
     if (industryTypeId) q = q.eq('industry_type_id', industryTypeId);
     const { data } = await q;
     const touched = new Set<string>();
+    const newlyExpired: string[] = [];
     for (const b of (data ?? []) as Row[]) {
       const want = expiryStatus(b.expiry_date);
       if (want !== b.status) {
         await supabaseAdmin.from('pharma_batches').update({ status: want }).eq('organization_id', orgId).eq('id', b.id as string);
         touched.add(`${b.industry_type_id}|${b.product_code ?? ''}`);
+        if (want === 'Expired') newlyExpired.push(str(b.batch_number));
       }
     }
+    // A batch that just expired must not leave with an order that is confirmed but not delivered yet: re-pick it from valid batches.
+    for (const n of newlyExpired) if (n) await repickOrdersForBatch(orgId, n);
     for (const t of touched) { const [it, pc] = t.split('|'); await syncProductStock(orgId, it, pc); }
   } catch { /* never block the list */ }
 }
@@ -144,6 +154,66 @@ async function reconcileBatchAfterRecall(orgId: string, industryTypeId: string, 
   } catch { /* best effort */ }
 }
 
+/** Units that came back (customer return / rep sample return) for a recalled batch count toward the open recall's "collected back". */
+async function addRecallCollected(orgId: string, batchNumber: unknown, qty: number): Promise<boolean> {
+  if (qty <= 0 || !str(batchNumber)) return false;
+  try {
+    const { data: rc } = await supabaseAdmin.from('pharma_recalls').select('id, collected_quantity, supplied_quantity').eq('organization_id', orgId).eq('batch_number', str(batchNumber)).neq('status', 'Closed').order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (!rc) return false;
+    const next = Math.min(num(rc.supplied_quantity), num(rc.collected_quantity) + qty);
+    await supabaseAdmin.from('pharma_recalls').update({ collected_quantity: next }).eq('organization_id', orgId).eq('id', rc.id as string);
+    return true;
+  } catch { return false; }
+}
+/** Orders that hold units of this batch but are not delivered yet: they must be stopped / re-picked. */
+async function pendingOrdersForBatch(orgId: string, batchNumber: string): Promise<string[]> {
+  try {
+    const { data: items } = await supabaseAdmin.from('sale_order_items').select('order_id').contains('batch_allocations', { batches: [{ batchNo: batchNumber, src: 'pharma' }] });
+    const ids = [...new Set(((items ?? []) as Row[]).map((i) => i.order_id as string))];
+    if (!ids.length) return [];
+    const { data: orders } = await supabaseAdmin.from('sale_orders').select('order_number, status, dispatch_status').eq('organization_id', orgId).eq('stock_deducted', true).in('id', ids);
+    return ((orders ?? []) as Row[]).filter((o) => !['cancelled', 'delivered', 'completed'].includes(String(o.status)) && !['dispatched', 'delivered'].includes(String(o.dispatch_status ?? ''))).map((o) => str(o.order_number)).filter(Boolean);
+  } catch { return []; }
+}
+/** A recalled / quarantined batch must not leave the building. Every confirmed, undelivered order holding units of it gets its stock given back and picked again from valid batches.
+ *  An order that cannot be re-picked (no other valid stock, or part of it was already returned) keeps its old pick and is named in `stuck` so a manager stops it by hand. */
+async function repickOrdersForBatch(orgId: string, batchNumber: string): Promise<{ repicked: string[]; stuck: string[]; units: number }> {
+  const out = { repicked: [] as string[], stuck: [] as string[], units: 0 };
+  try {
+    const { data: items } = await supabaseAdmin.from('sale_order_items').select('order_id').contains('batch_allocations', { batches: [{ batchNo: batchNumber, src: 'pharma' }] });
+    const ids = [...new Set(((items ?? []) as Row[]).map((i) => i.order_id as string))];
+    if (!ids.length) return out;
+    const { data: orders } = await supabaseAdmin.from('sale_orders').select('id, order_number, status, dispatch_status').eq('organization_id', orgId).eq('stock_deducted', true).in('id', ids);
+    const open = ((orders ?? []) as Row[]).filter((o) => !['cancelled', 'delivered', 'completed'].includes(String(o.status)) && !['dispatched', 'delivered'].includes(String(o.dispatch_status ?? '')));
+    for (const o of open) {
+      const orderId = o.id as string; const number = str(o.order_number);
+      const { data: lines } = await supabaseAdmin.from('sale_order_items').select('batch_allocations').eq('order_id', orderId);
+      const old = ((lines ?? []) as Row[]).map((l) => readAllocation(l.batch_allocations)).filter((a): a is Allocation => a !== null);
+      const parts = old.flatMap((a) => a.batches);
+      if (parts.some((p) => num(p.restocked) > 0)) { out.stuck.push(number); continue; } // part of this order already came back: do not re-pick automatically
+      const units = parts.filter((p) => p.src === 'pharma' && p.batchNo === batchNumber).reduce((sum, p) => sum + num(p.quantity), 0);
+      try {
+        await releaseStockForOrder(orgId, orderId);
+        try { await takeStockForOrder(orgId, orderId); }
+        catch (e) { // could not pick again: put the order back exactly as it was
+          await applyAllocations(orgId, old, 'take', `Recall re-pick of ${number} rolled back`);
+          await supabaseAdmin.from('sale_orders').update({ stock_deducted: true }).eq('organization_id', orgId).eq('id', orderId);
+          throw e;
+        }
+        out.repicked.push(number); out.units += units;
+      } catch { out.stuck.push(number); }
+    }
+  } catch { /* best effort: the recall itself is already saved */ }
+  return out;
+}
+/** A sales rep sees and edits only his own records (sales_rep = his employee code). Managers / admins see everything. */
+const REP_SCOPED = new Set(['pharma_samples', 'pharma_hospital_engagements', 'pharma_medicine_returns']);
+async function repCodeFor(req: Req, table: string): Promise<string | null> {
+  if (!REP_SCOPED.has(table) || req.industryScope!.role !== 'sales_representative') return null;
+  const rep = await fieldActivityService.currentRepresentative(org(req), (req as unknown as { auth: { sub: string } }).auth.sub) as { employee_code?: string | null };
+  return str(rep.employee_code) || '__none__';
+}
+
 /** Campaign status follows the calendar: Planned -> Active on the start date, -> Completed after the end date. Cancelled / Completed are never touched. */
 export async function refreshPromotionStatuses(orgId: string, industryTypeId: string | null) {
   try {
@@ -157,14 +227,15 @@ export async function refreshPromotionStatuses(orgId: string, industryTypeId: st
       if (end && end < t) next = 'Completed';
       else if (start && start <= t && ['Planned', 'Products selected', 'HCPs assigned'].includes(String(p.status))) next = 'Active';
       if (next && next !== p.status) await supabaseAdmin.from('pharma_promotions').update({ status: next }).eq('organization_id', orgId).eq('id', p.id as string);
-      // Samples provided = units actually issued for this product (matched by product CODE when known) inside the campaign window, unless typed in by hand.
-      if (!num(p.samples_provided) && (str(p.product_code) || str(p.product_name)) && start) {
+      // Samples provided = units issued in Sample Management for this product (matched by product CODE when known) inside the campaign window.
+      // Recalculated every time, so it follows Sample Management and never goes stale.
+      if ((str(p.product_code) || str(p.product_name)) && start) {
         let sq = supabaseAdmin.from('pharma_samples').select('quantity_issued').eq('organization_id', orgId).eq(str(p.product_code) ? 'product_code' : 'product_name', str(p.product_code) || str(p.product_name)).gte('issue_date', start);
         if (end) sq = sq.lte('issue_date', end);
         if (str(p.hospital_name)) sq = sq.eq('hospital_name', str(p.hospital_name));
         const { data: given } = await sq;
         const total = ((given ?? []) as Row[]).reduce((sum, x) => sum + num(x.quantity_issued), 0);
-        if (total > 0) await supabaseAdmin.from('pharma_promotions').update({ samples_provided: total }).eq('organization_id', orgId).eq('id', p.id as string);
+        if (total > 0 && total !== num(p.samples_provided)) await supabaseAdmin.from('pharma_promotions').update({ samples_provided: total }).eq('organization_id', orgId).eq('id', p.id as string);
       }
     }
   } catch { /* never block the list */ }
@@ -186,32 +257,17 @@ async function logSampleEngagement(orgId: string, industryTypeId: string, sample
   } catch { /* best effort */ }
 }
 
-/** Raises ONE follow-up for a customer / hospital. The client is matched by name inside this industry; the rep is the given employee code,
- *  else the client's active assigned rep. Silent when no client or rep can be matched. The title is the de-duplication key and is checked
- *  across every status, so a follow-up the rep already completed is never raised a second time. */
-async function raiseFollowUp(orgId: string, industryTypeId: string, o: { customer: string; repCode?: string; title: string; priority: string; notes?: string | null }) {
-  try {
-    if (!o.customer) return;
-    const { data: client } = await supabaseAdmin.from('clients').select('id').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('client_name', o.customer).limit(1).maybeSingle();
-    if (!client) return;
-    let repId: string | null = null;
-    if (o.repCode) {
-      const { data: rep } = await supabaseAdmin.from('sales_representatives').select('id').eq('organization_id', orgId).eq('employee_code', o.repCode).maybeSingle();
-      repId = (rep as { id?: string } | null)?.id ?? null;
-    }
-    if (!repId) {
-      const { data: link } = await supabaseAdmin.from('sales_representative_client_assignments').select('sales_representative_id').eq('organization_id', orgId).eq('client_id', client.id).eq('status', 'active').limit(1).maybeSingle();
-      repId = (link as { sales_representative_id?: string } | null)?.sales_representative_id ?? null;
-    }
-    if (!repId) return;
-    const { data: already } = await supabaseAdmin.from('follow_ups').select('id').eq('organization_id', orgId).eq('client_id', client.id).eq('title', o.title).limit(1).maybeSingle();
-    if (already) return;
-    const dueAt = new Date(Math.max(Date.parse(`${today()}T09:00:00+05:30`), Date.now() + 5 * 60000)).toISOString();
-    await createFollowUp(orgId, { clientId: client.id as string, representativeId: repId, title: o.title, dueAt, priority: o.priority, followUpType: 'visit', notes: o.notes ?? null });
-  } catch { /* the pharma record is already saved; the follow-up stays manual */ }
-}
-
 // ---- per-module rules ----------------------------------------------------------
+/** New codes come from the form (list length + 1), so after a delete the next code can already exist. Take the next free number instead of failing. */
+async function nextFreeCode(table: string, field: string, orgId: string, code: unknown): Promise<unknown> {
+  const m = /^(.*-)(\d+)$/.exec(str(code));
+  if (!m) return code;
+  const { data } = await supabaseAdmin.from(table).select(field).eq('organization_id', orgId).like(field, `${m[1]}%`);
+  const used = ((data ?? []) as unknown as Row[]).map((x) => String(x[field] ?? ''));
+  if (!used.includes(String(code))) return code;
+  const top = Math.max(...used.map((u) => Number(/(\d+)$/.exec(u)?.[1] ?? 0)));
+  return `${m[1]}${String(top + 1).padStart(m[2].length, '0')}`;
+}
 interface Ctx { orgId: string; industryTypeId: string; payload: Row; existing: Row | null; actor?: string | null }
 type Prepare = (c: Ctx) => Promise<void>;
 type After = (c: Ctx & { saved: Row }) => Promise<void>;
@@ -225,6 +281,14 @@ const prepareBatch: Prepare = async ({ orgId, industryTypeId, payload, existing 
       const { data: last } = await supabaseAdmin.from('pharma_batches').select('supplier, unit, warehouse_location, sales_rep').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('product_code', str(payload.product_code)).order('created_at', { ascending: false }).limit(1).maybeSingle();
       for (const k of ['supplier', 'unit', 'warehouse_location', 'sales_rep']) if (!str(payload[k]) && last && str((last as Row)[k])) payload[k] = (last as Row)[k];
     }
+    if (!existing) { // double-save guard: same product + same dates created in the last 30 seconds is a duplicate click, not a new lot
+      const since = new Date(Date.now() - 30_000).toISOString();
+      let recent = supabaseAdmin.from('pharma_batches').select('batch_number').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('product_code', str(payload.product_code)).gte('created_at', since).limit(1);
+      recent = payload.manufacture_date ? recent.eq('manufacture_date', str(payload.manufacture_date)) : recent.is('manufacture_date', null);
+      recent = payload.expiry_date ? recent.eq('expiry_date', str(payload.expiry_date)) : recent.is('expiry_date', null);
+      const { data: justSaved } = await recent;
+      if (justSaved && justSaved.length > 0) throw new AppError(409, 'DUPLICATE_RECORD', `Batch ${str((justSaved[0] as Row).batch_number)} was just saved for this product with the same dates. Edit that batch instead of adding another.`);
+    }
   }
   const m = { ...(existing ?? {}), ...payload };
   if (m.manufacture_date && m.expiry_date && String(m.expiry_date) < String(m.manufacture_date)) throw bad('Expiry cannot be before the manufacture date.');
@@ -237,10 +301,12 @@ const afterBatch: After = async ({ orgId, industryTypeId, saved, existing, actor
   // a hand-edited quantity is written to the stock audit log (who, how much, when)
   if (!existing) { if (num(saved.quantity) > 0) await logMovement(orgId, saved.id as string, saved.batch_number, num(saved.quantity), 'Batch created', actor); }
   else if (num(saved.quantity) !== num(existing.quantity)) await logMovement(orgId, saved.id as string, saved.batch_number, num(saved.quantity) - num(existing.quantity), 'Manual quantity edit', actor);
+  if (existing && saved.status === 'Quarantined' && existing.status !== 'Quarantined') await repickOrdersForBatch(orgId, str(saved.batch_number));
   await syncProductStock(orgId, industryTypeId, saved.product_code);
   if (existing && existing.product_code !== saved.product_code) await syncProductStock(orgId, industryTypeId, existing.product_code);
 };
 
+const createdAsReturned = new WeakMap<object, number>(); // units still unused when a sample is created straight as Returned
 const prepareSample: Prepare = async ({ orgId, industryTypeId, payload, existing }) => {
   if (existing) delete payload.batch_number; // a sample never moves to another batch: delete and re-issue instead
   const batch = await getBatch(orgId, industryTypeId, existing ? existing.batch_number : payload.batch_number);
@@ -259,17 +325,27 @@ const prepareSample: Prepare = async ({ orgId, industryTypeId, payload, existing
   if (remaining > issued) throw bad('Quantity remaining cannot be more than quantity issued.');
   const m = { ...(existing ?? {}), ...payload };
   if (['Distributed', 'Acknowledged'].includes(String(m.status)) && !str(m.doctor_name) && !str(m.hospital_name)) throw bad('Enter the doctor or hospital before marking a sample Distributed.');
-  if (m.status === 'Returned' && existing?.status !== 'Returned') payload.quantity_remaining = 0; // remaining units go back to the batch in afterSample
+   if (existing?.status === 'Returned' && m.status !== 'Returned') throw bad('A returned sample is closed and cannot be re-opened. Create a new sample instead.');
+  if (existing?.status === 'Returned' && m.status === 'Returned' && delta !== 0) throw bad('The quantity of a returned sample cannot be changed.');
+  if (m.status === 'Returned') {
+    if (!existing) createdAsReturned.set(payload, num(m.quantity_remaining)); // creation case: restored in afterSample
+    payload.quantity_remaining = 0; // a returned sample never keeps units
+  }
 };
-const afterSample: After = async ({ orgId, industryTypeId, saved, actor, existing }) => {
+const afterSample: After = async ({ orgId, industryTypeId, saved, actor, existing, payload }) => {
   const batch = await getBatch(orgId, industryTypeId, saved.batch_number);
   const batchId = batch.id as string;
-  if (!existing) { await changeBatchQty(orgId, batchId, -num(saved.quantity_issued), `Sample ${str(saved.sample_code)} issued`, actor); }
+  if (!existing) {
+    await changeBatchQty(orgId, batchId, -num(saved.quantity_issued), `Sample ${str(saved.sample_code)} issued`, actor);
+    const back = createdAsReturned.get(payload) ?? 0;
+    if (back > 0) await changeBatchQty(orgId, batchId, back, `Sample ${str(saved.sample_code)} returned`, actor); // created straight as Returned: unused units go back to stock
+  }
   else {
     await changeBatchQty(orgId, batchId, -(num(saved.quantity_issued) - num(existing.quantity_issued)), `Sample ${str(saved.sample_code)} changed`, actor);
     if (saved.status === 'Returned' && existing.status !== 'Returned') await changeBatchQty(orgId, batchId, num(existing.quantity_remaining), `Sample ${str(saved.sample_code)} returned`, actor); // unused units back to stock
   }
   await syncProductStock(orgId, industryTypeId, batch.product_code);
+  if (existing && saved.status === 'Returned' && existing.status !== 'Returned') await addRecallCollected(orgId, saved.batch_number, num(existing.quantity_remaining));
   await logSampleEngagement(orgId, industryTypeId, saved);
 };
 
@@ -314,6 +390,46 @@ const afterEngagement: After = async ({ orgId, industryTypeId, saved }) => {
   } catch { /* the engagement is already saved; the follow-up stays manual */ }
 };
 
+/** Order selected as the return's Invoice / order reference: must be a real Sales Order of this industry, for the same customer, and must have sold this product / batch. */
+type OrderLine = { quantity: unknown; free_quantity: unknown; batch_allocations: unknown; products: { product_code: string | null; product_name: string | null } | null };
+const sameText = (a: unknown, b: unknown) => str(a).trim().toLowerCase() === str(b).trim().toLowerCase();
+async function validateReturnOrder(orgId: string, industryTypeId: string, m: Row, payload: Row, existing: Row | null) {
+  const ref = str(m.invoice_reference).trim();
+  if (!ref) return;
+  const changed = !existing || !sameText(existing.invoice_reference, ref) || ('quantity' in payload && num(existing.quantity) !== num(m.quantity)) || ('batch_number' in payload && str(existing.batch_number) !== str(m.batch_number));
+  if (!changed) return; // old records keep working until someone edits the order / product / quantity
+  const { data: order, error } = await supabaseAdmin.from('sale_orders')
+    .select('id, order_number, status, clients!inner(client_name, industry_type_id), sales_representatives(employee_code), sale_order_items(quantity, free_quantity, batch_allocations, products(product_code, product_name))')
+    .eq('organization_id', orgId).eq('order_number', ref).maybeSingle();
+  if (error) throw error;
+  const o = order as unknown as { id: string; status: string; clients: { client_name: string; industry_type_id: string | null }; sales_representatives: { employee_code: string | null } | null; sale_order_items: OrderLine[] } | null;
+  if (!o || o.clients?.industry_type_id !== industryTypeId) throw bad(`Order ${ref} does not exist in this industry. Pick it from the Sales Orders list.`, 'INVALID_REFERENCE');
+  if (o.status === 'cancelled') throw bad(`Order ${ref} was cancelled — a return cannot be raised against it.`);
+  // Customer must match the order's customer (filled in from the order when left empty).
+  if (str(m.customer_hospital) && !sameText(m.customer_hospital, o.clients.client_name)) throw bad(`Order ${ref} belongs to ${o.clients.client_name}, not ${str(m.customer_hospital)}.`);
+  if (!str(m.customer_hospital)) payload.customer_hospital = o.clients.client_name;
+  if (!str(m.sales_rep) && o.sales_representatives?.employee_code) payload.sales_rep = o.sales_representatives.employee_code;
+  // The returned product must be on the order.
+  const lines = o.sale_order_items ?? [];
+  const pname = str(payload.product_name ?? m.product_name);
+  const mine = lines.filter((l) => sameText(l.products?.product_name, pname));
+  if (!mine.length) throw bad(`${pname || 'This product'} is not on order ${ref}.`);
+  // The returned batch must be one that this order actually took stock from (only checked when the order recorded its batches).
+  const bn = str(m.batch_number);
+  if (bn) {
+    const parts = mine.flatMap((l) => ((l.batch_allocations as { batches?: { batchNo?: string }[] } | null)?.batches ?? []));
+    if (parts.length && !parts.some((p) => sameText(p.batchNo, bn))) throw bad(`Batch ${bn} was not supplied on order ${ref}.`);
+  }
+  // Quantity: cannot return more than was sold minus what earlier (non-rejected) returns already took back.
+  const sold = mine.reduce((sum, l) => sum + num(l.quantity) + num(l.free_quantity), 0);
+  let q = supabaseAdmin.from('pharma_medicine_returns').select('quantity, product_name').eq('organization_id', orgId).eq('invoice_reference', ref).neq('status', 'Rejected');
+  if (existing?.id) q = q.neq('id', existing.id as string);
+  const { data: prior, error: e2 } = await q;
+  if (e2) throw e2;
+  const already = ((prior ?? []) as Row[]).filter((r) => sameText(r.product_name, pname)).reduce((sum, r) => sum + num(r.quantity), 0);
+  if (num(m.quantity) > sold - already) throw bad(`Only ${Math.max(sold - already, 0)} unit(s) of ${pname} can still be returned on order ${ref} (sold ${sold}, already returned ${already}).`);
+}
+
 const NOT_SALEABLE_REASONS = ['Expired', 'Near expiry', 'Damaged', 'Recall', 'Quality issue'];
 const prepareReturn: Prepare = async ({ orgId, industryTypeId, payload, existing }) => {
   if (existing?.stock_applied) throw new AppError(409, 'RECORD_LOCKED', 'This return has already been restocked and can no longer be edited.');
@@ -323,9 +439,20 @@ const prepareReturn: Prepare = async ({ orgId, industryTypeId, payload, existing
     const b = await getBatch(orgId, industryTypeId, m.batch_number);
     payload.product_name = b.product_name;
   }
+  if (existing?.sales_return_id) {
+    // Credit was already given to the customer for this return: the money-related parts can no longer change.
+    const changedKey = ['invoice_reference', 'product_name', 'quantity', 'batch_number', 'fault_side'].some((k) => k in payload && String(payload[k] ?? '') !== String(existing[k] ?? ''));
+    if (changedKey || payload.status === 'Rejected') throw new AppError(409, 'RECORD_LOCKED', 'Credit was already given to the customer for this return, so the order, product, quantity and credit setting can no longer be changed.');
+  }
+  if (!existing && !str(m.invoice_reference)) throw bad('Pick the customer and the Sales Order this return is against.');
+  await validateReturnOrder(orgId, industryTypeId, m, payload, existing ?? null);
   if (!existing) { if (!payload.status) payload.status = 'Requested'; if (!payload.inspection_status) payload.inspection_status = 'Pending'; if (!payload.return_date) payload.return_date = today(); }
   const status = String(payload.status ?? existing?.status ?? 'Requested');
   if (m.disposition === 'Saleable' && NOT_SALEABLE_REASONS.includes(String(m.reason))) throw bad(`Medicine returned as "${String(m.reason)}" can never be Saleable. Choose Quarantine, Damaged, Expired or Disposal.`);
+  if (['Approved', 'Closed'].includes(status) && !['Approved', 'Closed'].includes(String(existing?.status ?? ''))) {
+    if (!str(m.fault_side)) throw bad('Choose whose mistake it was (Our side / Customer side) before approving this return.');
+    if (m.fault_side === 'Our side' && !str(m.invoice_reference)) throw bad('Pick the Sales Order so the customer can get credit for our mistake.');
+  }
   if (['Approved', 'Closed'].includes(status)) {
     if (!str(m.disposition)) throw bad('Choose a disposition before approving or closing a return.');
     if (String(m.inspection_status ?? 'Pending') === 'Pending') throw bad('Inspect the returned medicine before approving it.');
@@ -337,7 +464,27 @@ const prepareReturn: Prepare = async ({ orgId, industryTypeId, payload, existing
     }
   }
 };
-const afterReturn: After = async ({ orgId, industryTypeId, saved, actor }) => {
+/** Approved return -> approved credit note in the shared sales_returns table (same engine FMCG uses), so the customer's outstanding drops. Runs once per return. */
+async function creditCustomerForReturn(orgId: string, saved: Row, existing: Row | null, actor: string | null) {
+  if (saved.sales_return_id || !['Approved', 'Closed'].includes(String(saved.status))) return;
+  if (['Approved', 'Closed'].includes(String(existing?.status ?? ''))) return; // only when the return becomes approved now
+  if (str(saved.fault_side) !== 'Our side' || !str(saved.invoice_reference) || num(saved.quantity) <= 0 || !actor) return;
+  const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, sale_order_items(products(id, product_name))').eq('organization_id', orgId).eq('order_number', str(saved.invoice_reference)).maybeSingle();
+  if (error) throw error;
+  const lines = ((order as unknown as { id: string; sale_order_items: { products: { id: string; product_name: string | null } | null }[] } | null)?.sale_order_items ?? []);
+  const product = lines.map((l) => l.products).find((p) => sameText(p?.product_name, saved.product_name));
+  if (!order || !product) return;
+  const scope = { role: 'admin', lockedIndustryTypeId: null }; // the order / industry were already checked in prepareReturn
+  const entry = await createReturn(orgId, actor, scope, { orderId: (order as { id: string }).id, productId: product.id, quantity: num(saved.quantity), kind: 'return', reason: `Pharma return ${str(saved.return_code)}${str(saved.reason) ? ` — ${str(saved.reason)}` : ''}`, restock: false, creditClient: true }) as { id: string };
+  try { await decideReturn(orgId, actor, scope, entry.id, 'approved'); }
+  catch (e) { await supabaseAdmin.from('sales_returns').delete().eq('organization_id', orgId).eq('id', entry.id); throw e; } // no half-made credit note
+  await supabaseAdmin.from('pharma_medicine_returns').update({ sales_return_id: entry.id }).eq('organization_id', orgId).eq('id', saved.id as string);
+}
+const afterReturn: After = async ({ orgId, industryTypeId, saved, existing, actor }) => {
+  await creditCustomerForReturn(orgId, saved, existing ?? null, actor ?? null);
+  if (!saved.recall_applied && ['Approved', 'Closed'].includes(String(saved.status)) && saved.reason === 'Recall' && await addRecallCollected(orgId, saved.batch_number, num(saved.quantity))) {
+    await supabaseAdmin.from('pharma_medicine_returns').update({ recall_applied: true }).eq('organization_id', orgId).eq('id', saved.id as string);
+  }
   if (saved.stock_applied || !['Approved', 'Closed'].includes(String(saved.status)) || saved.disposition !== 'Saleable') return;
   const b = await getBatch(orgId, industryTypeId, saved.batch_number);
   await changeBatchQty(orgId, b.id as string, num(saved.quantity), `Medicine return ${str(saved.return_code)} restocked`, actor);
@@ -355,14 +502,47 @@ async function orderCustomersForBatch(orgId: string, batchNumber: string): Promi
     return [...new Set(((orders ?? []) as unknown as { clients: { client_name?: string } | { client_name?: string }[] | null }[]).map((o) => (Array.isArray(o.clients) ? o.clients[0] : o.clients)?.client_name ?? '').filter(Boolean))];
   } catch { return []; }
 }
+/** Units of this batch that went out to customers (orders) and reps / doctors (samples) and have not come back. */
+async function suppliedQtyForBatch(orgId: string, batchNumber: string): Promise<number> {
+  try {
+    let total = 0;
+    const { data: items } = await supabaseAdmin.from('sale_order_items').select('order_id, batch_allocations').contains('batch_allocations', { batches: [{ batchNo: batchNumber, src: 'pharma' }] });
+    const rows = (items ?? []) as Row[];
+    const ids = [...new Set(rows.map((i) => i.order_id as string))];
+    if (ids.length) {
+      const { data: orders } = await supabaseAdmin.from('sale_orders').select('id').eq('organization_id', orgId).eq('stock_deducted', true).in('id', ids);
+      const live = new Set(((orders ?? []) as Row[]).map((o) => o.id as string));
+      for (const i of rows) {
+        if (!live.has(i.order_id as string)) continue;
+        const parts = ((i.batch_allocations as { batches?: Row[] } | null)?.batches ?? []);
+        for (const p of parts) if (p.batchNo === batchNumber && p.src === 'pharma') total += num(p.quantity) - num(p.restocked);
+      }
+    }
+    const { data: back } = await supabaseAdmin.from('pharma_medicine_returns').select('quantity').eq('organization_id', orgId).eq('batch_number', batchNumber).in('status', ['Approved', 'Closed']);
+    total -= ((back ?? []) as Row[]).reduce((s, r) => s + num(r.quantity), 0); // already came back from customers
+    total = Math.max(total, 0);
+    const { data: smp } = await supabaseAdmin.from('pharma_samples').select('quantity_remaining').eq('organization_id', orgId).eq('batch_number', batchNumber).neq('status', 'Returned');
+    total += ((smp ?? []) as Row[]).reduce((s, r) => s + num(r.quantity_remaining), 0); // sample units still with reps / doctors
+    return total;
+  } catch { return 0; }
+}
 const prepareRecall: Prepare = async ({ orgId, industryTypeId, payload, existing }) => {
-  if (existing) delete payload.batch_number;
+  if (existing) { delete payload.batch_number; delete payload.stock_quantity; delete payload.supplied_quantity; delete payload.affected_quantity; }
   const b = await getBatch(orgId, industryTypeId, existing ? existing.batch_number : payload.batch_number);
   payload.product_name = b.product_name;
+  if (!existing && (await countWhere('pharma_recalls', orgId, 'batch_number', b.batch_number, (q) => q.eq('industry_type_id', industryTypeId).neq('status', 'Closed'))) > 0) throw bad(`Batch ${str(b.batch_number)} already has an open recall. Update that recall instead of creating another.`, 'DUPLICATE_RECORD');
+  if (!existing && !str(payload.notes)) { const held = await pendingOrdersForBatch(orgId, str(b.batch_number)); if (held.length) payload.notes = `Orders still holding this batch (stop / re-pick before dispatch): ${held.join(', ')}`; }
+  if (!existing) { // our own stock = written off as waste; what customers already hold = collected back
+    payload.stock_quantity = num(b.quantity);
+    payload.supplied_quantity = await suppliedQtyForBatch(orgId, str(b.batch_number));
+    payload.affected_quantity = num(payload.stock_quantity) + num(payload.supplied_quantity);
+    payload.collected_quantity = 0;
+  }
   const m = { ...(existing ?? {}), ...payload };
+  if (num(m.collected_quantity) > num(m.supplied_quantity)) throw bad(`Collected quantity cannot be more than the ${num(m.supplied_quantity)} unit(s) supplied to customers.`);
+  if (m.status === 'Closed' && num(m.collected_quantity) + 1e-9 < num(m.supplied_quantity)) throw bad(`Collect back all ${num(m.supplied_quantity)} unit(s) from customers before closing (collected ${num(m.collected_quantity)}).`);
   if (!existing) {
     if (!payload.recall_date) payload.recall_date = today();
-    if (payload.affected_quantity == null) payload.affected_quantity = num(b.quantity);
     if (!payload.status) payload.status = 'Batch identified';
     if (!str(payload.affected_customers)) { // who actually received this batch: sample recipients AND customers who bought it on an order
       const { data } = await supabaseAdmin.from('pharma_samples').select('hospital_name, doctor_name').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('batch_number', str(b.batch_number));
@@ -379,21 +559,30 @@ const prepareRecall: Prepare = async ({ orgId, industryTypeId, payload, existing
   }
   if (m.status === 'Closed' && !m.completion_date) payload.completion_date = today();
 };
-/** A recall marks its batch Recalled AND puts one follow-up per affected customer in front of the rep (collect / quarantine the stock), so nothing depends on someone remembering to chase it. */
-const afterRecall: After = async ({ orgId, industryTypeId, saved }) => {
+const afterRecall: After = async ({ orgId, industryTypeId, saved, existing, actor }) => {
   await reconcileBatchAfterRecall(orgId, industryTypeId, saved.batch_number, 'saved');
-  if (saved.status === 'Closed') return;
-  const names = [...new Set(str(saved.affected_customers).split(/\r?\n/).map((n) => n.trim()).filter(Boolean))].slice(0, 25);
-  const priority = saved.severity === 'Critical' ? 'critical' : saved.severity === 'High' ? 'high' : 'normal';
-  for (const customer of names) {
-    await raiseFollowUp(orgId, industryTypeId, { customer, repCode: str(saved.assigned_team), priority, title: `Recall ${str(saved.recall_code)}: collect batch ${str(saved.batch_number)} — ${customer}`, notes: str(saved.action_required) || null });
+  if (!existing && saved.status !== 'Closed') { // new recall: orders that are not delivered yet must not ship this batch
+    const moved = await repickOrdersForBatch(orgId, str(saved.batch_number));
+    if (moved.repicked.length || moved.stuck.length) {
+      const lines = [
+        moved.repicked.length ? `Re-picked from valid batches: ${moved.repicked.join(', ')}.` : '',
+        moved.stuck.length ? `STOP before dispatch (could not be re-picked): ${moved.stuck.join(', ')}.` : '',
+      ].filter(Boolean).join('\n');
+      const current = str(saved.notes);
+      const notes = !current || current.startsWith('Orders still holding this batch') ? lines : `${current}\n${lines}`;
+      // units given back to the batch are now our own stock, not stock at customers
+      const patch: Row = { notes };
+      if (moved.units > 0) { patch.stock_quantity = num(saved.stock_quantity) + moved.units; patch.supplied_quantity = Math.max(0, num(saved.supplied_quantity) - moved.units); }
+      await supabaseAdmin.from('pharma_recalls').update(patch).eq('organization_id', orgId).eq('id', saved.id as string);
+      await syncProductStock(orgId, industryTypeId, (await getBatch(orgId, industryTypeId, saved.batch_number)).product_code);
+    }
   }
-};
-/** A campaign follow-up date becomes a real Follow-up for the hospital's rep (same idea as Hospital Engagement). */
-const afterPromotion: After = async ({ orgId, industryTypeId, saved }) => {
-  const due = str(saved.follow_up_date);
-  if (!due || due < today() || !str(saved.hospital_name) || ['Completed', 'Cancelled'].includes(String(saved.status))) return;
-  await raiseFollowUp(orgId, industryTypeId, { customer: str(saved.hospital_name), repCode: str(saved.sales_rep), priority: 'normal', title: `Promotion follow-up: ${str(saved.hospital_name)} (${str(saved.promotion_code)}) · ${due}`, notes: str(saved.feedback) || null });
+  if (saved.status !== 'Closed' || saved.stock_written_off) return; // closed recall: everything left in the batch goes to waste (once)
+  const b = await getBatch(orgId, industryTypeId, saved.batch_number);
+  const waste = num(b.quantity);
+  if (waste > 0) await changeBatchQty(orgId, b.id as string, -waste, `Recall ${str(saved.recall_code)} - written off as waste`, actor);
+  await supabaseAdmin.from('pharma_recalls').update({ stock_written_off: true }).eq('organization_id', orgId).eq('id', saved.id as string);
+  await syncProductStock(orgId, industryTypeId, b.product_code);
 };
 
 const PREPARE: Record<string, Prepare | undefined> = {
@@ -401,7 +590,7 @@ const PREPARE: Record<string, Prepare | undefined> = {
   pharma_hospital_engagements: prepareEngagement, pharma_medicine_returns: prepareReturn, pharma_recalls: prepareRecall,
 };
 const AFTER: Record<string, After | undefined> = {
-  pharma_batches: afterBatch, pharma_samples: afterSample, pharma_promotions: afterPromotion, pharma_hospital_engagements: afterEngagement, pharma_medicine_returns: afterReturn, pharma_recalls: afterRecall,
+  pharma_batches: afterBatch, pharma_samples: afterSample, pharma_hospital_engagements: afterEngagement, pharma_medicine_returns: afterReturn, pharma_recalls: afterRecall,
 };
 
 async function assertCanDelete(r: PharmaResource, orgId: string, row: Row) {
@@ -410,6 +599,7 @@ async function assertCanDelete(r: PharmaResource, orgId: string, row: Row) {
     const [s, rt, rc] = await Promise.all([countWhere('pharma_samples', orgId, 'batch_number', n), countWhere('pharma_medicine_returns', orgId, 'batch_number', n), countWhere('pharma_recalls', orgId, 'batch_number', n)]);
     if (s || rt || rc) throw new AppError(409, 'RECORD_IN_USE', `This batch is used by ${s} sample(s), ${rt} return(s) and ${rc} recall(s). Remove them first.`);
   }
+  if (r.table === 'pharma_medicine_returns' && row.sales_return_id) throw new AppError(409, 'RECORD_IN_USE', 'Credit was already given to the customer for this return, so it cannot be deleted.');
   if (r.table === 'pharma_medicine_returns' && row.stock_applied) throw new AppError(409, 'RECORD_IN_USE', 'This return was already restocked into its batch and cannot be deleted.');
 }
 
@@ -428,7 +618,7 @@ export async function runPharmaUpkeep(orgId: string) {
   await refreshPromotionStatuses(orgId, null);
   await reconcilePharmaProductStock(orgId);
 }
-export async function pharmaSummary(orgId: string, industryTypeId: string | null) {
+export async function pharmaSummary(orgId: string, industryTypeId: string | null, listLimit = 15) {
   const scoped = (table: string, cols: string) => { let q = supabaseAdmin.from(table).select(cols).eq('organization_id', orgId); if (industryTypeId) q = q.eq('industry_type_id', industryTypeId); return q; };
   const [b, r, s, p, m, e] = await Promise.all([
     scoped('pharma_batches', 'batch_number, product_name, expiry_date, quantity, status'),
@@ -446,8 +636,8 @@ export async function pharmaSummary(orgId: string, industryTypeId: string | null
   const withDays = live.map((x) => ({ batch_number: x.batch_number, product_name: x.product_name, quantity: num(x.quantity), expiry_date: x.expiry_date, days_left: daysLeft(x.expiry_date), status: x.status }));
   const expiring = withDays.filter((x) => x.days_left !== null && x.days_left <= 90 && !['Recalled', 'Quarantined'].includes(String(x.status))).sort((a, c) => (a.days_left ?? 0) - (c.days_left ?? 0));
   return {
-    batches: { alertList: expiring.slice(0, 50), total: batches.length, expired: expiring.filter((x) => (x.days_left ?? 0) < 0).length, critical: expiring.filter((x) => (x.days_left ?? 0) >= 0 && (x.days_left ?? 0) <= 30).length, expiringSoon: expiring.filter((x) => (x.days_left ?? 0) > 30).length, unitsAtRisk: expiring.reduce((sum, x) => sum + x.quantity, 0), list: expiring.slice(0, 15) },
-    recalls: { alertList: recalls.filter((x) => x.status !== 'Closed').slice(0, 50), open: recalls.filter((x) => x.status !== 'Closed').length, critical: recalls.filter((x) => x.status !== 'Closed' && ['Critical', 'High'].includes(String(x.severity))).length, list: recalls.filter((x) => x.status !== 'Closed').slice(0, 10) },
+    batches: { total: batches.length, expired: expiring.filter((x) => (x.days_left ?? 0) < 0).length, critical: expiring.filter((x) => (x.days_left ?? 0) >= 0 && (x.days_left ?? 0) <= 30).length, expiringSoon: expiring.filter((x) => (x.days_left ?? 0) > 30).length, unitsAtRisk: expiring.reduce((sum, x) => sum + x.quantity, 0), list: expiring.slice(0, listLimit) },
+    recalls: { open: recalls.filter((x) => x.status !== 'Closed').length, critical: recalls.filter((x) => x.status !== 'Closed' && ['Critical', 'High'].includes(String(x.severity))).length, list: recalls.filter((x) => x.status !== 'Closed').slice(0, Math.max(10, listLimit)) },
     samples: { unitsIssued: samples.reduce((sum, x) => sum + num(x.quantity_issued), 0), unitsRemaining: samples.reduce((sum, x) => sum + num(x.quantity_remaining), 0), distributed: samples.filter((x) => ['Distributed', 'Acknowledged'].includes(String(x.status))).length },
     promotions: { active: promos.filter((x) => ['Active', 'Feedback captured'].includes(String(x.status))).length, total: promos.length },
     returns: { awaitingInspection: returns.filter((x) => !['Approved', 'Rejected', 'Closed'].includes(String(x.status)) && String(x.inspection_status ?? 'Pending') === 'Pending').length, total: returns.length },
@@ -459,27 +649,178 @@ pharmaRouter.get('/pharma/summary', authenticate, reader, async (req, res) => {
   await refreshBatchStatuses(org(req), industryTypeId);
   res.json({ data: await pharmaSummary(org(req), industryTypeId) });
 });
-/** Flat alert list (same idea as /fmcg/alerts) for the Notifications page and the mobile app. Every alert has a stable id so read / dismissed state survives a refresh. */
+/** Flat alert list (same idea as /fmcg/alerts) for the Notifications page and the mobile app. */
 pharmaRouter.get('/pharma/alerts', authenticate, reader, async (req, res) => {
   const industryTypeId = resolveIndustryTypeId(req.industryScope!, typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : null);
-  await refreshBatchStatuses(org(req), industryTypeId);
-  const sum = await pharmaSummary(org(req), industryTypeId);
+  const sum = await pharmaSummary(org(req), industryTypeId, 200);
+  const t = today();
+  // Returns to inspect and hospital follow-ups due: a rep sees only his own (same rule as the lists).
+  const scoped = async (table: string, cols: string) => {
+    let q = supabaseAdmin.from(table).select(cols).eq('organization_id', org(req));
+    if (industryTypeId) q = q.eq('industry_type_id', industryTypeId);
+    const own = await repCodeFor(req, table);
+    if (own) q = q.eq('sales_rep', own);
+    const { data, error } = await q;
+    if (error) throw error;
+    return (data ?? []) as unknown as Row[];
+  };
+  const [returns, engagements] = await Promise.all([
+    scoped('pharma_medicine_returns', 'return_code, product_name, batch_number, quantity, status, inspection_status'),
+    scoped('pharma_hospital_engagements', 'engagement_code, hospital_name, next_follow_up_date, status'),]);
+  const extra: Row[] = [];
+  if (industryTypeId) {
+    const { data: cl } = await supabaseAdmin.from('clients').select('id, client_name, client_code, industry_details').eq('organization_id', org(req)).eq('industry_type_id', industryTypeId);
+    for (const c of (cl ?? []) as Row[]) {
+      const d = licenseDaysLeft(c.industry_details); if (d === null || d > LICENSE_WARN_DAYS) continue;
+      extra.push({ id: `license:${str(c.client_code) || str(c.id)}`, type: 'license', level: d < 0 ? 'expired' : d <= 7 ? 'critical' : 'warning', title: `Drug licence · ${str(c.client_name)}`, message: d < 0 ? `Drug licence expired ${Math.abs(d)} day(s) ago — sales to this customer are blocked until it is renewed.` : `Drug licence expires in ${d} day(s) — renew before sales are blocked.` });
+    }
+    for (const x of sum.batches.list.filter((b) => (b.days_left ?? 0) < 0).slice(0, 25)) {
+      const held = await pendingOrdersForBatch(org(req), str(x.batch_number));
+      if (held.length) extra.push({ id: `heldorders:${str(x.batch_number)}`, type: 'expiry', level: 'critical', title: `Expired batch ${str(x.batch_number)} is on open orders`, message: `Orders ${held.join(', ')} still hold this expired batch — stop them before dispatch.`, batchNumber: x.batch_number });
+    }
+  }
   const alerts = [
-    ...sum.batches.alertList.map((x) => {
-      const d = x.days_left ?? 0;
-      const level = d < 0 ? 'expired' : d <= 30 ? 'critical' : 'warning';
-      return { id: `pharma-expiry-${str(x.batch_number)}-${level}`, type: 'expiry', level, batchNumber: x.batch_number, daysLeft: d, quantity: x.quantity, expiryDate: x.expiry_date, title: `${x.product_name} · batch ${x.batch_number}`, message: d < 0 ? `Expired ${Math.abs(d)} day(s) ago — ${x.quantity} units on hand` : `Expires in ${d} day(s) — ${x.quantity} units on hand` };
-    }),
-    ...sum.recalls.alertList.map((x) => ({ id: `pharma-recall-${str(x.recall_code)}`, type: 'recall', level: 'critical', batchNumber: x.batch_number, title: `Recall ${x.recall_code}`, message: `${x.product_name} · batch ${x.batch_number} — ${x.status}` })),
-    ...(sum.returns.awaitingInspection > 0 ? [{ id: `pharma-returns-inspect-${sum.returns.awaitingInspection}`, type: 'return', level: 'warning', title: 'Medicine returns awaiting inspection', message: `${sum.returns.awaitingInspection} returned medicine record(s) are waiting to be inspected.` }] : []),
-    ...(sum.engagements.followUpsDue > 0 ? [{ id: `pharma-followups-due-${today()}-${sum.engagements.followUpsDue}`, type: 'followup', level: 'warning', title: 'Hospital follow-ups due', message: `${sum.engagements.followUpsDue} hospital engagement follow-up(s) are due.` }] : []),
+    ...extra,
+    // ids are stable (record codes), so a dismissed / read alert stays dismissed / read
+    ...sum.batches.list.map((x) => { const d = x.days_left ?? 0; return { id: `expiry:${x.batch_number}`, type: 'expiry', level: d < 0 ? 'expired' : d <= 30 ? 'critical' : 'warning', title: `${x.product_name} · batch ${x.batch_number}`, message: d < 0 ? `Expired ${Math.abs(d)} day(s) ago — ${x.quantity} units on hand` : `Expires in ${d} day(s) — ${x.quantity} units on hand`, batchNumber: x.batch_number, daysLeft: d, quantity: x.quantity, expiryDate: x.expiry_date }; }),
+    ...sum.recalls.list.map((x) => ({ id: `recall:${x.recall_code}`, type: 'recall', level: 'critical', title: `Recall ${x.recall_code}`, message: `${x.product_name} · batch ${x.batch_number} — ${x.status}`, batchNumber: x.batch_number })),
+    ...returns.filter((x) => !['Approved', 'Rejected', 'Closed'].includes(String(x.status)) && String(x.inspection_status ?? 'Pending') === 'Pending')
+      .map((x) => ({ id: `return:${str(x.return_code)}`, type: 'return', level: 'warning', title: `Return ${str(x.return_code)} awaits inspection`, message: `${str(x.product_name)}${str(x.batch_number) ? ` · batch ${str(x.batch_number)}` : ''} — ${num(x.quantity)} unit(s) to inspect`, batchNumber: str(x.batch_number) || undefined })),
+    ...engagements.filter((x) => x.next_follow_up_date && String(x.next_follow_up_date).slice(0, 10) <= t && x.status !== 'Follow-up completed')
+      .map((x) => ({ id: `followup:${str(x.engagement_code)}`, type: 'followup', level: 'warning', title: `Follow up ${str(x.hospital_name)}`, message: `Follow-up was due ${String(x.next_follow_up_date).slice(0, 10)} (${str(x.engagement_code)})` })),
   ];
   res.json({ data: { alerts, followUpsDue: sum.engagements.followUpsDue, returnsAwaitingInspection: sum.returns.awaitingInspection } });
 });
 
+/** Sales Orders offered in Medicine Return's picker (same industry; reps see only their own orders), with what each product sold / already came back / can still be returned. */
+pharmaRouter.get('/pharma/order-lookup', authenticate, reader, async (req, res) => {
+  const industryTypeId = resolveIndustryTypeId(req.industryScope!, typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : null);
+  let q = supabaseAdmin.from('sale_orders')
+    .select('id, order_number, status, created_at, clients!inner(client_name, client_code, industry_type_id), sales_representatives(employee_code), sale_order_items(quantity, free_quantity, batch_allocations, products(product_name))')
+    .eq('organization_id', org(req)).neq('status', 'cancelled').order('created_at', { ascending: false }).limit(300);
+  if (industryTypeId) q = q.eq('clients.industry_type_id', industryTypeId);
+  if (req.industryScope!.role === 'sales_representative') {
+    const rep = await fieldActivityService.currentRepresentative(org(req), (req as unknown as { auth: { sub: string } }).auth.sub);
+    q = q.eq('representative_id', rep.id);
+  }
+  const { data, error } = await q;
+  if (error) throw error;
+  const orders = (data ?? []) as unknown as Array<Row & { clients: Row; sales_representatives: Row | null; sale_order_items: OrderLine[] }>;
+  const numbers = orders.map((o) => String(o.order_number));
+  const back = new Map<string, number>(); // "order|product" -> units already returned (rejected returns do not count)
+  for (let i = 0; i < numbers.length; i += 100) {
+    const { data: rets, error: e2 } = await supabaseAdmin.from('pharma_medicine_returns').select('invoice_reference, product_name, quantity').eq('organization_id', org(req)).in('invoice_reference', numbers.slice(i, i + 100)).neq('status', 'Rejected');
+    if (e2) throw e2;
+    for (const r of (rets ?? []) as Row[]) { const k = `${str(r.invoice_reference)}|${str(r.product_name).toLowerCase()}`; back.set(k, (back.get(k) ?? 0) + num(r.quantity)); }
+  }
+  res.json({ data: orders.map((o) => {
+    const sold = new Map<string, { name: string; qty: number; batches: Set<string> }>();
+    for (const l of o.sale_order_items ?? []) {
+      const name = str(l.products?.product_name); if (!name) continue;
+      const e = sold.get(name.toLowerCase()) ?? { name, qty: 0, batches: new Set<string>() };
+      e.qty += num(l.quantity) + num(l.free_quantity);
+      for (const b of ((l.batch_allocations as { batches?: { batchNo?: string }[] } | null)?.batches ?? [])) if (b.batchNo) e.batches.add(b.batchNo);
+      sold.set(name.toLowerCase(), e);
+    }
+    const lines = [...sold.entries()].map(([k, e]) => { const returned = back.get(`${String(o.order_number)}|${k}`) ?? 0; return { product_name: e.name, sold: e.qty, returned, can_return: Math.max(e.qty - returned, 0), batches: [...e.batches] }; });
+    return { id: o.id, order_number: o.order_number, status: o.status, order_date: String(o.created_at ?? '').slice(0, 10), client_name: o.clients?.client_name, client_code: o.clients?.client_code, rep_code: o.sales_representatives?.employee_code ?? null, lines };
+  }) });
+});
+
+/** Orders where the customer paid MORE than the order is worth after return credit and has not been paid back yet: the "refund due" worklist. */
+pharmaRouter.get('/pharma/refunds/pending', authenticate, manager, async (req, res) => {
+  const industryTypeId = resolveIndustryTypeId(req.industryScope!, typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : null);
+  if (!industryTypeId) { res.json({ data: [] }); return; }
+  const { data: orders, error } = await supabaseAdmin.from('sale_orders')
+    .select('id, order_number, total_amount, clients!inner(client_name, client_code, industry_type_id)')
+    .eq('organization_id', org(req)).neq('status', 'cancelled').eq('clients.industry_type_id', industryTypeId).order('created_at', { ascending: false }).limit(1000);
+  if (error) throw error;
+  const list = (orders ?? []) as unknown as Array<{ id: string; order_number: string; total_amount: number; clients: { client_name: string; client_code: string } }>;
+  const paid = new Map<string, number>(), credit = new Map<string, number>(), back = new Map<string, number>();
+  const add = (m: Map<string, number>, k: unknown, v: unknown) => m.set(String(k), (m.get(String(k)) ?? 0) + num(v));
+  for (let i = 0; i < list.length; i += 100) {
+    const ids = list.slice(i, i + 100).map((o) => o.id);
+    const [c, r, f] = await Promise.all([
+      supabaseAdmin.from('sales_collections').select('sale_order_id, amount').eq('organization_id', org(req)).in('sale_order_id', ids),
+      supabaseAdmin.from('sales_returns').select('order_id, credit_amount').eq('organization_id', org(req)).eq('status', 'approved').in('order_id', ids),
+      supabaseAdmin.from('sales_refunds').select('order_id, amount').eq('organization_id', org(req)).in('order_id', ids),
+    ]);
+    if (c.error) throw c.error;
+    if (r.error) throw r.error;
+    if (f.error && !/sales_refunds/.test(f.error.message)) throw f.error; // table missing = nothing refunded yet
+    for (const x of (c.data ?? []) as Row[]) add(paid, x.sale_order_id, x.amount);
+    for (const x of (r.data ?? []) as Row[]) add(credit, x.order_id, x.credit_amount);
+    for (const x of (f.data ?? []) as Row[]) add(back, x.order_id, x.amount);
+  }
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  res.json({ data: list.map((o) => {
+    const collected = paid.get(o.id) ?? 0, credited = credit.get(o.id) ?? 0, refunded = back.get(o.id) ?? 0;
+    return { order_id: o.id, order_number: o.order_number, client_name: o.clients.client_name, client_code: o.clients.client_code, order_total: r2(num(o.total_amount)), collected: r2(collected), credited: r2(credited), refunded: r2(refunded), due: r2(collected - refunded + credited - num(o.total_amount)) };
+  }).filter((o) => o.due > 0.005) });
+});
+/** Every refund paid back to a Pharma customer (newest first), with who recorded it. */
+pharmaRouter.get('/pharma/refunds', authenticate, manager, async (req, res) => {
+  const industryTypeId = resolveIndustryTypeId(req.industryScope!, typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : null);
+  if (!industryTypeId) { res.json({ data: [] }); return; }
+  const rows = (await listRefunds(org(req), industryTypeId)) as Row[];
+  const ids = [...new Set(rows.map((r) => str(r.created_by)).filter(Boolean))];
+  const names = new Map<string, string>();
+  if (ids.length) {
+    const { data } = await supabaseAdmin.from('user_profiles').select('id, display_name').in('id', ids); // names are a nicety: a failed lookup just leaves them blank
+    for (const p of (data ?? []) as Row[]) names.set(str(p.id), str(p.display_name));
+  }
+  res.json({ data: rows.map((r) => ({ ...r, recorded_by: names.get(str(r.created_by)) ?? '' })) });
+});
+/** Refund: after an approved return credit a customer may have paid MORE than the order is now worth; this records paying the extra back. */
+pharmaRouter.get('/pharma/orders/:id/refunds', authenticate, manager, async (req, res) => {
+  const orderId = String(req.params.id);
+  const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, total_amount, status, clients!inner(industry_type_id)').eq('id', orderId).eq('organization_id', org(req)).maybeSingle();
+  if (error) throw error;
+  const indId = (order?.clients as unknown as { industry_type_id?: string | null } | null)?.industry_type_id ?? null;
+  if (!order || (await industryCodeOf(org(req), indId)) !== 'pharma') throw new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
+  const [paid, credits, refunds] = await Promise.all([
+    supabaseAdmin.from('sales_collections').select('amount').eq('organization_id', org(req)).eq('sale_order_id', orderId),
+    supabaseAdmin.from('sales_returns').select('credit_amount').eq('organization_id', org(req)).eq('order_id', orderId).eq('status', 'approved'),
+    supabaseAdmin.from('sales_refunds').select('*').eq('organization_id', org(req)).eq('order_id', orderId).order('created_at', { ascending: false }),
+  ]);
+  if (paid.error) throw paid.error;
+  if (credits.error) throw credits.error;
+  if (refunds.error && !/sales_refunds/.test(refunds.error.message)) throw refunds.error; // table missing = nothing refunded
+  const rows = refunds.error ? [] : (refunds.data ?? []);
+  const sum = (list: Row[] | null, key: string) => (list ?? []).reduce((t, r) => t + num(r[key]), 0);
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const collected = sum(paid.data as Row[] | null, 'amount'), credited = sum(credits.data as Row[] | null, 'credit_amount'), refunded = sum(rows as Row[], 'amount');
+  const due = r2(collected - refunded + credited - num(order.total_amount));
+  res.json({ data: { refunds: rows, due: due > 0.005 ? due : 0, orderTotal: r2(num(order.total_amount)), collected: r2(collected), credited: r2(credited), refunded: r2(refunded), orderStatus: order.status } });
+});
+pharmaRouter.post('/pharma/refunds', authenticate, manager, async (req, res) => {
+  const input = refundSchema.parse(req.body ?? {});
+  const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, clients!inner(industry_type_id)').eq('id', input.orderId).eq('organization_id', org(req)).maybeSingle();
+  if (error) throw error;
+  const indId = (order?.clients as unknown as { industry_type_id?: string | null } | null)?.industry_type_id ?? null;
+  if (!order || (await industryCodeOf(org(req), indId)) !== 'pharma') throw new AppError(404, 'ORDER_NOT_FOUND', 'Sales order not found.');
+  res.status(201).json({ data: await createRefund(org(req), actorOf(req) as string, req.industryScope!, input) });
+});
+
+/** Expired / quarantined stock still sitting in a batch is written off as waste (logged in the stock audit). */
+pharmaRouter.post('/pharma/batches/:id/write-off', authenticate, manager, async (req, res) => {
+  const { data, error } = await supabaseAdmin.from('pharma_batches').select('*').eq('organization_id', org(req)).eq('id', idOf(req)).maybeSingle();
+  if (error) throw error;
+  const nf = new AppError(404, 'RECORD_NOT_FOUND', 'Batch was not found.');
+  if (!data) throw nf;
+  const b = data as Row;
+  assertRecordInScope(req.industryScope!, b.industry_type_id as string | null, nf);
+  if (expiryStatus(b.expiry_date) !== 'Expired' && !['Expired', 'Quarantined'].includes(String(b.status))) throw bad('Only expired or quarantined stock can be written off.');
+  const qty = num(b.quantity);
+  if (qty <= 0) throw bad('This batch has no stock left to write off.');
+  const why = typeof req.body?.reason === 'string' && req.body.reason ? ` (${req.body.reason})` : '';
+  await changeBatchQty(org(req), b.id as string, -qty, `Written off as waste${why}`, actorOf(req));
+  await syncProductStock(org(req), b.industry_type_id as string, b.product_code);
+  res.json({ data: { batch_number: b.batch_number, written_off: qty } });
+});
+
 // ---- generic CRUD --------------------------------------------------------------
-for (const r of PHARMA_RESOURCES) {
-  const base = `/pharma/${r.path}`;
+for (const r of PHARMA_RESOURCES) {  const base = `/pharma/${r.path}`;
   const notFound = () => new AppError(404, 'RECORD_NOT_FOUND', `${r.path} record was not found.`);
   const writer = r.write === 'rep' ? writerRep : manager;
   const prepare = PREPARE[r.table]; const after = AFTER[r.table];
@@ -491,6 +832,8 @@ for (const r of PHARMA_RESOURCES) {
     if (r.table === 'pharma_promotions') await refreshPromotionStatuses(org(req), industryTypeId);
     let q = supabaseAdmin.from(r.table).select('*').eq('organization_id', org(req)).order(r.table === 'pharma_batches' ? 'expiry_date' : 'created_at', { ascending: r.table === 'pharma_batches' }); // FEFO order for batches
     if (industryTypeId) q = q.eq('industry_type_id', industryTypeId);
+    const own = await repCodeFor(req, r.table);
+    if (own) q = q.eq('sales_rep', own);
     const { data, error } = await q;
     if (error) throw error;
     res.json({ data });
@@ -501,19 +844,24 @@ for (const r of PHARMA_RESOURCES) {
     if (error) throw error;
     if (!data) throw notFound();
     assertRecordInScope(req.industryScope!, (data as { industry_type_id?: string | null }).industry_type_id, notFound());
+    const own = await repCodeFor(req, r.table);
+    if (own && (data as Row).sales_rep !== own) throw notFound();
     res.json({ data });
   });
 
   pharmaRouter.post(base, authenticate, writer, async (req, res) => {
     const payload = clean(r, req.body);
     validateValues(r, payload, false);
+    const own = await repCodeFor(req, r.table);
+    if (own && own !== '__none__') payload.sales_rep = own; // a rep's record is always his own
     const industryTypeId = resolveIndustryTypeId(req.industryScope!, typeof payload.industry_type_id === 'string' ? payload.industry_type_id : undefined);
     if (!industryTypeId) throw bad('industry_type_id is required.');
     const missing = r.requiredFields.filter((k) => payload[k] === undefined || payload[k] === null || payload[k] === '');
     if (missing.length && !(prepare && missing.every((k) => ['product_name'].includes(k)))) throw bad(`${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} required.`);
     const ctx: Ctx = { orgId: org(req), industryTypeId, payload, existing: null, actor: actorOf(req) };
     if (prepare) await prepare(ctx);
-    const { data, error } = await supabaseAdmin.from(r.table).insert({ ...payload, industry_type_id: industryTypeId, organization_id: org(req) }).select().single();
+    if (r.table !== 'pharma_batches' && payload[r.codeField]) payload[r.codeField] = await nextFreeCode(r.table, r.codeField, org(req), payload[r.codeField]);
+    const { data, error } = await supabaseAdmin.from(r.table).insert({ ...payload, industry_type_id: industryTypeId, organization_id: org(req) }).select().single();  
     if (error) { if (error.code === '23505') throw dup(error); throw error; }
     if (after) {
       try { await after({ ...ctx, saved: data as Row }); }
@@ -531,6 +879,10 @@ for (const r of PHARMA_RESOURCES) {
     if (!existing) throw notFound();
     const ex = existing as Row;
     assertRecordInScope(req.industryScope!, ex.industry_type_id as string | null, notFound());
+    const own = await repCodeFor(req, r.table);
+    if (own) { if (ex.sales_rep !== own) throw notFound(); delete payload.sales_rep; }
+    const locked = statusMoveProblem(r.table, ex.status, payload.status);
+    if (locked) throw new AppError(409, 'STATUS_LOCKED', locked);
     const ctx: Ctx = { orgId: org(req), industryTypeId: ex.industry_type_id as string, payload, existing: ex, actor: actorOf(req) };
     if (prepare) await prepare(ctx);
     const { data, error } = await supabaseAdmin.from(r.table).update(payload).eq('organization_id', org(req)).eq('id', idOf(req)).select().maybeSingle();

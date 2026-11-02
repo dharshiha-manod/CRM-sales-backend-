@@ -269,8 +269,19 @@ const BAD_STATUSES = new Set(['inactive', 'damaged', 'fail', 'rejected', 'discon
 const WATCH_STATUSES = new Set(['pending', 'issued', 'draft', 'revision-requested', 'sold', 'delayed', 'customs hold']);
 const MOVING_STATUSES = new Set(['pickup scheduled', 'picked up', 'dispatched', 'in transit', 'at destination', 'out for delivery']);
 
+// Pharma sample statuses: one colour each (Distributed + Acknowledged share green, both mean "delivered").
+const SAMPLE_STATUS_CLASS: Record<string, string> = {
+  'available': 'status-badge',
+  'assigned': 'status-badge status-new',
+  'taken for visit': 'status-badge status-qualified',
+  'distributed': 'status-badge status-completed',
+  'acknowledged': 'status-badge status-completed',
+  'returned': 'status-badge status-quoted',
+};
+
 function statusBadgeClass(status?: string): string {
   const s = (status ?? '').trim().toLowerCase();
+  if (SAMPLE_STATUS_CLASS[s]) return SAMPLE_STATUS_CLASS[s];
   if (GOOD_STATUSES.has(s)) return 'status-badge status-completed';
   if (BAD_STATUSES.has(s)) return 'status-badge inactive';
   if (WATCH_STATUSES.has(s)) return 'status-badge status-quoted';
@@ -618,7 +629,7 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     try {
       await api(`${resource}/${deleting.id}`, { method: 'DELETE' });
       setDeleting(null);
-      setMessage(`${title} record deleted.`);
+         setMessage(`${title} record deleted successfully.`);
       await load();
     } catch (caught) {
       setDeleteError(caught instanceof Error ? caught.message : 'Unable to delete this record.');
@@ -1382,11 +1393,11 @@ function renderInput(
     // still offer USD once.
     const options = dedupeByValue(lookupData[f.key] ?? [], f).filter((o) => !f.lookupFilter || f.lookupFilter(o, form) || String(o[f.lookupValueKey ?? f.key] ?? o.id) === value);
     const handleLookupChange = (v: string) => {
-      let matchedForCallback: TextileRecord | undefined;
+      // Find the picked row BEFORE setForm. React runs updater functions later, so a value set inside one
+      // is not available yet for the onLookupChange call below (that is why rep / contact did not auto-fill).
+      const matched = options.find((o) => String(o[f.lookupValueKey ?? f.key] ?? o.id) === v);
       setForm((prev) => {
         const next = { ...prev, [f.key]: v };
-        const matched = options.find((o) => String(o[f.lookupValueKey ?? f.key] ?? o.id) === v);
-        matchedForCallback = matched;
         if (f.autoFillMap && matched) {
           for (const [sourceKey, destKey] of Object.entries(f.autoFillMap)) {
             const sourceValue = matched[sourceKey];
@@ -1396,10 +1407,8 @@ function renderInput(
         applyRegenerateOn(f.key, next, fields);
         return next;
       });
-      // Runs after the synchronous autoFillMap copy above. Kept outside
-      // setForm's updater since it may be async (e.g. an API call) and
-      // updaters must stay synchronous and pure.
-      if (f.onLookupChange && matchedForCallback) f.onLookupChange(matchedForCallback, setForm, setDynamicOptions);
+      // Runs after the autoFillMap copy above. Kept outside setForm's updater since it may be async.
+      if (f.onLookupChange && matched) f.onLookupChange(matched, setForm, setDynamicOptions);
       f.onValueChangeAsync?.(v, form, setForm);
     };
     return (

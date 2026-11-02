@@ -26,9 +26,9 @@ export const PHARMA_RESOURCES: PharmaResource[] = [
   { path: 'medicine-returns', table: 'pharma_medicine_returns', codeField: 'return_code', write: 'rep',
     statuses: ['Requested', 'Received', 'Verified', 'Under inspection', 'Approved', 'Rejected', 'Closed'], nonNegative: ['quantity'],
     requiredFields: ['return_code', 'product_name'],
-    columns: ['return_code', 'product_name', 'batch_number', 'quantity', 'unit', 'customer_hospital', 'invoice_reference', 'sales_rep', 'warehouse', 'reason', 'return_date', 'inspection_status', 'disposition', 'notes', 'industry_type_id'] },
+    columns: ['return_code', 'product_name', 'batch_number', 'quantity', 'unit', 'customer_hospital', 'invoice_reference', 'sales_rep', 'warehouse', 'reason', 'return_date', 'inspection_status', 'disposition', 'fault_side', 'notes', 'industry_type_id'] },
   { path: 'recalls', table: 'pharma_recalls', codeField: 'recall_code', write: 'manager',
-    statuses: ['Created', 'Batch identified', 'Stock identified', 'Notification sent', 'Collection in progress', 'Stock quarantined', 'Closed'], nonNegative: ['affected_quantity'],
+    statuses: ['Created', 'Batch identified', 'Stock identified', 'Notification sent', 'Collection in progress', 'Stock quarantined', 'Closed'], nonNegative: ['affected_quantity', 'stock_quantity', 'supplied_quantity', 'collected_quantity'],
     requiredFields: ['recall_code', 'product_name', 'batch_number'],
-    columns: ['recall_code', 'product_name', 'batch_number', 'severity', 'reason', 'recall_date', 'affected_quantity', 'affected_customers', 'assigned_team', 'action_required', 'completion_date', 'notes', 'industry_type_id'] },
+    columns: ['recall_code', 'product_name', 'batch_number', 'severity', 'reason', 'recall_date', 'affected_quantity', 'stock_quantity', 'supplied_quantity', 'collected_quantity', 'affected_customers', 'assigned_team', 'action_required', 'completion_date', 'notes', 'industry_type_id'] },
 ];

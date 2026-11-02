@@ -98,6 +98,7 @@ type LeadForm = {
   expectedOrderValue: string;
   nextFollowUp: string;
   nextActionType: string;
+  doctorSpecialty: string;
 };
 
 const blankForm: LeadForm = {
@@ -124,6 +125,7 @@ const blankForm: LeadForm = {
   expectedOrderValue: '',
   nextFollowUp: '',
   nextActionType: '',
+  doctorSpecialty: '',
 };
 
 const sourceLabels: Record<string, string> = {
@@ -425,6 +427,7 @@ type FmcgMeta = {
   interestedProduct?: string;
   expectedOrderValue?: string;
   nextFollowUp?: string;
+  doctorSpecialty?: string;
 };
 
 function packFmcgMeta(freeTextNotes: string, meta: FmcgMeta): string {
@@ -740,6 +743,7 @@ function openCreate() {
       customerType: meta.customerType ?? defaultOptionValue(customerTypeConfig, activeIndustry),
       interestedProduct: meta.interestedProduct ?? '',
       expectedOrderValue: meta.expectedOrderValue ?? '',
+      doctorSpecialty: meta.doctorSpecialty ?? '',
       // Prefer the real next_action_due_at column (what the table/KPIs read)
       // and fall back to the legacy meta-only value for leads saved before
       // this field was wired to a real column.
@@ -848,6 +852,7 @@ function openCreate() {
           interestedProduct: form.interestedProduct.trim(),
           expectedOrderValue: form.expectedOrderValue.trim(),
           nextFollowUp: form.nextFollowUp,
+          ...(activeIndustry === 'pharma' ? { doctorSpecialty: form.doctorSpecialty.trim() } : {}),
         }) || null,
         nextActionDueAt: form.nextFollowUp ? new Date(form.nextFollowUp).toISOString() : null,
         nextActionType: form.nextFollowUp ? form.nextActionType : null,
@@ -1798,9 +1803,15 @@ async function suggestRep() {
                 <legend>Contact</legend>
                 <div className="fieldset-grid">
                   <label>
-                    Contact person
-                    <input value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} />
+                    {activeIndustry === 'pharma' ? 'Doctor / contact person' : 'Contact person'}
+                    <input placeholder={activeIndustry === 'pharma' ? 'e.g. Dr. S. Krishnan (or the pharmacist / purchase head)' : undefined} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} />
                   </label>
+                  {activeIndustry === 'pharma' && (
+                    <label>
+                      Doctor specialty
+                      <input placeholder="e.g. Cardiology (leave blank if not a doctor)" value={form.doctorSpecialty} onChange={(e) => setForm({ ...form, doctorSpecialty: e.target.value })} />
+                    </label>
+                  )}
                   <label>
                     Mobile number
                     <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} onBlur={() => void checkDuplicatesNow()} />

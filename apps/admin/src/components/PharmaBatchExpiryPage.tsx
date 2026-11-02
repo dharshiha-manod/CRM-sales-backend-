@@ -1,6 +1,7 @@
 import { PharmaMasterPage, PharmaModuleConfig } from './PharmaMasterPage';
 import { addDaysIso, daysLeft } from '../lib/batchExpiry';
 import { repField } from './pharmaLookups';
+import { api } from '../lib/api';
 
 // Expiry = manufacture date + the product's shelf life (days).
 function expiryPatch(form: Record<string, string>): Record<string, string> | undefined {
@@ -20,6 +21,18 @@ function daysToExpiry(expiryDate: unknown): number | null {
 // Only stock still on hand is a risk: the same rule the dashboard (Pharma insights) and the alerts use.
 const onHand = (x: Record<string, unknown>) => Number(x.quantity) > 0;
 
+// Expired / quarantined stock that is still on hand can be written off as waste (server logs it in the stock audit).
+let reloadBatches: (() => void) | null = null;
+const writeOff = async (r: Record<string, unknown>) => {
+  if (!window.confirm(`Write off ${String(r.quantity)} unit(s) of ${String(r.product_name)} (${String(r.batch_number)}) as waste? This cannot be undone.`)) return;
+  try {
+    await api(`/pharma/batches/${String(r.id)}/write-off`, { method: 'POST', body: JSON.stringify({ reason: String(r.status) }) });
+    reloadBatches?.();
+  } catch (err) {
+    window.alert(err instanceof Error ? err.message : 'Could not write off this batch.');
+  }
+};
+
 const config: PharmaModuleConfig = {
   resource: '/pharma/batches',
   eyebrowModule: 'BATCH & EXPIRY MANAGEMENT',
@@ -31,6 +44,18 @@ const config: PharmaModuleConfig = {
   nameField: 'product_name',
   statusOptions: STATUSES,
   searchableKeys: ['batch_number', 'product_name', 'product_code', 'supplier'],
+  registerReload: (reload) => { reloadBatches = reload; },
+  rowActions: (r) => (
+    Number(r.quantity) > 0 && ((daysToExpiry(r.expiry_date) ?? 1) < 0 || r.status === 'Quarantined') ? (
+      <button
+        type="button"
+        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, borderRadius: 4, whiteSpace: 'nowrap' }}
+        onClick={() => void writeOff(r)}
+      >
+        🗑 Write off as waste
+      </button>
+    ) : null
+  ),
   fields: [
     { key: 'batch_number', label: 'Batch number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'BAT' },
     { key: 'product_name', label: 'Product', type: 'text', required: true, listColumn: true },
@@ -54,9 +79,9 @@ const config: PharmaModuleConfig = {
       },
       group: 'Batch details',
     },
-    { key: 'quantity', label: 'Available quantity', type: 'number', group: 'Batch details' },
+    { key: 'quantity', label: 'Available quantity', type: 'number', listColumn: true, min: 0, group: 'Batch details' },
     { key: 'unit', label: 'Unit', type: 'text', group: 'Batch details', placeholder: 'e.g. strips, vials, boxes' },
-    { key: 'supplier', label: 'Supplier', type: 'text', group: 'Batch details' },
+
     repField('sales_rep', 'Sales rep allocation', { group: 'Batch details' }),
     { key: 'warehouse_location', label: 'Warehouse / location', type: 'text', group: 'Batch details', placeholder: 'e.g. Cold storage A-3' },
     { key: 'status', label: 'Status', type: 'select', options: STATUSES, group: 'Batch details' },

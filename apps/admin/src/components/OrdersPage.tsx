@@ -290,10 +290,29 @@ export function OrdersPage() {
   }
   function paymentStatus(order: Order): { label: string; tone: 'good' | 'warn' | 'bad' } {
     const paid = collected[order.order_number] ?? 0;
+    const credit = Number(order.returns_credit ?? 0);
+    // A return credit that covers the whole order leaves nothing to collect, even if no payment was recorded.
+    if (credit > 0 && payableOf(order) - credit - paid <= settleTolerance(order)) return { label: paid > 0 ? 'Paid' : 'Settled by returns credit', tone: 'good' };
     if (paid <= 0) return { label: 'Outstanding — payment reminder due', tone: 'bad' };
     if (paid < payableOf(order) - Number(order.returns_credit ?? 0) - settleTolerance(order)) return { label: `Partially paid (${currency(paid, order.currency_code ?? 'INR')} of ${currency(payableOf(order) - Number(order.returns_credit ?? 0), order.currency_code ?? 'INR')})`, tone: 'warn' };
     return { label: 'Paid', tone: 'good' };
   }
+  // Refund state shown next to the payment status (FMCG, School and Pharma only — the industries that record refunds).
+  function refundState(order: Order): { kind: 'due' | 'refunded'; label: string } | null {
+    if (activeIndustry !== 'pharma' && activeIndustry !== 'school' && activeIndustry !== 'fmcg') return null;
+    const cur = order.currency_code ?? 'INR';
+    const refunded = Number(order.refunded_amount ?? 0);
+    const due = (collected[order.order_number] ?? 0) - refunded + Number(order.returns_credit ?? 0) - Number(order.total_amount ?? 0); // customer paid more than the order is worth and has not got it back
+    if (due > settleTolerance(order)) return { kind: 'due', label: `Refund due ${currency(due, cur)}` };
+    if (refunded > 0) return { kind: 'refunded', label: `Refunded ${currency(refunded, cur)}` };
+    return null;
+  }
+  const refundBadge = (order: Order) => {
+    const rf = refundState(order);
+    if (!rf) return null;
+    const style = rf.kind === 'due' ? { background: 'var(--amber-soft)', color: 'var(--amber-strong)' } : { background: 'var(--accent-blue-soft)', color: 'var(--accent-blue)' };
+    return <span className="status-badge" style={{ ...style, display: 'inline-block', marginTop: 4 }}>{rf.label}</span>;
+  };
   function paymentFilterValue(order: Order): 'paid' | 'partial' | 'outstanding' {
     const tone = paymentStatus(order).tone;
     return tone === 'good' ? 'paid' : tone === 'warn' ? 'partial' : 'outstanding';
@@ -470,7 +489,7 @@ export function OrdersPage() {
     const amount = Number(paymentForm.amount);
     if (!amount || amount <= 0) return setPaymentError('Enter an amount greater than zero.');
     const alreadyPaid = collected[order.order_number] ?? 0;
-    const balance = payableOf(order) - Number(order.returns_credit ?? 0) - alreadyPaid;
+    const balance = Math.max(0, payableOf(order) - Number(order.returns_credit ?? 0) + Number(order.refunded_amount ?? 0) - alreadyPaid); // refunds paid back count as money returned; an overpayment is shown in the Refund panel, not as a negative balance
     if (amount > balance + 0.01) return setPaymentError(`Amount exceeds the outstanding balance of ${currency(balance, order.currency_code ?? 'INR')}.`);
     setPaymentSaving(true);
     try {
@@ -709,7 +728,7 @@ export function OrdersPage() {
                         <td>{order.sales_representatives?.user_profiles?.display_name ?? order.sales_representatives?.employee_code ?? '—'}</td>
                         <td>{itemCount} {itemCount === 1 ? 'Item' : 'Items'}</td>
                         <td>{currency(order.total_amount, order.currency_code ?? 'INR')}{order.currency_code && order.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(order.base_total ?? 0))}</small>}{payableOf(order) > Number(order.total_amount) + 0.005 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Invoiced {currency(payableOf(order), order.currency_code ?? 'INR')} (with extra charges)</small>}{Number(order.returns_credit ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Returns credit − {currency(Number(order.returns_credit), order.currency_code ?? 'INR')}</small>}{activeIndustry === 'school' && Number(order.refunded_amount ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--green)' }}>Refunded {currency(Number(order.refunded_amount), order.currency_code ?? 'INR')}</small>}{activeIndustry === 'school' && Number(order.returns_credit ?? 0) > 0 && (collected[order.order_number] ?? 0) - Number(order.refunded_amount ?? 0) + Number(order.returns_credit ?? 0) - Number(order.total_amount) > 0.005 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--red)' }}>Refund due {currency((collected[order.order_number] ?? 0) - Number(order.refunded_amount ?? 0) + Number(order.returns_credit ?? 0) - Number(order.total_amount), order.currency_code ?? 'INR')}</small>}</td>
-                        <td><span className={`status-badge status-${ps.tone === 'good' ? 'paid' : ps.tone === 'warn' ? 'quoted' : 'overdue'}`}>{ps.tone === 'good' ? 'Paid' : ps.tone === 'warn' ? 'Partial' : 'Outstanding'}</span></td>
+                        <td><span className={`status-badge status-${ps.tone === 'good' ? 'paid' : ps.tone === 'warn' ? 'quoted' : 'overdue'}`}>{ps.tone === 'good' ? 'Paid' : ps.tone === 'warn' ? 'Partial' : 'Outstanding'}</span>{refundBadge(order) && <><br />{refundBadge(order)}</>}</td>
                         <td><span className={`status-badge status-${order.status}`}>{order.status}</span>{activeIndustry === 'school' && <SchoolDeliveryBadge order={order} />}{isTextile && <TextileDeliveryBadge order={order} />}</td>
                         {activeIndustry === 'fmcg' && (
                           <td>
@@ -746,7 +765,7 @@ export function OrdersPage() {
         const notesText = cleanNotes(selected.notes);
         const ps = paymentStatus(selected);
         const alreadyPaid = collected[selected.order_number] ?? 0;
-        const balance = payableOf(selected) - Number(selected.returns_credit ?? 0) - alreadyPaid;
+        const balance = Math.max(0, payableOf(selected) - Number(selected.returns_credit ?? 0) + Number(selected.refunded_amount ?? 0) - alreadyPaid);
         const relatedVisit = selected.visit_id ? visitMap.get(selected.visit_id) : undefined;
         const quoteRef = /QT-[A-Za-z0-9-]+/.exec(selected.notes ?? '')?.[0];
         const canCancel = selected.status !== 'cancelled' && selected.status !== 'completed';
@@ -835,7 +854,7 @@ export function OrdersPage() {
                 {payableOf(selected) > Number(selected.total_amount) + 0.005 && <div><span>Invoiced total (with extra charges)</span><strong>{selCur(payableOf(selected))}</strong></div>}
                 {Number(selected.returns_credit ?? 0) > 0 && <div><span>Returns credit</span><strong>− {selCur(Number(selected.returns_credit))}</strong></div>}
                 <div><span>Collected</span><strong>{selCur(alreadyPaid)}</strong></div>
-                {activeIndustry === 'school' && Number(selected.refunded_amount ?? 0) > 0 && <div><span>Refunded to school</span><strong>− {selCur(Number(selected.refunded_amount))}</strong></div>}
+                {(activeIndustry === 'school' || activeIndustry === 'pharma') && Number(selected.refunded_amount ?? 0) > 0 && <div><span>{activeIndustry === 'pharma' ? 'Refunded to customer' : 'Refunded to school'}</span><strong>− {selCur(Number(selected.refunded_amount))}</strong></div>}
                 <div className="qd-grand"><span>Balance due</span><strong>{selCur(balance > settleTolerance(selected) ? balance : 0)}</strong></div>
               </div>
 
@@ -855,6 +874,10 @@ export function OrdersPage() {
                 <SchoolReturnsPanel key={`ret-${selected.id}`} order={selected} onChanged={(patch) => { setSelected((s) => (s ? { ...s, ...patch } : s)); void load(); }} />
               )}
 
+              {activeIndustry === 'pharma' && (
+                <SchoolRefundPanel industry="pharma" key={`refund-${selected.id}`} order={selected} onChanged={(patch) => { setSelected((s) => (s ? { ...s, ...patch } : s)); void load(); }} />
+              )}
+
               {activeIndustry === 'school' && (
                 <SchoolRefundPanel key={`refund-${selected.id}`} order={selected} onChanged={(patch) => { setSelected((s) => (s ? { ...s, ...patch } : s)); void load(); }} />
               )}
@@ -863,6 +886,7 @@ export function OrdersPage() {
                 <div className="qd-panel-head">
                   <span>Payment &amp; dispatch</span>
                  <span className={`qd-pill ${balance > settleTolerance(selected) ? 'warn' : 'ok'}`}>{ps.label}</span>
+                  {refundBadge(selected)}
                 </div>
                 <div className="qd-fields">
                   <label>

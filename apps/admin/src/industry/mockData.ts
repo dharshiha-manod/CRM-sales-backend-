@@ -5,7 +5,7 @@ import type { IndustryConfig } from './types';
 // ---------------------------------------------------------------------------
 const fmcg: IndustryConfig = {
   key: 'fmcg',
-  label: 'FMCG',
+  label: 'FMCG Wholesalers & Distributors',
   tagline: 'Fast Moving Consumer Goods · Retail & Distribution',
   colorVar: '--ind-fmcg',
   terms: {
@@ -177,7 +177,7 @@ const school: IndustryConfig = {
 // ---------------------------------------------------------------------------
 const textile: IndustryConfig = {
   key: 'textile',
-  label: 'Textile',
+  label: 'Textile Fabric Wholesalers & Distributors',
   tagline: 'Fabric & Apparel · Wholesale Distribution',
   colorVar: '--ind-textile',
   terms: {

@@ -4,22 +4,24 @@ import { api } from '../lib/api';
 type Summary = {
   batches: { total: number; expired: number; critical: number; expiringSoon: number; unitsAtRisk: number; list: { batch_number: string; product_name: string; quantity: number; expiry_date: string; days_left: number | null }[] };
   recalls: { open: number; critical: number; list: { recall_code: string; product_name: string; batch_number: string; status: string }[] };
-  samples: { unitsIssued: number; unitsRemaining: number; distributed: number };
-  promotions: { active: number; total: number };
   returns: { awaitingInspection: number; total: number };
-  engagements: { followUpsDue: number; total: number };
 };
+type Distributor = { lowStock: number; payables: number; receivables: number; openPurchaseOrders: number };
+const inr = (v: number) => `₹${Math.round(v).toLocaleString('en-IN')}`;
 
-/** Dashboard block for the Pharma industry: expiry risk, open recalls, samples, campaigns, returns and follow-ups due. Real data from GET /pharma/summary. */
+/** Dashboard block for the Pharma Distributor industry: expiry risk, open recalls and returns to inspect. Real data from GET /pharma/summary. */
 export function PharmaInsightsPanel({ industryTypeId }: { industryTypeId: string }) {
   const [data, setData] = useState<Summary | null>(null);
+  const [dist, setDist] = useState<Distributor | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
     let live = true;
     const load = () => api<{ data: Summary }>(`/pharma/summary?industryTypeId=${encodeURIComponent(industryTypeId)}`)
       .then((r) => { if (live) { setData(r.data); setError(''); } })
       .catch((e) => { if (live) setError(e instanceof Error ? e.message : 'Could not load Pharma insights.'); });
+    const loadDist = () => api<{ data: Distributor }>(`/pharma/distributor-summary?industryTypeId=${encodeURIComponent(industryTypeId)}`).then((r) => { if (live) setDist(r.data); }).catch(() => undefined);
     void load();
+    void loadDist();
     const t = window.setInterval(load, 120_000);
     return () => { live = false; window.clearInterval(t); };
   }, [industryTypeId]);
@@ -31,10 +33,13 @@ export function PharmaInsightsPanel({ industryTypeId }: { industryTypeId: string
     ['Critical expiry (≤30 days)', data.batches.critical, `${data.batches.unitsAtRisk} units at risk`],
     ['Expiring soon (≤90 days)', data.batches.expiringSoon, 'batches'],
     ['Open recalls', data.recalls.open, `${data.recalls.critical} critical / high`],
-    ['Sample units issued', data.samples.unitsIssued, `${data.samples.unitsRemaining} remaining`],
-    ['Active campaigns', data.promotions.active, `of ${data.promotions.total}`],
     ['Returns to inspect', data.returns.awaitingInspection, `of ${data.returns.total}`],
-    ['Follow-ups due', data.engagements.followUpsDue, 'hospital visits'],
+    ...(dist ? ([
+      ['Low stock products', dist.lowStock, 'at or below reorder level'],
+      ['Payable to suppliers', inr(dist.payables), 'GRN - returns - payments'],
+      ['Receivable from customers', inr(dist.receivables), 'billed - collected'],
+      ['Open purchase orders', dist.openPurchaseOrders, 'awaiting goods'],
+    ] as [string, string | number, string][]) : []),
   ];
   return (
     <section className="ops-panel">

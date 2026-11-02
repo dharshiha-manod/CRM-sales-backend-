@@ -9,6 +9,7 @@ import { sendQuotationEmail } from '../services/quotation-email.service.js';
 import { getQuotationEmailTemplate } from './quotation-email-templates.repository.js';
 import { ensureLogisticsPlan } from '../lib/logistics-plan.js';
 import { assertWithinCreditLimit } from '../lib/credit.js';
+import { assertPharmaLicenseValid } from '../lib/pharma-license.js';
 import { documentCurrencyForClient, isFmcgIndustry, toBase } from '../lib/fmcg-market.js';
 import { planAllocations, takeStockForOrder, tracksOrderStock } from '../lib/stock.js';
 import { bestSchemeFor, loadLiveSchemes } from '../lib/fmcg-schemes.js';
@@ -161,6 +162,8 @@ export async function convertToOrder(organizationId: string, representativeId: s
   if (quotation.status !== 'accepted' || !quotation.approved_at) throw new AppError(422, 'QUOTATION_NOT_APPROVED', 'Only a manager-approved quotation can be converted into an order.');
   // Order numbering comes from the Order Configuration of the quotation's own industry.
   const orderConfig = await getOrderConfig(organizationId, await industryTypeIdOfClient(organizationId, quotation.client_id as string | null));
+  // Pharma only: a customer whose drug licence has expired cannot be sold to (other industries return immediately).
+  await assertPharmaLicenseValid(organizationId, quotation.client_id as string | null);
   // Credit limit: the order must not push the client's unpaid balance above their limit.
   await assertWithinCreditLimit(organizationId, quotation.client_id as string | null, Number(quotation.base_total ?? quotation.total_amount ?? 0));
    const quotationValue = Number(quotation.base_total ?? quotation.total_amount ?? 0);
@@ -185,12 +188,6 @@ export async function convertToOrder(organizationId: string, representativeId: s
   if (await tracksOrderStock(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
     try { await takeStockForOrder(organizationId, order.id as string); } catch (stockError) {
       await supabaseAdmin.from('quotations').update({ status: quotation.status, converted_order_id: null }).eq('id', id).eq('organization_id', organizationId);
-      await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId);
-      throw stockError;
-    }
-  }
-  if (await tracksOrderStock(organizationId, (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
-    try { await takeStockForOrder(organizationId, order.id as string); } catch (stockError) {
       await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId);
       throw stockError;
     }

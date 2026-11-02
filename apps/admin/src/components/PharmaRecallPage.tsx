@@ -17,11 +17,14 @@ const config: PharmaModuleConfig = {
   fields: [
     { key: 'recall_code', label: 'Recall number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'RCL' },
     { key: 'product_name', label: 'Product', type: 'text', required: true, listColumn: true },
-    { key: 'batch_number', label: 'Batch number', type: 'lookup', lookupResource: '/pharma/batches', lookupLabelKey: 'product_name', lookupSecondaryLabelKey: 'batch_number', autoFillMap: { product_name: 'product_name', quantity: 'affected_quantity', sales_rep: 'assigned_team' }, required: true, listColumn: true },
+    { key: 'batch_number', label: 'Batch number', type: 'lookup', lookupResource: '/pharma/batches', lookupLabelKey: 'product_name', lookupSecondaryLabelKey: 'batch_number', autoFillMap: { product_name: 'product_name', quantity: 'stock_quantity', sales_rep: 'assigned_team' }, required: true, listColumn: true },
     { key: 'severity', label: 'Recall severity', type: 'select', options: SEVERITIES, listColumn: true },
     { key: 'reason', label: 'Recall reason', type: 'textarea', group: 'Recall details' },
     { key: 'recall_date', label: 'Recall date', type: 'date', group: 'Recall details' },
-    { key: 'affected_quantity', label: 'Affected quantity', type: 'number', group: 'Recall details' },
+    { key: 'stock_quantity', label: 'Our stock in warehouse (all remaining stock is written off as waste when closed)', type: 'number', readOnly: true, group: 'Recall details' },
+    { key: 'supplied_quantity', label: 'Supplied to customers / reps (must be collected back)', type: 'number', readOnly: true, group: 'Recall details', placeholder: 'Filled automatically from sales orders and samples when saved' },
+    { key: 'collected_quantity', label: 'Collected back (updates automatically from Recall returns and returned samples)', type: 'number', group: 'Recall details' },
+    { key: 'affected_quantity', label: 'Total affected quantity', type: 'number', readOnly: true, group: 'Recall details' },
     { key: 'affected_customers', label: 'Affected customers / hospitals / distributors', type: 'textarea', group: 'Recall details', placeholder: 'List affected accounts, one per line' },
     { key: 'assigned_team', label: 'Assigned team / sales rep', type: 'text', listColumn: true, group: 'Recall details' },
     { key: 'action_required', label: 'Action required', type: 'textarea', group: 'Recall details' },
@@ -32,7 +35,7 @@ const config: PharmaModuleConfig = {
   kpis: [
     { icon: '⚠', iconClass: 'kpi-icon-ink', label: 'Active recalls', value: (r) => String(r.filter((x) => x.status !== 'Closed').length) },
     { icon: '⊘', iconClass: 'kpi-icon-red', label: 'Critical recalls', value: (r) => String(r.filter((x) => x.severity === 'Critical' && x.status !== 'Closed').length) },
-    { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Pending quantity', value: (r) => String(r.filter((x) => x.status !== 'Closed').reduce((sum, x) => sum + (Number(x.affected_quantity) || 0), 0)) },
+    { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Pending quantity', value: (r) => String(r.filter((x) => x.status !== 'Closed').reduce((sum, x) => sum + Math.max((Number(x.affected_quantity) || 0) - (Number(x.collected_quantity) || 0), 0), 0)) },
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Closed recalls', value: (r) => String(r.filter((x) => x.status === 'Closed').length) },
   ],
   sampleRecords: [

@@ -3,6 +3,7 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { getOrderConfig, industryTypeIdOfClient } from '../lib/settings.js';
 import { assertRecordInScope, type IndustryScope } from '../lib/industry-scope.js';
+import { assertPharmaLicenseValid } from '../lib/pharma-license.js';
 import { assertCreditOnApproval, assertWithinCreditLimit } from '../lib/credit.js'; // <-- NEW (assertCreditOnApproval added)
 import { documentCurrencyForClient, isFmcgIndustry, toBase, type DocumentCurrency } from '../lib/fmcg-market.js';
 import { bestSchemeFor, loadLiveSchemes, type LiveScheme } from '../lib/fmcg-schemes.js';
@@ -97,6 +98,7 @@ export async function createOrderFromVisit(organizationId: string, representativ
     throw new AppError(422, 'ORDER_BELOW_MINIMUM', `Order total (₹${totalInr}) is below the minimum order value of ₹${orderConfig.minOrderValue} set in Settings.`);
   }
 
+  await assertPharmaLicenseValid(organizationId, visit.client_id);
   await assertWithinCreditLimit(organizationId, visit.client_id, totalInr);
 
   const orderNumber = await uniqueOrderNumber(organizationId, orderConfig.numberingFormat);
@@ -156,6 +158,7 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
     throw new AppError(422, 'ORDER_BELOW_MINIMUM', `Order total (₹${totalInr}) is below the minimum order value of ₹${orderConfig.minOrderValue} set in Settings.`);
   }
 
+  await assertPharmaLicenseValid(organizationId, client.id as string);
   await assertWithinCreditLimit(organizationId, client.id as string, totalInr);
 
   const orderNumber = await uniqueOrderNumber(organizationId, orderConfig.numberingFormat);
@@ -241,6 +244,7 @@ export async function approveOrder(organizationId: string, scope: IndustryScope,
   if (!order) throw notFound;
   assertRecordInScope(scope, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null, notFound);
   if (order.status !== 'pending_approval') throw new AppError(422, 'ORDER_NOT_PENDING_APPROVAL', `A ${order.status} order is not awaiting approval.`);
+  await assertPharmaLicenseValid(organizationId, order.client_id as string | null);
   await assertCreditOnApproval(organizationId, order.client_id as string | null); // <-- NEW: credit may have changed while the order waited
 
   const { data, error } = await supabaseAdmin.from('sale_orders').update({ status: 'confirmed' }).eq('id', id).eq('organization_id', organizationId).eq('status', 'pending_approval').select().single();

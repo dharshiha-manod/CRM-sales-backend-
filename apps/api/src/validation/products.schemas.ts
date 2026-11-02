@@ -40,6 +40,18 @@ export const productCreateSchema = z.object({
       quantity: z.number().nonnegative().max(100000000).optional().nullable(),
     })).max(100).optional(),
   }).optional().nullable(),
+  /** Pharma only: medicine fields (generic name, composition, schedule...). Stored as one JSON column. */
+  pharmaDetails: z.object({
+    genericName: z.string().trim().max(160).optional().nullable(),
+    composition: z.string().trim().max(300).optional().nullable(),
+    strength: z.string().trim().max(60).optional().nullable(),
+    dosageForm: z.string().trim().max(60).optional().nullable(),
+    manufacturer: z.string().trim().max(160).optional().nullable(),
+    drugCategory: z.enum(['OTC', 'Prescription', 'Narcotic / Psychotropic']).optional().nullable(),
+    drugSchedule: z.string().trim().max(30).optional().nullable(),
+    storageCondition: z.string().trim().max(120).optional().nullable(),
+    coldChain: z.boolean().optional().nullable(),
+  }).optional().nullable(),
   industryTypeIds: z.array(z.string().uuid()).max(50).optional(),
 });
 export const productUpdateSchema = productCreateSchema.partial();

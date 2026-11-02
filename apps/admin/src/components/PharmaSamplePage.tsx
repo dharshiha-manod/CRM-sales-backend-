@@ -1,7 +1,6 @@
 import { PharmaMasterPage, PharmaModuleConfig } from './PharmaMasterPage';
 import { daysLeft } from '../lib/batchExpiry';
 import { fillRepFromClient, hospitalField, repField } from './pharmaLookups';
-
 const STATUSES = ['Available', 'Assigned', 'Taken for visit', 'Distributed', 'Acknowledged', 'Returned'];
 const SAMPLE_TYPES = ['Physician sample', 'Trial pack', 'Promotional sample'];
 const PURPOSES = ['New product introduction', 'Product detailing', 'Doctor request', 'Trial for patients', 'Prescription switch follow-up', 'Clinical evaluation', 'CME / conference', 'Hospital formulary / tender', 'Other'];
@@ -15,7 +14,8 @@ const config: PharmaModuleConfig = {
   emptyIcon: '💊',
   codeField: 'sample_code',
   nameField: 'product_name',
-  statusOptions: STATUSES,
+   statusOptions: STATUSES,
+  inlineStatus: true,
   searchableKeys: ['sample_code', 'product_name', 'product_code', 'doctor_name', 'hospital_name', 'sales_rep'],
   fields: [
     { key: 'sample_code', label: 'Sample code', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'SMP' },
@@ -27,8 +27,7 @@ const config: PharmaModuleConfig = {
     { key: 'quantity_issued', label: 'Quantity issued', type: 'number', min: 1, listColumn: true, group: 'Distribution details' },
     { key: 'quantity_remaining', label: 'Quantity remaining', type: 'number', min: 0, helpText: 'Leave blank to start equal to quantity issued.', listColumn: true, group: 'Distribution details' },
     repField('sales_rep', 'Sales representative', { listColumn: true, group: 'Distribution details' }),
-    { key: 'doctor_name', label: 'Doctor / HCP', type: 'text', listColumn: true, group: 'Distribution details' },
-    hospitalField('hospital_name', 'Hospital / clinic', { listColumn: true, group: 'Distribution details', autoFillMap: { city: 'location' }, onLookupChange: fillRepFromClient('sales_rep') }),
+    { key: 'doctor_name', label: 'Doctor / HCP', type: 'text', listColumn: true, group: 'Distribution details' },    hospitalField('hospital_name', 'Hospital / clinic', { listColumn: true, group: 'Distribution details', autoFillMap: { city: 'location' }, onLookupChange: fillRepFromClient('sales_rep', 'doctor_name') }),
     { key: 'location', label: 'Location', type: 'text', group: 'Distribution details' },
     { key: 'visit_reference', label: 'Visit reference', type: 'text', group: 'Distribution details' },
     { key: 'purpose', label: 'Purpose of sample', type: 'combo', comboOptions: PURPOSES, placeholder: 'Pick from the list or type your own', group: 'Distribution details' },

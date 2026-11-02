@@ -26,12 +26,14 @@ export const hospitalField = (key: string, label: string, extra: Partial<FieldDe
 });
 
 /** When a hospital is picked: fills the rep assigned to that client (and, if contactKey is given, the client's primary contact). Never overwrites a value already chosen. */
-export function fillRepFromClient(repKey: string, contactKey?: string) {
+export function fillRepFromClient(repKey: string, contactKey?: string | string[], specialtyKey?: string) {
   return (matched: Record<string, unknown>, setForm: SetForm) => {
     if (contactKey) {
-      const contacts = (matched.client_contacts as Array<{ name?: string; is_primary?: boolean }> | undefined) ?? [];
-      const contact = (contacts.find((c) => c.is_primary) ?? contacts[0])?.name;
-      if (contact) setForm((prev) => (prev[contactKey] ? prev : { ...prev, [contactKey]: contact }));
+      const contacts = (matched.client_contacts as Array<{ name?: string; designation?: string | null; is_primary?: boolean }> | undefined) ?? [];
+      const primary = contacts.find((c) => c.is_primary) ?? contacts[0];
+      const keys = Array.isArray(contactKey) ? contactKey : [contactKey];
+      if (primary?.name) for (const k of keys) setForm((prev) => (prev[k] ? prev : { ...prev, [k]: primary.name as string }));
+      if (specialtyKey && primary?.designation) setForm((prev) => (prev[specialtyKey] ? prev : { ...prev, [specialtyKey]: primary.designation as string }));
     }
     const assignments = (matched.sales_representative_client_assignments as Array<{ status?: string; sales_representatives?: { employee_code?: string } | null }> | undefined) ?? [];
     const active = assignments.find((a) => a.status === 'active' && a.sales_representatives?.employee_code);

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { assertRecordInScope, type IndustryScope } from '../lib/industry-scope.js';
-import { isFmcgIndustry, toBase } from '../lib/fmcg-market.js';
+import { industryCodeOf, isFmcgIndustry, toBase } from '../lib/fmcg-market.js';
 import { restockFromOrder } from '../lib/stock.js';
 import { completeOrderIfSettled } from '../lib/order-completion.js';
 import { isSchoolIndustry } from '../lib/school.js';
@@ -49,7 +49,8 @@ export async function createReturn(org: string, userId: string, scope: IndustryS
   assertRecordInScope(scope, industryTypeId, notFound);
   if (representativeId && order.representative_id !== representativeId) throw notFound;
   const isSchool = await isSchoolIndustry(org, industryTypeId); // School orders use the same return / damage + approval flow
-  if (!isSchool && !(await isFmcgIndustry(org, industryTypeId))) throw new AppError(422, 'NOT_FMCG', 'Returns & damage are only available in the FMCG industry.');
+  const isPharma = (await industryCodeOf(org, industryTypeId)) === 'pharma'; // Pharma medicine returns raise their credit note through this same table
+  if (!isSchool && !isPharma && !(await isFmcgIndustry(org, industryTypeId))) throw new AppError(422, 'NOT_FMCG', 'Returns & damage are only available in the FMCG and Pharma industries.');
   if (['cancelled', 'rejected', 'pending_approval'].includes(String(order.status))) throw new AppError(422, 'ORDER_NOT_RETURNABLE', `A ${String(order.status).replace('_', ' ')} order has nothing to return.`);
   if (isSchool && !['dispatched', 'delivered'].includes(String((order as { dispatch_status?: string | null }).dispatch_status ?? 'pending'))) throw new AppError(422, 'NOT_DISPATCHED', 'These goods have not been dispatched yet, so there is nothing to return. Cancel the order instead.');
 

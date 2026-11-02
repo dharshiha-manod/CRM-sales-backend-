@@ -44,6 +44,8 @@ type Product = {
   industry_type_id?: string | null;
   // Textile only — saved in the database (products.textile_details, JSON).
   textile_details?: StoredTextileDetails | null;
+  // Pharma only — saved in the database (products.pharma_details, JSON).
+  pharma_details?: StoredPharmaDetails | null;
 };
 // FMCG-specific fields have no backend column yet — persisted client-side in
 // localStorage, keyed by product id, until real columns exist.
@@ -166,6 +168,30 @@ function generateProductCode(category: string, productName: string, suffix: numb
   return `${catPart}-${namePart}-${suffix}`;
 }
 
+// ---------- Pharma (medicine) product details — used only when the active industry is pharma ----------
+type StoredPharmaDetails = {
+  genericName?: string | null; composition?: string | null; strength?: string | null; dosageForm?: string | null; manufacturer?: string | null;
+  drugCategory?: 'OTC' | 'Prescription' | 'Narcotic / Psychotropic' | null; drugSchedule?: string | null; storageCondition?: string | null; coldChain?: boolean | null;
+};
+type PharmaDetails = {
+  genericName: string; composition: string; strength: string; dosageForm: string; manufacturer: string;
+  drugCategory: '' | 'OTC' | 'Prescription' | 'Narcotic / Psychotropic'; drugSchedule: string; storageCondition: string; coldChain: boolean;
+};
+const blankPharma: PharmaDetails = { genericName: '', composition: '', strength: '', dosageForm: '', manufacturer: '', drugCategory: '', drugSchedule: '', storageCondition: '', coldChain: false };
+const DRUG_SCHEDULES = ['None (non-scheduled)', 'Schedule G', 'Schedule H', 'Schedule H1', 'Schedule X', 'Schedule C / C1'];
+const DOSAGE_FORMS = ['Tablet', 'Capsule', 'Syrup', 'Suspension', 'Injection', 'Ointment / Cream', 'Drops', 'Inhaler', 'Powder / Sachet', 'Other'];
+function pharmaFromProduct(product: Product): PharmaDetails {
+  const d = product.pharma_details;
+  if (!d) return blankPharma;
+  return { genericName: d.genericName ?? '', composition: d.composition ?? '', strength: d.strength ?? '', dosageForm: d.dosageForm ?? '', manufacturer: d.manufacturer ?? '', drugCategory: d.drugCategory ?? '', drugSchedule: d.drugSchedule ?? '', storageCondition: d.storageCondition ?? '', coldChain: Boolean(d.coldChain) };
+}
+function pharmaToPayload(p: PharmaDetails): StoredPharmaDetails | null {
+  const t = (v: string) => v.trim() || null;
+  const empty = !p.genericName.trim() && !p.composition.trim() && !p.strength.trim() && !p.dosageForm && !p.manufacturer.trim() && !p.drugCategory && !p.drugSchedule && !p.storageCondition.trim() && !p.coldChain;
+  if (empty) return null;
+  return { genericName: t(p.genericName), composition: t(p.composition), strength: t(p.strength), dosageForm: t(p.dosageForm), manufacturer: t(p.manufacturer), drugCategory: p.drugCategory || null, drugSchedule: t(p.drugSchedule), storageCondition: t(p.storageCondition), coldChain: p.coldChain };
+}
+
 // ---------- Textile (fabric) product details — used only when the active industry is textile ----------
 type StoredTextileDetails = {
   fabricType?: string | null; composition?: string | null;
@@ -253,7 +279,7 @@ type ProductForm = {
   originCountry: string;
   supplierName: string;
   currency: string;
-} & FmcgMeta & { textile: TextileDetails };
+} & FmcgMeta & { textile: TextileDetails; pharma: PharmaDetails };
 
 const blankForm: ProductForm = {
   productCode: '',
@@ -273,6 +299,7 @@ const blankForm: ProductForm = {
   currency: 'INR',
   ...blankFmcgMeta,
   textile: blankTextile,
+  pharma: blankPharma,
 };
 
 // Related-orders lookup: match by product_code against sale_order_items, the
@@ -548,6 +575,7 @@ export function ProductsPage() {
       supplierName: product.supplier_name ?? '',
       currency: product.currency ?? 'INR',
       textile: textileFromProduct(product),
+      pharma: pharmaFromProduct(product),
     });
     setMessage('');
     setModalOpen(true);
@@ -560,16 +588,21 @@ export function ProductsPage() {
     setForm(blankForm);
   }
 
-  async function submit(event: FormEvent) {
+   async function submit(event: FormEvent) {
     event.preventDefault();
+    // Instant lock: `saving` is state and updates only after a re-render, so a fast double-click
+    // could run this twice and create two batches. This flag blocks the second run immediately.
+    const formEl = event.currentTarget as HTMLFormElement;
+    if (formEl.dataset.busy === '1') return;
     if (activeIndustry === 'pharma' && form.trackBatch && !form.expiryDate) {
       setMessage('Enter the expiry date, or enter the manufacturing date and shelf life so it is calculated.');
       return;
     }
-       // Industry Type is set globally via the sidebar picker, not per-product.
+    formEl.dataset.busy = '1';
+    // Industry Type is set globally via the sidebar picker, not per-product.
     setSaving(true);
     setMessage('');
-     const fmcgMeta: FmcgMeta = {
+    const fmcgMeta: FmcgMeta = {
       barcode: form.barcode,
       brand: form.brand,
       subCategory: form.subCategory,
@@ -587,7 +620,7 @@ export function ProductsPage() {
       productCode: form.productCode,
       productName: form.productName,
       category: form.category || null,
-         sellingPrice: Number(form.sellingPrice),
+      sellingPrice: Number(form.sellingPrice),
       costPrice: form.costPrice === '' ? null : Number(form.costPrice),
       stockQuantity: isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '')
         ? form.textile.colors.reduce((sum, c) => sum + (Number(c.quantity) || 0), 0)
@@ -606,6 +639,8 @@ export function ProductsPage() {
       industryTypeIds: [form.industryTypeId || activeIndustryTypeId || ''].filter(Boolean),
       // Textile only — other industries never send this field.
       ...(isTextile ? { textileDetails: textileToPayload(form.textile) } : {}),
+      // Pharma only — other industries never send this field.
+      ...(activeIndustry === 'pharma' ? { pharmaDetails: pharmaToPayload(form.pharma) } : {}),
     };
     try {
       const response = await api<{ data: Product }>(editing ? `/products/${editing.id}` : '/products', {
@@ -620,15 +655,20 @@ export function ProductsPage() {
         try {
           const list = await api<{ data: { id: string; batch_number: string; product_code?: string | null; manufacture_date?: string | null; quantity?: number | string | null }[] }>('/pharma/batches');
           const existingBatches = list.data ?? [];
-          // Blank batch number -> auto-generate <product code>-<yymmdd>-<running no.>
-          // Saving the same product again must never create a second batch: with no number typed, reuse this product's batch that has the same manufacture date.
-          const ofProduct = existingBatches.filter((b) => b.product_code === form.productCode);
+          const sameCode = (code?: string | null) => String(code ?? '').trim().toLowerCase() === form.productCode.trim().toLowerCase();
+          const ofProduct = existingBatches.filter((b) => sameCode(b.product_code));
           const typed = form.batchNumber.trim();
-          const sameLot = typed ? undefined : ofProduct.find((b) => String(b.manufacture_date ?? '').slice(0, 10) === (form.mfgDate || ''));
+          // No number typed: reuse this product's batch with the same manufacture date.
+          // When editing a product that has exactly one batch, that batch is the one being edited, so it is updated, never duplicated.
+          const sameLot = typed
+            ? undefined
+            : (ofProduct.find((b) => String(b.manufacture_date ?? '').slice(0, 10) === (form.mfgDate || ''))
+              ?? (editing && ofProduct.length === 1 ? ofProduct[0] : undefined));
           const batchNo = typed || sameLot?.batch_number
             || previewBatchNo(form.productCode, form.mfgDate, existingBatches.map((b) => b.batch_number));
-          const match = existingBatches.find((b) => b.batch_number.toLowerCase() === batchNo.toLowerCase());
-          // A product with ONE batch: the stock typed on the product is that batch's quantity (otherwise Batch & Expiry resets product stock back to the batch's old quantity).
+              const match = existingBatches.find((b) => b.batch_number.toLowerCase() === batchNo.toLowerCase());
+          saveFmcgMeta(productId, { ...fmcgMeta, batchNumber: batchNo }); // keep the real (auto) batch number so the Products list shows it
+          // A product with ONE batch: the stock typed on the product is that batch's quantity.
           const soleBatch = !!match && ofProduct.length === 1 && ofProduct[0].id === match.id;
           const batchFields = {
             batch_number: batchNo,
@@ -640,7 +680,7 @@ export function ProductsPage() {
           };
           if (match && soleBatch && form.stockQuantity !== '') Object.assign(batchFields, { quantity: Number(form.stockQuantity) });
           if (match) {
-            // Same batch number already on file: update its dates (quantity is left alone — it is managed by Batch & Expiry).
+            // Same batch already on file: update its dates (quantity is otherwise managed by Batch & Expiry).
             await api(`/pharma/batches/${match.id}`, { method: 'PATCH', body: JSON.stringify(batchFields) });
             pharmaBatchNote = ' Batch updated in Batch & Expiry.';
           } else {
@@ -666,6 +706,7 @@ export function ProductsPage() {
       setMessage(error instanceof Error ? error.message : 'Unable to save product.');
     } finally {
       setSaving(false);
+      delete formEl.dataset.busy;
     }
   }
 
@@ -942,6 +983,19 @@ export function ProductsPage() {
                     {savedUnits.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
                   </select>
                 </label>  
+                {activeIndustry === 'pharma' && (<>
+                  <label>Generic name<input placeholder="e.g. Atorvastatin" value={form.pharma.genericName} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, genericName: event.target.value } })} /></label>
+                  <label>Composition<input placeholder="e.g. Atorvastatin Calcium IP 10 mg" value={form.pharma.composition} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, composition: event.target.value } })} /></label>
+                  <label>Strength<input placeholder="e.g. 10 mg" value={form.pharma.strength} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, strength: event.target.value } })} /></label>
+                  <label>Dosage form<select value={form.pharma.dosageForm} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, dosageForm: event.target.value } })}><option value="">Select</option>{DOSAGE_FORMS.map((x) => <option key={x} value={x}>{x}</option>)}</select></label>
+                  <label>Manufacturer<input placeholder="Company that makes it" value={form.pharma.manufacturer} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, manufacturer: event.target.value } })} /></label>
+                  <label>Drug category<select value={form.pharma.drugCategory} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, drugCategory: event.target.value as PharmaDetails['drugCategory'] } })}><option value="">Select</option><option value="OTC">OTC</option><option value="Prescription">Prescription</option><option value="Narcotic / Psychotropic">Narcotic / Psychotropic</option></select></label>
+                  <label>Drug schedule<select value={form.pharma.drugSchedule} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, drugSchedule: event.target.value } })}><option value="">Select</option>{DRUG_SCHEDULES.map((x) => <option key={x} value={x}>{x}</option>)}</select></label>
+                  <label>Storage condition<input placeholder="e.g. Store below 25°C, away from light" value={form.pharma.storageCondition} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, storageCondition: event.target.value } })} /></label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '.6rem' }}>
+                    <input type="checkbox" style={{ width: 'auto', padding: 0, border: 'none', boxShadow: 'none', background: 'none' }} checked={form.pharma.coldChain} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, coldChain: event.target.checked } })} /> Cold-chain product (2–8°C)
+                  </label>
+                </>)}
 {!isTextile && <label>Pack size<input placeholder={PACK_SIZE_PLACEHOLDERS[activeIndustry] ?? 'e.g. 10 pcs per box'} value={form.packSize} onChange={(event) => setForm({ ...form, packSize: event.target.value })} /></label>}
                 {isTextile && (
                   <>
@@ -1064,6 +1118,19 @@ export function ProductsPage() {
                 <dt>Barcode</dt><dd>{meta.barcode || 'Not recorded'}</dd>
                 <dt>Brand</dt><dd>{meta.brand || 'Not recorded'}</dd>
                 <dt>Category</dt><dd>{viewing.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</dd>
+                {activeIndustry === 'pharma' && (() => {
+                  const d = viewing.pharma_details;
+                  return (
+                    <>
+                      <dt>Generic name</dt><dd>{d?.genericName || 'Not recorded'}</dd>
+                      <dt>Composition</dt><dd>{[d?.composition, d?.strength].filter(Boolean).join(' · ') || 'Not recorded'}</dd>
+                      <dt>Dosage form</dt><dd>{d?.dosageForm || 'Not recorded'}</dd>
+                      <dt>Manufacturer</dt><dd>{d?.manufacturer || 'Not recorded'}</dd>
+                      <dt>Drug category / schedule</dt><dd>{[d?.drugCategory, d?.drugSchedule].filter(Boolean).join(' · ') || 'Not recorded'}</dd>
+                      <dt>Storage</dt><dd>{[d?.storageCondition, d?.coldChain ? 'Cold chain' : ''].filter(Boolean).join(' · ') || 'Not recorded'}</dd>
+                    </>
+                  );
+                })()}
                 {isTextile && (() => {
                   const t = viewing.textile_details;
                   const colors = t?.colors ?? [];

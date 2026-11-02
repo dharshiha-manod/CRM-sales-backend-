@@ -17,7 +17,7 @@ const config: PharmaModuleConfig = {
   searchableKeys: ['engagement_code', 'hospital_name', 'doctor_name', 'contact_person', 'department', 'sales_rep'],
   fields: [
     { key: 'engagement_code', label: 'Engagement code', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'HE' },
-    hospitalField('hospital_name', 'Hospital', { required: true, listColumn: true, autoFillMap: { city: 'location' }, onLookupChange: fillRepFromClient('sales_rep', 'contact_person') }),
+    hospitalField('hospital_name', 'Hospital', { required: true, listColumn: true, autoFillMap: { city: 'location' }, onLookupChange: fillRepFromClient('sales_rep', ['contact_person', 'doctor_name'], 'specialty') }),
     { key: 'contact_person', label: 'Contact person', type: 'text', listColumn: true },
     { key: 'doctor_name', label: 'Doctor / HCP', type: 'text', listColumn: true, group: 'Contacts' },
     { key: 'specialty', label: 'Specialty', type: 'text', group: 'Contacts' },
@@ -40,7 +40,7 @@ const config: PharmaModuleConfig = {
       icon: '📅',
       iconClass: 'kpi-icon-school',
       label: 'Upcoming visits',
-      value: (r) => String(r.filter((x) => x.visit_date && new Date(x.visit_date as string) >= new Date()).length),
+        value: (r) => String(r.filter((x) => x.status === 'Visit scheduled' && x.visit_date && String(x.visit_date).slice(0, 10) >= new Date().toISOString().slice(0, 10)).length),
     },
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Follow-ups pending', value: (r) => String(r.filter((x) => x.status === 'Follow-up created').length) },
   ],

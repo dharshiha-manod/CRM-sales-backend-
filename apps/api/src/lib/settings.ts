@@ -123,6 +123,11 @@ export async function getFmcgExpiryRules(organizationId: string): Promise<Expiry
   return expiryRulesFrom(await getSettingsBlob(organizationId), 'fmcg');
 }
 
+/** Expiry rules of the Pharma industry (Settings > Expiry & Batch Rules): batches closer to expiry than this are not sold. */
+export async function getPharmaExpiryRules(organizationId: string): Promise<ExpiryRulesConfig> {
+  return expiryRulesFrom(await getSettingsBlob(organizationId), 'pharma');
+}
+
 export interface OrderConfig {
   statuses: string[];
   approvalRequired: boolean;

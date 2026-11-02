@@ -148,7 +148,7 @@ type LiveFollowUp = {
 type LiveProduct = { id: string; product_code: string; product_name: string; stock_quantity?: number | null; industry_type_id?: string | null };
 type LiveIndustryType = { id: string; code: string };
 // Real Pharma alerts from GET /pharma/alerts (batch expiry, open recalls, returns to inspect, hospital follow-ups due).
-type LivePharmaAlert = { id: string; type: 'expiry' | 'recall' | 'return' | 'followup'; level: 'expired' | 'critical' | 'warning'; title: string; message: string; batchNumber?: string; daysLeft?: number; quantity?: number; expiryDate?: string };
+type LivePharmaAlert = { id: string; type: 'expiry' | 'recall' | 'return' | 'followup' | 'license'; level: 'expired' | 'critical' | 'warning'; title: string; message: string; batchNumber?: string; daysLeft?: number; quantity?: number; expiryDate?: string };
 type LivePurchaseEnquiry = {
   id: string; enquiry_number: string; product_name?: string | null; supplier_name?: string | null;
   status?: string | null; updated_at?: string | null; industry_type_id?: string | null;
@@ -315,20 +315,20 @@ function buildLiveNotifications(sources: {
   for (const a of sources.pharmaAlerts) {
     if (dismissed.has(a.id)) continue;
     const kind = a.type;
-    const target = kind === 'recall' ? 'industry:pharma:recall' : kind === 'return' ? 'industry:pharma:medicine-return' : kind === 'followup' ? 'industry:pharma:hospital-engagement' : 'industry:pharma:batch-expiry';
-    const moduleName = kind === 'recall' ? 'Recall Management' : kind === 'return' ? 'Medicine Return' : kind === 'followup' ? 'Hospital Engagement' : 'Batch & Expiry';
+    const target = kind === 'recall' ? 'industry:pharma:recall' : kind === 'return' ? 'industry:pharma:medicine-return' : kind === 'followup' ? 'industry:pharma:hospital-engagement' : kind === 'license' ? 'clients' : 'industry:pharma:batch-expiry';
+    const moduleName = kind === 'recall' ? 'Recall Management' : kind === 'return' ? 'Medicine Return' : kind === 'followup' ? 'Hospital Engagement' : kind === 'license' ? 'Clients' : 'Batch & Expiry';
     const details: DetailField[] = [{ label: 'Alert', value: a.title }];
     if (a.batchNumber) details.push({ label: 'Batch', value: a.batchNumber });
     if (a.quantity !== undefined) details.push({ label: 'Units on hand', value: String(a.quantity) });
     if (a.expiryDate) details.push({ label: 'Expiry', value: String(a.expiryDate).slice(0, 10) });
     items.push({
       id: a.id, category: kind === 'followup' ? 'followup' : 'inventory',
-      title: kind === 'expiry' ? 'Expiry Alert' : kind === 'recall' ? 'Product Recall' : a.title,
+      title: kind === 'expiry' ? 'Expiry Alert' : kind === 'recall' ? 'Product Recall' : kind === 'license' ? 'Drug Licence' : a.title,
       description: kind === 'expiry' ? `${a.title} — ${a.message}` : a.message,
       module: moduleName, navigateTo: target, industry: 'pharma',
       roles: kind === 'recall' || kind === 'followup' ? ['admin', 'manager', 'rep'] : ['admin', 'manager'],
       timestamp: new Date().toISOString(), read: readIds.has(a.id), priority: a.level === 'warning' ? 'important' : 'critical',
-      details, primaryAction: kind === 'recall' ? 'View Recall' : kind === 'return' ? 'View Returns' : kind === 'followup' ? 'View Engagements' : 'View Batches',
+      details, primaryAction: kind === 'recall' ? 'View Recall' : kind === 'return' ? 'View Returns' : kind === 'followup' ? 'View Engagements' : kind === 'license' ? 'View Client' : 'View Batches',
     });
   }
 
