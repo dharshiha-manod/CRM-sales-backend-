@@ -32,13 +32,11 @@ import { FmcgShipmentsPage } from './components/FmcgShipmentsPage';
 import { FabricRollPage } from './components/FabricRollPage';
 import { TextileSamplePage } from './components/TextileSamplePage';
 import { QualityInspectionPage } from './components/QualityInspectionPage';
-import { PharmaSamplePage } from './components/PharmaSamplePage';
 import { PharmaBatchExpiryPage } from './components/PharmaBatchExpiryPage';
-import { PharmaProductPromotionPage } from './components/PharmaProductPromotionPage';
-import { PharmaHospitalEngagementPage } from './components/PharmaHospitalEngagementPage';
 import { PharmaMedicineReturnPage } from './components/PharmaMedicineReturnPage';
 import { PharmaRefundsPage } from './components/PharmaRefundsPage';
 import { PharmaRecallPage } from './components/PharmaRecallPage';
+import { PharmaCompanyPage, PharmaSuppliersPage, PharmaPurchaseOrdersPage, PharmaGrnPage, PharmaPurchaseReturnsPage, PharmaSupplierPaymentsPage, PharmaInvoicesPage, PharmaScanPage, PharmaReportsPage, PharmaStockLedgerPage, PharmaOutstandingPage } from './components/PharmaDistributorPages';
 import { TradingDealPage } from './components/TradingDealPage';
 import { TradingSupplierVendorPage } from './components/TradingSupplierVendorPage';
 import { TradingPurchaseEnquiryPage } from './components/TradingPurchaseEnquiryPage';
@@ -142,13 +140,21 @@ content['industry:school:school-management'] = <SchoolManagementPage />;
   content['industry:textile:fabric-roll'] = <FabricRollPage />;
   content['industry:textile:textile-sample'] = <TextileSamplePage />;
   content['industry:textile:quality-inspection'] = <QualityInspectionPage />;
-  content['industry:pharma:sample'] = <PharmaSamplePage />;
   content['industry:pharma:batch-expiry'] = <PharmaBatchExpiryPage />;
-  content['industry:pharma:product-promotion'] = <PharmaProductPromotionPage />;
-  content['industry:pharma:hospital-engagement'] = <PharmaHospitalEngagementPage />;
   content['industry:pharma:medicine-return'] = <PharmaMedicineReturnPage />;
   content['industry:pharma:refunds'] = <PharmaRefundsPage />;
   content['industry:pharma:recall'] = <PharmaRecallPage />;
+  content['industry:pharma:company'] = <PharmaCompanyPage />;
+  content['industry:pharma:supplier'] = <PharmaSuppliersPage />;
+  content['industry:pharma:purchase-order'] = <PharmaPurchaseOrdersPage />;
+  content['industry:pharma:grn'] = <PharmaGrnPage />;
+  content['industry:pharma:scan'] = <PharmaScanPage />;
+  content['industry:pharma:gst-invoice'] = <PharmaInvoicesPage />;
+  content['industry:pharma:purchase-return'] = <PharmaPurchaseReturnsPage />;
+  content['industry:pharma:supplier-payment'] = <PharmaSupplierPaymentsPage />;
+  content['industry:pharma:pharma-reports'] = <PharmaReportsPage />;
+  content['industry:pharma:stock-ledger'] = <PharmaStockLedgerPage />;
+  content['industry:pharma:customer-outstanding'] = <PharmaOutstandingPage />;
   content['industry:trading:deal'] = <TradingDealPage />;
   content['industry:trading:supplier-vendor'] = <TradingSupplierVendorPage />;
   content['industry:trading:purchase-enquiry'] = <TradingPurchaseEnquiryPage />;
@@ -181,6 +187,7 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
   content['industry:vehicle:warranty'] = <VehicleWarrantyPage />;
   content['industry:vehicle:service'] = <VehicleServicePage />;
   content['industry:vehicle:returns'] = <VehicleReturnsPage />;
+  const isPharma = activeIndustry === 'pharma'; // Pharma Distributor / Wholesaler hides field-sales / rep menus (other industries unchanged)
    const pageBase = page.split(':').slice(0, 3).join(':');
   const item = (value: Page, text: string, icon: string) => (
     <button key={value} className={pageBase === value ? 'active' : ''} onClick={() => setPage(value)} title={text}>
@@ -200,12 +207,12 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">SC</span><span>Sales CRM<small>FIELD OPERATIONS</small></span></div>
         <nav className="side-nav" aria-label="Main navigation">
-          <p className="nav-label">OVERVIEW</p>{item('dashboard', 'Dashboard', '▦')}{item('reports', 'Reports', '↗')}
-          <p className="nav-label">PIPELINE</p>{item('leads', 'Leads', '✦')}{item('clients', 'Clients', '◎')}{item('requirements', 'Requirements', '⚑')}{item('quotations', 'Quotations', '≡')}
-          <p className="nav-label">SALES OPERATIONS</p>{item('orders', 'Sales orders', '₹')}{item('collections', 'Collections', '₹')}{item('followUps', 'Follow-ups', '◷')}{item('fieldActivity', 'Field activity', '⌖')}{item('gpsTracking', 'GPS Verified Tracking', '⦿')}
+          <p className="nav-label">OVERVIEW</p>{item('dashboard', 'Dashboard', '▦')}{!isPharma && item('reports', 'Reports', '↗')}
+          <p className="nav-label">{isPharma ? 'CUSTOMERS' : 'PIPELINE'}</p>{!isPharma && item('leads', 'Leads', '✦')}{item('clients', isPharma ? 'Customers & Pharmacies' : 'Clients', '◎')}{!isPharma && item('requirements', 'Requirements', '⚑')}{!isPharma && item('quotations', 'Quotations', '≡')}
+          <p className="nav-label">SALES OPERATIONS</p>{item('orders', 'Sales orders', '₹')}{item('collections', isPharma ? 'Collections & Outstanding' : 'Collections', '₹')}{!isPharma && item('followUps', 'Follow-ups', '◷')}{!isPharma && item('fieldActivity', 'Field activity', '⌖')}{!isPharma && item('gpsTracking', 'GPS Verified Tracking', '⦿')}
                   <p className="nav-label">PRODUCT &amp; INVENTORY</p>{item('products', 'Products', '▣')}{item('brandsCategories', 'Brands & Categories', '◆')}{item('inventory', 'Inventory', '▤')}
-          <p className="nav-label">TEAM &amp; PERFORMANCE</p>{item('target', 'Target', '◎')}{item('representatives', 'Sales representatives', '♙')}
-          <p className="nav-label">ADMINISTRATION</p>{item('users', 'User management', '♧')}{item('settings', 'Settings', '⚙')}{item('notifications', 'Notification', '⚑')}{item('calls', 'Calls & IVR', '☎')}
+          {!isPharma && <p className="nav-label">TEAM &amp; PERFORMANCE</p>}{!isPharma && item('target', 'Target', '◎')}{!isPharma && item('representatives', 'Sales representatives', '♙')}
+          <p className="nav-label">ADMINISTRATION</p>{item('users', 'User management', '♧')}{item('settings', 'Settings', '⚙')}{item('notifications', 'Notification', '⚑')}{!isPharma && item('calls', 'Calls & IVR', '☎')}
                <p className="nav-label">{INDUSTRY_CONFIGS[activeIndustry].label.toUpperCase()} MODULES</p>
           {INDUSTRY_MODULES[activeIndustry].map((mod) => item(`industry:${activeIndustry}:${mod.id}` as Page, mod.label, mod.icon))}
         </nav>

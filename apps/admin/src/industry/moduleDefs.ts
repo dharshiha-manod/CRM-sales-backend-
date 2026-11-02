@@ -4,6 +4,7 @@ export interface ModuleDef {
   id: string;
   label: string;
   icon: string;
+  description?: string;
 }
 
 export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
@@ -54,13 +55,21 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'specific-pricing-discount', label: 'Specific Pricing & Discount Management', icon: '％' },
   ],
   pharma: [
-    { id: 'sample', label: 'Sample Management', icon: '💊' },
+    { id: 'company', label: 'Company & GST', icon: '🏢' },
+    { id: 'supplier', label: 'Supplier Management', icon: '🏭' },
+    { id: 'purchase-order', label: 'Purchase Orders', icon: '🧾' },
+    { id: 'grn', label: 'Goods Receipt (GRN)', icon: '📥' },
     { id: 'batch-expiry', label: 'Batch & Expiry Management', icon: '⏱' },
-    { id: 'product-promotion', label: 'Product Promotion Management', icon: '📣' },
-    { id: 'hospital-engagement', label: 'Hospital Engagement Management', icon: '⚕' },
-    { id: 'medicine-return', label: 'Medicine Return Management', icon: '↩' },
+    { id: 'stock-ledger', label: 'Stock Ledger', icon: '⇄' },
+    { id: 'scan', label: 'Scan & Barcodes', icon: '📷' },
+    { id: 'gst-invoice', label: 'GST Sales Invoices', icon: '🧮' },
+    { id: 'medicine-return', label: 'Sales Returns', icon: '↩' },
     { id: 'refunds', label: 'Customer Refunds', icon: '₹' },
+    { id: 'customer-outstanding', label: 'Customer Outstanding', icon: '⏰' },
+    { id: 'purchase-return', label: 'Purchase Returns', icon: '📤' },
+    { id: 'supplier-payment', label: 'Supplier Payments', icon: '💳' },
     { id: 'recall', label: 'Recall Management', icon: '⚠' },
+    { id: 'pharma-reports', label: 'Pharma Reports', icon: '📊' },
   ],
  // Sales Orders, Stock/Inventory, Collections and Reports are intentionally
   // NOT listed here — they are covered by the existing Core Orders,
