@@ -23,13 +23,19 @@ export const INDUSTRY_FIELD_DEFS: Record<string, IndustryFieldDef[]> = {
     { key: 'iecCode', label: 'Import Export Code (IEC)', type: 'text', pattern: /^[0-9]{10}$/, patternMessage: 'IEC must be 10 digits' }
   ],
   PHARMA: [
-    { key: 'drugLicenseNumber', label: 'Drug license number', type: 'text', required: true, pattern: /^[A-Za-z0-9/-]{5,30}$/, patternMessage: 'Enter a valid drug license number' },
+    // Customer type is set by lead conversion. It must survive client edits (it used to be stripped here).
+    { key: 'pharmaCustomerType', label: 'Customer type', type: 'text', pattern: /^[a-z_]{2,40}$/, patternMessage: 'Customer type is invalid' },
+    // The licence is mandatory for pharmacies / wholesalers; hospitals, clinics, colleges and labs may not hold one (see PHARMA_LICENSE_EXEMPT).
+    { key: 'drugLicenseNumber', label: 'Drug license number', type: 'text', pattern: /^[A-Za-z0-9/-]{5,30}$/, patternMessage: 'Enter a valid drug license number' },
     { key: 'licenseValidTill', label: 'License valid till', type: 'text', pattern: /^\d{4}-\d{2}-\d{2}$/, patternMessage: 'Use date format YYYY-MM-DD' }
   ],
  TRADING: [
     { key: 'iecCode', label: 'Import Export Code (IEC)', type: 'text', pattern: /^[0-9]{10}$/, patternMessage: 'IEC must be 10 digits' }
   ]
 };
+
+/** Pharma customer types that are not required to hold a drug licence. */
+export const PHARMA_LICENSE_EXEMPT = ['hospital', 'clinic', 'medical_college', 'diagnostic_lab'];
 
 // Validates a client's industryDetails against the field set for the given
 // industry code. Returns a cleaned object (unknown keys dropped) or throws a
@@ -66,5 +72,7 @@ export function validateIndustryDetails(industryCode: string | null | undefined,
       cleaned[field.key] = text;
     }
   }
+  // Pharma: a licence is required unless the customer is an exempt type (hospital, clinic, college, lab).
+  if (industryCode.toUpperCase() === 'PHARMA' && !cleaned.drugLicenseNumber && !PHARMA_LICENSE_EXEMPT.includes(String(cleaned.pharmaCustomerType ?? ''))) throw new Error('Drug license number is required for this customer type.');
   return cleaned;
 }

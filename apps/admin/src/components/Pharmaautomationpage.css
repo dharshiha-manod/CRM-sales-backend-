@@ -1,0 +1,99 @@
+/* Pharma Automation Center: scoped to .pha so no other module is affected */
+.pha { display: grid; gap: 1.1rem; }
+
+/* tabs -> segmented control */
+.pha .pha-tabs { display: inline-flex; flex-wrap: wrap; gap: .25rem; padding: .3rem; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; width: fit-content; max-width: 100%; }
+.pha .pha-tabs .quiet-button { border: 0; background: transparent; border-radius: 9px; padding: .5rem .95rem; font-weight: 600; font-size: .86rem; color: var(--text-faint); transition: background .15s, color .15s, box-shadow .15s; }
+.pha .pha-tabs .quiet-button:hover { color: var(--text); background: rgba(16, 21, 31, .05); }
+.pha .pha-tabs .quiet-button.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(16, 21, 31, .14); }
+
+/* hero banner */
+.pha-hero { display: flex; align-items: center; justify-content: space-between; gap: 1.25rem; flex-wrap: wrap; padding: 1.15rem 1.4rem; border-radius: 14px; color: #fff; background: linear-gradient(120deg, #111827 0%, #1f2a44 55%, #2b3a63 100%); box-shadow: 0 6px 20px rgba(16, 21, 31, .18); }
+.pha-hero h3 { margin: 0 0 .25rem; font-size: 1.05rem; font-weight: 700; letter-spacing: .01em; }
+.pha-hero p { margin: 0; color: rgba(255, 255, 255, .72); font-size: .85rem; max-width: 46rem; }
+.pha-live { display: inline-flex; align-items: center; gap: .45rem; font-size: .7rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #86efac; margin-bottom: .45rem; }
+.pha-live::before { content: ''; width: .5rem; height: .5rem; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 0 rgba(34, 197, 94, .6); animation: pha-pulse 2s infinite; }
+@keyframes pha-pulse { 70% { box-shadow: 0 0 0 .5rem rgba(34, 197, 94, 0); } 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); } }
+.pha-hero .primary-action { background: #fff; color: #111827; border: 0; font-weight: 700; padding: .65rem 1.2rem; border-radius: 10px; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
+.pha-hero .primary-action:hover:not(:disabled) { background: #f1f5f9; }
+.pha-hero .primary-action:disabled { opacity: .7; }
+
+/* section headings + KPI cards */
+.pha-section { display: grid; gap: .6rem; }
+.pha-section-head { display: flex; align-items: center; gap: .6rem; margin: .3rem 0 0; font-size: .72rem; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; color: var(--text-faint); }
+.pha-section-head::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.pha .kpi-grid { margin: 0; gap: .85rem; }
+.pha .kpi-card { width: 100%; align-items: center; border-top-width: 1px; border-left: 4px solid var(--line); border-radius: 12px; padding: .95rem 1.05rem; }
+.pha .kpi-card[data-tone='ink'] { border-left-color: var(--ink); }
+.pha .kpi-card[data-tone='blue'] { border-left-color: var(--accent-blue); }
+.pha .kpi-card[data-tone='amber'] { border-left-color: var(--amber-strong); }
+.pha .kpi-card[data-tone='green'] { border-left-color: var(--green); }
+.pha .kpi-card[data-tone='red'] { border-left-color: var(--red); }
+.pha .kpi-card { border-top-color: var(--line) !important; }
+.pha .kpi-card:is(button):focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.pha .kpi-card[data-click='1']::after { content: '\203A'; margin-left: auto; font-size: 1.4rem; color: var(--text-faint); transition: transform .15s; }
+.pha .kpi-card[data-click='1']:hover::after { transform: translateX(3px); color: var(--text); }
+.pha .kpi-card strong { font-size: 1.5rem; line-height: 1.1; }
+.pha .kpi-ico { display: inline-grid; place-items: center; flex: none; width: 2.5rem; height: 2.5rem; border-radius: 11px; font-size: 1.15rem; font-weight: 700; background: var(--paper); color: var(--ink); }
+.pha .kpi-card[data-tone='blue'] .kpi-ico { background: rgba(37, 99, 235, .1); color: var(--accent-blue); }
+.pha .kpi-card[data-tone='amber'] .kpi-ico { background: rgba(217, 119, 6, .12); color: var(--amber-strong); }
+.pha .kpi-card[data-tone='green'] .kpi-ico { background: rgba(22, 163, 74, .12); color: var(--green); }
+.pha .kpi-card[data-tone='red'] .kpi-ico { background: var(--red-soft); color: var(--red); }
+
+/* content cards */
+.pha .pha-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 1.15rem 1.25rem; box-shadow: 0 1px 2px rgba(16, 21, 31, .05); margin: 0; }
+.pha .pha-card > h3 { margin: 0 0 .2rem; font-size: 1rem; font-weight: 700; }
+.pha .pha-card .pd-muted { font-size: .84rem; }
+.pha .master-toolbar { margin-bottom: .75rem; }
+.pha .success-message, .pha .error-message { border-radius: 10px; padding: .65rem .9rem; margin: 0; }
+
+/* tables */
+.pha table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.pha thead th { background: var(--paper); font-size: .7rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); padding: .65rem .8rem; border-bottom: 1px solid var(--line); text-align: left; position: sticky; top: 0; }
+.pha tbody td { padding: .7rem .8rem; border-bottom: 1px solid var(--line); font-size: .88rem; }
+.pha tbody tr:last-child td { border-bottom: 0; }
+.pha tbody tr:hover td { background: rgba(16, 21, 31, .025); }
+
+/* settings fields */
+.pha .fieldset-grid { gap: .9rem 1.1rem; }
+.pha .fieldset-grid label { font-size: .78rem; font-weight: 700; color: var(--text-faint); }
+
+@media (max-width: 900px) { .pha .pha-tabs { display: flex; overflow-x: auto; flex-wrap: nowrap; } .pha .pha-tabs .quiet-button { white-space: nowrap; } }
+@media (max-width: 640px) { .pha-hero { padding: 1rem; } .pha .kpi-grid { grid-template-columns: 1fr !important; } }
+
+/* ---- self-contained form + table styling (works even without PharmaTheme.css) ---- */
+.pha .fieldset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem 1.25rem; align-items: end; }
+.pha .fieldset-grid > label { display: grid; gap: .4rem; font-size: .74rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--text-muted); }
+.pha .fieldset-grid > label > input:not([type='checkbox']), .pha .fieldset-grid > label > select, .pha .fieldset-grid > label > textarea { width: 100%; box-sizing: border-box; min-height: 2.6rem; padding: .5rem .75rem; border: 1px solid #d6d3c8; border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; font-size: .92rem; font-weight: 500; text-transform: none; letter-spacing: 0; transition: border-color .15s, box-shadow .15s; }
+.pha .fieldset-grid > label > :is(input, select, textarea):focus { outline: none; border-color: var(--accent-blue); box-shadow: 0 0 0 3px rgba(52, 87, 213, .18); }
+.pha .fieldset-grid > label:has(> input[type='checkbox']) { display: flex; align-items: center; gap: .7rem; padding: .75rem .9rem; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); font-size: .88rem; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--text); cursor: pointer; }
+.pha .fieldset-grid > label:has(> input[type='checkbox']:checked) { border-color: var(--green); background: var(--green-soft); }
+.pha input[type='checkbox'] { width: 1.1rem; height: 1.1rem; accent-color: var(--ink); }
+.pha .pha-rule-form { padding: 1rem 1.1rem; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
+.pha .pha-field-action { display: flex; }
+.pha .pha-field-action .primary-action { min-height: 2.6rem; padding: .5rem 1.4rem; }
+.pha .primary-action, .pha .quiet-button { border-radius: 10px; font-weight: 600; transition: background .15s, box-shadow .15s; }
+.pha .primary-action:disabled { opacity: .5; cursor: not-allowed; }
+.pha .data-table-wrap { border: 1px solid var(--line); border-radius: 12px; overflow-x: auto; background: var(--surface); }
+.pha .data-table-wrap thead th { background: #f1efe8; }
+.pha .data-table-wrap tbody tr:nth-child(even) td { background: #fcfbf8; }
+.pha .master-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: .7rem .9rem; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; margin-bottom: .9rem; }
+.pha .empty-state { padding: 1.8rem 1rem; text-align: center; color: var(--text-muted); }
+
+/* ---- pills ---- */
+.pha-pill { display: inline-flex; align-items: center; padding: .2rem .65rem; border-radius: 999px; font-size: .76rem; font-weight: 700; background: var(--paper); color: var(--text-muted); border: 1px solid var(--line); white-space: nowrap; }
+.pha-pill-red { background: var(--red-soft); color: var(--red); border-color: transparent; }
+.pha-pill-blue { background: var(--accent-blue-soft); color: var(--accent-blue); border-color: transparent; }
+.pha-pill-green { background: var(--green-soft); color: var(--green); border-color: transparent; }
+.pha-pill-amber { background: var(--amber-soft); color: var(--amber-strong); border-color: transparent; margin-right: .5rem; }
+
+/* ---- "how it works" flow strip ---- */
+.pha-flow { display: flex; align-items: stretch; gap: .6rem; flex-wrap: wrap; }
+.pha-flow > i { align-self: center; font-style: normal; font-size: 1.3rem; color: var(--text-faint); }
+.pha-step { flex: 1 1 14rem; display: flex; align-items: center; gap: .8rem; padding: .85rem 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 2px rgba(16, 21, 31, .05); }
+.pha-step b { flex: none; display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 50%; background: var(--ink); color: #fff; font-size: .9rem; }
+.pha-step strong { display: block; font-size: .9rem; }
+.pha-step span { display: block; font-size: .78rem; color: var(--text-muted); margin-top: .1rem; }
+@media (max-width: 760px) { .pha-flow > i { display: none; } }
+.pha-wa, a.quiet-button.pha-wa { background: #25d366; border: 1px solid #1ebe5b; color: #fff; font-weight: 700; text-decoration: none; border-radius: 8px; padding: .4rem .85rem; display: inline-flex; align-items: center; }
+.pha-wa:hover, a.quiet-button.pha-wa:hover { background: #1ebe5b; color: #fff; }

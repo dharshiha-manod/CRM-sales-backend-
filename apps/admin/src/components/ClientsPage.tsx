@@ -34,6 +34,8 @@ const INDUSTRY_FIELDS: Record<string, IndustryField[]> = {
   ]
 };
 const OUTLET_TYPES = [['wholesaler', 'Wholesaler'], ['retailer', 'Retailer'], ['distributor', 'Distributor'], ['super_stockist', 'Super stockist'], ['institution', 'Institution'], ['manufacturer', 'Manufacturer'], ['other', 'Other']] as const;
+const PHARMA_OUTLET_TYPES = [['retailer', 'Retail pharmacy / Chemist'], ['institution', 'Hospital / Clinic / Nursing home'], ['wholesaler', 'Wholesaler'], ['distributor', 'Distributor / Sub-stockist'], ['super_stockist', 'C&F / Super stockist'], ['other', 'Other']] as const;
+const PHARMA_CLIENT_TYPES = ['Retailer Pharmacy', 'Hospital', 'Sub-distributor', 'Wholesaler'];
 
 type IndustryType = { id: string; code: string; name: string; status: string };
 type Contact = { id: string; name: string; designation?: string | null; is_primary: boolean; email?: string | null; phone?: string | null };
@@ -116,6 +118,7 @@ const stageOf = (clientId: string): string => {
 };
   const totalOutstanding = useMemo(() => Object.values(outstandingByClient).reduce((sum, value) => sum + value, 0), [outstandingByClient]);
   const selectedIndustryCode = useMemo(() => industryTypes.find((it) => it.id === form.industryTypeId)?.code?.toUpperCase() ?? null, [industryTypes, form.industryTypeId]);
+  const pharmaType = (v: string) => (PHARMA_CLIENT_TYPES.includes(v) || editing ? v : PHARMA_CLIENT_TYPES[0]);
   const industryFields = selectedIndustryCode ? INDUSTRY_FIELDS[selectedIndustryCode] ?? [] : [];
   const load = async () => { try { setMessage(''); const query = new URLSearchParams(search.trim() ? { search: search.trim() } : {}); setItems((await api<{ data: Client[] }>(`/clients?${query}`)).data ?? []); } catch (e) { setMessage((e as Error).message); } };
   const loadIndustryTypes = async () => { try { setIndustryTypes((await api<{ data: IndustryType[] }>('/industry-types?status=active')).data ?? []); } catch { /* non-fatal */ } };
@@ -177,7 +180,7 @@ const stageOf = (clientId: string): string => {
 // NEW — only send industryTypeId on edit if it actually changed, so the
 // server doesn't needlessly re-run industry resolution/validation on every
 // unrelated field edit (this is what was tripping the 500).
-          const payload = { clientCode: form.clientCode, clientName: form.clientName, clientType: selectedIndustryCode === 'FMCG' ? (OUTLET_TYPES.find(([value]) => value === form.outletType)?.[1] ?? 'Retailer') : form.clientType, ...(editing &&form.industryTypeId === (editing.industry_type_id ?? '') ? {} : { industryTypeId: form.industryTypeId || null }), outletType: form.outletType || null, gstin: gstinValue || null, pan: panValue || null, address: form.streetAddress.trim() || null, city: form.city.trim() || null, state: form.state.trim() || null, creditLimit: form.creditLimit ? Number(form.creditLimit) : null, creditDays: form.creditDays ? Number(form.creditDays) : null, ...(['FMCG', 'TRADING'].includes(selectedIndustryCode ?? '') ? { countryCode: form.countryCode || null, currencyCode: form.currencyCode || null } : {}), industryDetails: Object.fromEntries(Object.entries(form.industryDetails).filter(([, v]) => v !== '')), priority: form.priority, status: form.status };
+          const payload = { clientCode: form.clientCode, clientName: form.clientName, clientType: selectedIndustryCode === 'FMCG' ? (OUTLET_TYPES.find(([value]) => value === form.outletType)?.[1] ?? 'Retailer') : (selectedIndustryCode === 'PHARMA' ? pharmaType(form.clientType) : form.clientType), ...(editing &&form.industryTypeId === (editing.industry_type_id ?? '') ? {} : { industryTypeId: form.industryTypeId || null }), outletType: form.outletType || null, gstin: gstinValue || null, pan: panValue || null, address: form.streetAddress.trim() || null, city: form.city.trim() || null, state: form.state.trim() || null, creditLimit: form.creditLimit ? Number(form.creditLimit) : null, creditDays: form.creditDays ? Number(form.creditDays) : null, ...(['FMCG', 'TRADING'].includes(selectedIndustryCode ?? '') ? { countryCode: form.countryCode || null, currencyCode: form.currencyCode || null } : {}), industryDetails: Object.fromEntries(Object.entries(form.industryDetails).filter(([, v]) => v !== '')), priority: form.priority, status: form.status };
        await api(editing ? `/clients/${editing.id}` : '/clients', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) });      setModal(false); setEditing(null); setMessage(editing ? 'Client updated successfully.' : 'Client created successfully.'); await load();
     } catch (e) {
       const err = e as Error & { details?: { fieldErrors?: Record<string, string[]> } };
@@ -358,7 +361,7 @@ const stageOf = (clientId: string): string => {
           <label>State<input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} /></label>
 
               {selectedIndustryCode !== 'FMCG' && (
-            <label>Client type<select value={form.clientType} onChange={(e) => setForm({ ...form, clientType: e.target.value })}>{(selectedIndustryCode === 'TRADING' ? [...new Set(['Buyer', 'Supplier', form.clientType].filter(Boolean))] : [...new Set(['School', ...clientTypes])]).map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label>Client type<select value={selectedIndustryCode === 'PHARMA' ? pharmaType(form.clientType) : form.clientType} onChange={(e) => setForm({ ...form, clientType: e.target.value })}>{(selectedIndustryCode === 'TRADING' ? [...new Set(['Buyer', 'Supplier', form.clientType].filter(Boolean))] : selectedIndustryCode === 'PHARMA' ? [...new Set([...PHARMA_CLIENT_TYPES, ...(editing ? [form.clientType] : [])].filter(Boolean))] : [...new Set(['School', ...clientTypes])]).map((value) => <option key={value}>{value}</option>)}</select></label>
           )}
           <label>GSTIN<input value={form.gstin} maxLength={15} placeholder="22AAAAA0000A1Z5" onChange={(e) => setForm({ ...form, gstin: e.target.value.toUpperCase() })} />
             {form.gstin.trim() && !GSTIN_RE.test(form.gstin.trim()) && <small className="field-hint field-hint-error">Enter a full 15-character GSTIN, or clear this field.</small>}
@@ -377,7 +380,7 @@ const stageOf = (clientId: string): string => {
           <legend>{industryFields.length > 0 ? `${(industryTypes.find((it) => it.id === form.industryTypeId)?.name ?? '').toUpperCase()} DETAILS` : 'OUTLET DETAILS'}</legend>
           <div className="fieldset-grid">
   {selectedIndustryCode !== 'TRADING' && (
-              <label>Outlet type<select value={form.outletType} onChange={(e) => setForm({ ...form, outletType: e.target.value })}><option value="">Not set</option>{OUTLET_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label>Outlet type<select value={form.outletType} onChange={(e) => setForm({ ...form, outletType: e.target.value })}><option value="">Not set</option>{(selectedIndustryCode === 'PHARMA' ? PHARMA_OUTLET_TYPES : OUTLET_TYPES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             )}
                    {['FMCG', 'TRADING'].includes(selectedIndustryCode ?? '') && (
               <FmcgMarketFields
@@ -447,7 +450,7 @@ const stageOf = (clientId: string): string => {
                       {viewing.industry_types?.code?.toUpperCase() !== 'FMCG' && (<><dt>Type</dt><dd>{typeLabel(viewing)}</dd></>)}
                {viewing.industry_types?.code?.toUpperCase() !== 'TRADING' && (
                       <>
-                        <dt>Outlet type</dt><dd>{OUTLET_TYPES.find(([value]) => value === viewing.outlet_type)?.[1] ?? 'Not set'}</dd>
+                        <dt>Outlet type</dt><dd>{((viewing.industry_types?.code?.toUpperCase() === 'PHARMA' ? PHARMA_OUTLET_TYPES : OUTLET_TYPES) as readonly (readonly [string, string])[]).find(([value]) => value === viewing.outlet_type)?.[1] ?? 'Not set'}</dd>
                       </>
                     )}
                     <dt>GSTIN</dt><dd>{viewing.gstin || 'Not recorded'}</dd>
@@ -555,4 +558,4 @@ const stageOf = (clientId: string): string => {
       );
     })()}
   </section>;
-}
+} 

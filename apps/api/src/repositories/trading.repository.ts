@@ -2,6 +2,7 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import type { TradingResource } from '../lib/trading-resources.js';
 import { TRADING_RESOURCES } from '../lib/trading-resources.js';
+import { pharmaInvoicedByOrder } from '../lib/pharma-billing.js';
 import {
   MOVING_LOGISTICS_STATUSES, MOVING_SHIPMENT_STATUSES, STARTED_LOGISTICS_STATUSES, STARTED_SHIPMENT_STATUSES,
   assertPlanReady, ensureLogisticsPlan, nextShipmentStatus, syncLogisticsFromShipment,
@@ -666,6 +667,15 @@ export async function billedTotalsForCoreOrders(org: string, orderIds: string[])
       for (const o of (rateRows ?? []) as Row[]) {
         const rate = Number(o.exchange_rate) > 0 ? Number(o.exchange_rate) : 1;
         result.set(String(o.id), round2((fmcgInvoiced.get(String(o.id)) ?? 0) * rate));
+      }
+    }
+      // Pharma: the GST invoice (tax included) is what the customer owes, so Collections must allow paying up to it.
+    const pharmaInvoiced = await pharmaInvoicedByOrder(org, orderIds);
+    if (pharmaInvoiced.size) {
+      const { data: pRates } = await supabaseAdmin.from('sale_orders').select('id, exchange_rate').eq('organization_id', org).in('id', [...pharmaInvoiced.keys()]);
+      for (const o of (pRates ?? []) as Row[]) {
+        const rate = Number(o.exchange_rate) > 0 ? Number(o.exchange_rate) : 1;
+        result.set(String(o.id), round2((pharmaInvoiced.get(String(o.id)) ?? 0) * rate));
       }
     }
     const deals: Row[] = [];

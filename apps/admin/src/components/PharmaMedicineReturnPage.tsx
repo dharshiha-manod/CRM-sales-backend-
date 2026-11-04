@@ -23,15 +23,18 @@ type SetDyn = (key: string, options: { value: string; label: string }[]) => void
 // What the picked order sold, so choosing a product (or the client / order) can fill batch, unit, warehouse and quantity.
 let orderLines: Record<string, OrderLineInfo> = {};
 let batchInfo: Record<string, { unit?: string; warehouse?: string }> | null = null;
+let batchInfoAt = 0; // the batch list is re-read every minute so new batches / moved stock are picked up
 let pickToken = 0; // a newer pick cancels the answer of an older one
 
 async function ensureBatchInfo() {
-  if (batchInfo) return batchInfo;
+  if (batchInfo && Date.now() - batchInfoAt < 60_000) return batchInfo;
   try {
-    const res = await api<{ data: Array<{ batch_number?: string; unit?: string; warehouse?: string }> }>('/pharma/batches');
-    batchInfo = {};
-    (res.data ?? []).forEach((b) => { if (b.batch_number) batchInfo![b.batch_number] = { unit: b.unit, warehouse: b.warehouse }; });
-  } catch { batchInfo = {}; }
+    // the batch record stores its location as warehouse_location
+    const res = await api<{ data: Array<{ batch_number?: string; unit?: string; warehouse_location?: string; warehouse?: string }> }>('/pharma/batches');
+    const next: Record<string, { unit?: string; warehouse?: string }> = {};
+    (res.data ?? []).forEach((b) => { if (b.batch_number) next[b.batch_number] = { unit: b.unit, warehouse: b.warehouse_location ?? b.warehouse }; });
+    batchInfo = next; batchInfoAt = Date.now();
+  } catch { batchInfo = batchInfo ?? {}; }
   return batchInfo;
 }
 /** Fields that follow from one chosen product line: its single batch (+ unit / warehouse) and the full returnable quantity. */
@@ -70,6 +73,7 @@ const config: PharmaModuleConfig = {
   codeField: 'return_code',
   nameField: 'product_name',
   statusOptions: STATUSES,
+  inlineStatus: true, // change the status straight from the list
   searchableKeys: ['return_code', 'product_name', 'customer_hospital', 'invoice_reference', 'sales_rep'],
   fields: [
     { key: 'return_code', label: 'Return number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'RET' },
@@ -130,6 +134,9 @@ const config: PharmaModuleConfig = {
     } },
     { key: 'disposition', label: 'Disposition', type: 'select', options: DISPOSITIONS, listColumn: true, group: 'Inspection & disposition' },
     { key: 'status', label: 'Return status', type: 'select', options: STATUSES, group: 'Inspection & disposition' },
+    { key: 'held_location', label: 'Hold location (non-saleable)', type: 'text', group: 'Inspection & disposition', placeholder: 'Auto: Quarantine / Damaged goods area' },
+    { key: 'received_date', label: 'Received on', type: 'date', group: 'Receiving' },
+    { key: 'received_by', label: 'Received by', type: 'text', group: 'Receiving', placeholder: 'Auto-filled when marked Received' },
     { key: 'notes', label: 'Remarks', type: 'textarea', group: 'Inspection & disposition' },
   ],
   kpis: [

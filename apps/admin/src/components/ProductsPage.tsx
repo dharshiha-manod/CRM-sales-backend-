@@ -635,7 +635,9 @@ export function ProductsPage() {
       supplierName: form.supplierName || null,
       currency: form.currency || null,
       mrp: form.mrp === '' ? null : Number(form.mrp),
-      discountPercent: form.discountPercent === '' ? null : Number(form.discountPercent),
+    discountPercent: form.discountPercent === '' ? null : Number(form.discountPercent),
+      // Saved on the product row (not only in this browser) so Pharma Auto-reorder and server alerts can see it.
+      minStockLevel: form.minStockLevel === '' ? null : Number(form.minStockLevel),
       industryTypeIds: [form.industryTypeId || activeIndustryTypeId || ''].filter(Boolean),
       // Textile only — other industries never send this field.
       ...(isTextile ? { textileDetails: textileToPayload(form.textile) } : {}),

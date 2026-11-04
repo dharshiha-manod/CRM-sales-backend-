@@ -1,7 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // Pharma industry CRUD + automation (Batch & Expiry, Sample, Promotion, Hospital Engagement, Medicine Return, Recall).
 // Own tables, own routes: nothing here touches Trading / FMCG / School / Textile / Vehicle.
 import { Router, type RequestHandler } from 'express';
 import { AppError } from '../errors/app-error.js';
+import { todayLocal } from '../lib/ist-date.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { requireRoles } from '../middleware/authorize.js';
@@ -14,6 +16,8 @@ export { expiryStatus };
 import { createManual as createFollowUp } from '../repositories/follow-ups.repository.js';
 import { fieldActivityService } from '../services/field-activity.service.js';
 import { createReturn, decideReturn } from '../repositories/sales-returns.repository.js';
+import { runSamplePromoAutomation } from '../lib/pharma-sample-promo-automation.js';
+import { issueCreditNoteForReturn } from '../lib/pharma-credit-notes.js';
 import { createRefund, listRefunds, refundSchema } from '../repositories/fmcg-refunds.repository.js';
 import { industryCodeOf } from '../lib/fmcg-market.js';
 export const pharmaRouter = Router();
@@ -25,7 +29,7 @@ type Req = Parameters<RequestHandler>[0];
 type Row = Record<string, unknown>;
 const num = (v: unknown) => Number(v ?? 0) || 0;
 const str = (v: unknown) => (typeof v === 'string' && v ? v : '');
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => todayLocal();
 const actorOf = (req: Req) => ((req as unknown as { auth?: { sub?: string } }).auth?.sub as string | undefined) ?? null;
 
 const org = (req: Req) => {
@@ -72,10 +76,20 @@ async function getBatch(orgId: string, industryTypeId: string, batchNumber: unkn
 }
 /** Audit log of every batch quantity change (who, how much, why). Best effort: never blocks the real change. */
 async function logMovement(orgId: string, batchId: string, batchNumber: unknown, delta: number, source: string, actor?: string | null, note?: string | null) {
-  try { await supabaseAdmin.from('pharma_stock_movements').insert({ organization_id: orgId, batch_id: batchId, batch_number: str(batchNumber), delta, source, actor: actor ?? null, note: note ?? null }); } catch { /* audit is best effort */ }
+  const row = { organization_id: orgId, batch_id: batchId, batch_number: str(batchNumber), delta, source, actor: actor ?? null, note: note ?? null };
+  for (let i = 0; i < 3; i += 1) { // the sale / receipt must not fail because of the audit row, but a missing row must never go unnoticed
+    try { const { error } = await supabaseAdmin.from('pharma_stock_movements').insert(row); if (!error) return; if (i === 2) console.error('[pharma] STOCK LEDGER ROW LOST', JSON.stringify(row), error.message); }
+    catch (e) { if (i === 2) console.error('[pharma] STOCK LEDGER ROW LOST', JSON.stringify(row), e instanceof Error ? e.message : e); }
+  }
+}
+/** Ledger row for stock that came back but is NOT saleable (quarantine / damaged / expired / disposal). delta stays 0 so the saleable balance and the ledger check are untouched; held_qty + location show where it sits. */
+async function logHeld(orgId: string, batchId: string, batchNumber: unknown, qty: number, source: string, location: string, actor?: string | null) {
+  const row = { organization_id: orgId, batch_id: batchId, batch_number: str(batchNumber), delta: 0, held_qty: qty, location, source, actor: actor ?? null, note: `Held at ${location}` };
+  const { error } = await supabaseAdmin.from('pharma_stock_movements').insert(row);
+  if (error) console.error('[pharma] HELD STOCK LEDGER ROW LOST', JSON.stringify(row), error.message);
 }
 /** Adds (+) / removes (-) units on one batch with compare-and-swap so two users never overwrite each other. */
-async function changeBatchQty(orgId: string, batchId: string, delta: number, source = 'System', actor?: string | null) {
+export async function changeBatchQty(orgId: string, batchId: string, delta: number, source = 'System', actor?: string | null) {
   if (!delta) return;
   for (let i = 0; i < 6; i += 1) {
     const { data: row, error } = await supabaseAdmin.from('pharma_batches').select('id, batch_number, quantity').eq('organization_id', orgId).eq('id', batchId).maybeSingle();
@@ -99,7 +113,7 @@ async function findProduct(orgId: string, industryTypeId: string, col: 'product_
   return null;
 }
 /** Product stock = sum of its SELLABLE pharma batches: not expired / recalled / quarantined, and not inside the "block sale within N days of expiry" window. Best effort. */
-async function syncProductStock(orgId: string, industryTypeId: string, productCode: unknown) {
+export async function syncProductStock(orgId: string, industryTypeId: string, productCode: unknown) {
   if (!str(productCode)) return;
   try {
     const product = await findProduct(orgId, industryTypeId, 'product_code', productCode);
@@ -268,7 +282,7 @@ async function nextFreeCode(table: string, field: string, orgId: string, code: u
   const top = Math.max(...used.map((u) => Number(/(\d+)$/.exec(u)?.[1] ?? 0)));
   return `${m[1]}${String(top + 1).padStart(m[2].length, '0')}`;
 }
-interface Ctx { orgId: string; industryTypeId: string; payload: Row; existing: Row | null; actor?: string | null }
+interface Ctx { orgId: string; industryTypeId: string; payload: Row; existing: Row | null; actor?: string | null; role?: string }
 type Prepare = (c: Ctx) => Promise<void>;
 type After = (c: Ctx & { saved: Row }) => Promise<void>;
 
@@ -317,6 +331,10 @@ const prepareSample: Prepare = async ({ orgId, industryTypeId, payload, existing
   if (delta > 0) {
     if (isBlocked(batch)) throw bad(`Batch ${str(batch.batch_number)} is ${expiryStatus(batch.expiry_date) === 'Expired' ? 'expired' : String(batch.status).toLowerCase()} and cannot be issued.`, 'BATCH_NOT_ISSUABLE');
     if (delta > num(batch.quantity)) throw new AppError(409, 'INSUFFICIENT_STOCK', `Batch ${str(batch.batch_number)} has only ${num(batch.quantity)} available.`);
+  }
+  if (!existing && batch.product_code) { // Schedule X and narcotic drugs may never leave as free / promotional samples
+    const { data: sch } = await supabaseAdmin.from('pharma_drug_schedules').select('schedule').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('product_code', String(batch.product_code)).neq('status', 'Inactive').in('schedule', ['X', 'Narcotic (NDPS)']).limit(1);
+    if (sch && sch.length) throw bad(`${str(batch.product_name)} is a Schedule ${(sch[0] as Row).schedule} drug and cannot be issued as a sample.`, 'SCHEDULED_DRUG_NO_SAMPLE');
   }
   payload.product_name = batch.product_name; payload.product_code = batch.product_code ?? null; payload.expiry_date = batch.expiry_date;
   if (!existing) { if (payload.quantity_remaining == null) payload.quantity_remaining = issued; if (!payload.issue_date) payload.issue_date = today(); if (!payload.status) payload.status = 'Assigned'; }
@@ -430,8 +448,18 @@ async function validateReturnOrder(orgId: string, industryTypeId: string, m: Row
   if (num(m.quantity) > sold - already) throw bad(`Only ${Math.max(sold - already, 0)} unit(s) of ${pname} can still be returned on order ${ref} (sold ${sold}, already returned ${already}).`);
 }
 
+const HELD_LOCATION_DEFAULT: Record<string, string> = { Quarantine: 'Quarantine area', Damaged: 'Damaged goods area', Expired: 'Expired stock area', Disposal: 'Disposal area' };
+async function displayNameOf(userId?: string | null): Promise<string> {
+  if (!userId) return '';
+  try { const { data } = await supabaseAdmin.from('user_profiles').select('display_name').eq('id', userId).maybeSingle(); return str((data as Row | null)?.display_name); } catch { return ''; }
+}
 const NOT_SALEABLE_REASONS = ['Expired', 'Near expiry', 'Damaged', 'Recall', 'Quality issue'];
-const prepareReturn: Prepare = async ({ orgId, industryTypeId, payload, existing }) => {
+const prepareReturn: Prepare = async ({ orgId, industryTypeId, payload, existing, role, actor }) => {
+  // A sales rep can raise a return but not review it: inspection, disposition, fault side and approve / reject / close are manager decisions (approval issues the credit note and restocks).
+  if (role === 'sales_representative') {
+    const reviewChanged = ['inspection_status', 'disposition', 'fault_side'].some((k) => k in payload && str(payload[k]) !== '' && str(payload[k]) !== str(existing?.[k] ?? (k === 'inspection_status' ? 'Pending' : '')));
+    if (reviewChanged || ['Approved', 'Closed', 'Rejected'].includes(String(payload.status ?? ''))) throw new AppError(403, 'FORBIDDEN', 'Only a manager can inspect, approve, reject or close a return. Raise the return and a manager will review it.');
+  }
   if (existing?.stock_applied) throw new AppError(409, 'RECORD_LOCKED', 'This return has already been restocked and can no longer be edited.');
   const m: Row = { ...(existing ?? {}), ...payload };
   if (!existing && num(m.quantity) <= 0) throw bad('Returned quantity must be greater than zero.');
@@ -448,6 +476,15 @@ const prepareReturn: Prepare = async ({ orgId, industryTypeId, payload, existing
   await validateReturnOrder(orgId, industryTypeId, m, payload, existing ?? null);
   if (!existing) { if (!payload.status) payload.status = 'Requested'; if (!payload.inspection_status) payload.inspection_status = 'Pending'; if (!payload.return_date) payload.return_date = today(); }
   const status = String(payload.status ?? existing?.status ?? 'Requested');
+  // Receiving: the first time the return reaches Received (or any later step) record the date and who received the goods.
+  if (['Received', 'Verified', 'Under inspection', 'Approved', 'Closed'].includes(status)) {
+    if (!str(m.received_date) && !str(payload.received_date)) payload.received_date = today();
+    if (!str(m.received_by) && !str(payload.received_by)) payload.received_by = await displayNameOf(actor);
+  }
+  // Non-saleable goods are held in a named location (never mixed into saleable stock). Default by disposition; the user can type their own.
+  if (['Approved', 'Closed'].includes(status) && ['Quarantine', 'Damaged', 'Expired', 'Disposal'].includes(String(m.disposition)) && !str(m.held_location) && !str(payload.held_location)) {
+    payload.held_location = HELD_LOCATION_DEFAULT[String(m.disposition)] ?? 'Quarantine area';
+  }
   if (m.disposition === 'Saleable' && NOT_SALEABLE_REASONS.includes(String(m.reason))) throw bad(`Medicine returned as "${String(m.reason)}" can never be Saleable. Choose Quarantine, Damaged, Expired or Disposal.`);
   if (['Approved', 'Closed'].includes(status) && !['Approved', 'Closed'].includes(String(existing?.status ?? ''))) {
     if (!str(m.fault_side)) throw bad('Choose whose mistake it was (Our side / Customer side) before approving this return.');
@@ -479,11 +516,20 @@ async function creditCustomerForReturn(orgId: string, saved: Row, existing: Row 
   try { await decideReturn(orgId, actor, scope, entry.id, 'approved'); }
   catch (e) { await supabaseAdmin.from('sales_returns').delete().eq('organization_id', orgId).eq('id', entry.id); throw e; } // no half-made credit note
   await supabaseAdmin.from('pharma_medicine_returns').update({ sales_return_id: entry.id }).eq('organization_id', orgId).eq('id', saved.id as string);
+  await issueCreditNoteForReturn(orgId, str(saved.industry_type_id), entry.id, str(saved.return_code), actor); // GST credit note + GST-inclusive credit
 }
+
 const afterReturn: After = async ({ orgId, industryTypeId, saved, existing, actor }) => {
   await creditCustomerForReturn(orgId, saved, existing ?? null, actor ?? null);
   if (!saved.recall_applied && ['Approved', 'Closed'].includes(String(saved.status)) && saved.reason === 'Recall' && await addRecallCollected(orgId, saved.batch_number, num(saved.quantity))) {
     await supabaseAdmin.from('pharma_medicine_returns').update({ recall_applied: true }).eq('organization_id', orgId).eq('id', saved.id as string);
+  }
+  // Non-saleable return: it never joins the saleable batch quantity, but it is recorded once in the Stock Ledger as HELD stock at its location.
+  if (!saved.held_applied && ['Approved', 'Closed'].includes(String(saved.status)) && ['Quarantine', 'Damaged', 'Expired', 'Disposal'].includes(String(saved.disposition)) && str(saved.batch_number) && num(saved.quantity) > 0) {
+    const hb = await getBatch(orgId, industryTypeId, saved.batch_number);
+    const where = str(saved.held_location) || HELD_LOCATION_DEFAULT[String(saved.disposition)] || 'Quarantine area';
+    await logHeld(orgId, hb.id as string, saved.batch_number, num(saved.quantity), `Medicine return ${str(saved.return_code)} - ${String(saved.disposition)}`, where, actor);
+    await supabaseAdmin.from('pharma_medicine_returns').update({ held_applied: true }).eq('organization_id', orgId).eq('id', saved.id as string);
   }
   if (saved.stock_applied || !['Approved', 'Closed'].includes(String(saved.status)) || saved.disposition !== 'Saleable') return;
   const b = await getBatch(orgId, industryTypeId, saved.batch_number);
@@ -585,7 +631,20 @@ const afterRecall: After = async ({ orgId, industryTypeId, saved, existing, acto
   await syncProductStock(orgId, industryTypeId, b.product_code);
 };
 
+const prepareSchedule: Prepare = async ({ orgId, industryTypeId, payload, existing }) => {
+  const code = str(payload.product_code ?? existing?.product_code);
+  if (!code) throw bad('Pick the product this schedule applies to.');
+  const p = await findProduct(orgId, industryTypeId, 'product_code', code);
+  if (!p) throw bad(`Product ${code} does not exist in this industry. Add it in Products first.`, 'INVALID_REFERENCE');
+  payload.product_code = p.product_code; payload.product_name = p.product_name;
+  const sched = str(payload.schedule ?? existing?.schedule) || 'H';
+  if (!['H', 'H1', 'X', 'Narcotic (NDPS)'].includes(sched)) throw bad('Schedule must be H, H1, X or Narcotic (NDPS).');
+  payload.schedule = sched;
+  const { data: same } = await supabaseAdmin.from('pharma_drug_schedules').select('id').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('product_code', code).limit(1);
+  if (same && same.length && (!existing || (same[0] as Row).id !== existing.id)) throw new AppError(409, 'DUPLICATE_RECORD', `${code} already has a drug schedule. Edit that record instead.`);
+};
 const PREPARE: Record<string, Prepare | undefined> = {
+  pharma_drug_schedules: prepareSchedule,
   pharma_batches: prepareBatch, pharma_samples: prepareSample, pharma_promotions: preparePromotion,
   pharma_hospital_engagements: prepareEngagement, pharma_medicine_returns: prepareReturn, pharma_recalls: prepareRecall,
 };
@@ -598,6 +657,13 @@ async function assertCanDelete(r: PharmaResource, orgId: string, row: Row) {
     const n = row.batch_number;
     const [s, rt, rc] = await Promise.all([countWhere('pharma_samples', orgId, 'batch_number', n), countWhere('pharma_medicine_returns', orgId, 'batch_number', n), countWhere('pharma_recalls', orgId, 'batch_number', n)]);
     if (s || rt || rc) throw new AppError(409, 'RECORD_IN_USE', `This batch is used by ${s} sample(s), ${rt} return(s) and ${rc} recall(s). Remove them first.`);
+    // Orders / invoices / goods receipts / purchase returns that touched this batch: deleting it would break their stock give-back and the audit trail.
+    const { count: onOrders, error: oe } = await supabaseAdmin.from('sale_order_items').select('id', { count: 'exact', head: true }).contains('batch_allocations', { batches: [{ batchNo: String(n), src: 'pharma' }] });
+    if (oe) throw oe;
+    if (onOrders) throw new AppError(409, 'RECORD_IN_USE', `This batch was picked on ${onOrders} sales order line(s), so it cannot be deleted. Write off or quarantine it instead.`);
+    const { count: moved, error: me } = await supabaseAdmin.from('pharma_stock_movements').select('id', { count: 'exact', head: true }).eq('organization_id', orgId).eq('batch_id', String(row.id)).not('source', 'in', '("Batch created","Manual quantity edit")');
+    if (me) throw me;
+    if (moved) throw new AppError(409, 'RECORD_IN_USE', `This batch has ${moved} stock movement(s) in the stock ledger (receipts, sales, returns), so it cannot be deleted. Write off or quarantine it instead.`);
   }
   if (r.table === 'pharma_medicine_returns' && row.sales_return_id) throw new AppError(409, 'RECORD_IN_USE', 'Credit was already given to the customer for this return, so it cannot be deleted.');
   if (r.table === 'pharma_medicine_returns' && row.stock_applied) throw new AppError(409, 'RECORD_IN_USE', 'This return was already restocked into its batch and cannot be deleted.');
@@ -617,6 +683,7 @@ export async function runPharmaUpkeep(orgId: string) {
   await refreshBatchStatuses(orgId, null);
   await refreshPromotionStatuses(orgId, null);
   await reconcilePharmaProductStock(orgId);
+  try { await runSamplePromoAutomation(orgId); } catch (e) { console.error('[pharma] sample / promotion automation failed', e instanceof Error ? e.message : e); }
 }
 export async function pharmaSummary(orgId: string, industryTypeId: string | null, listLimit = 15) {
   const scoped = (table: string, cols: string) => { let q = supabaseAdmin.from(table).select(cols).eq('organization_id', orgId); if (industryTypeId) q = q.eq('industry_type_id', industryTypeId); return q; };
@@ -644,6 +711,33 @@ export async function pharmaSummary(orgId: string, industryTypeId: string | null
     engagements: { followUpsDue: eng.filter((x) => x.next_follow_up_date && String(x.next_follow_up_date) <= t && x.status !== 'Follow-up completed').length, total: eng.length },
   };
 }
+// ---- Company & GST (one profile per organization + industry) ----
+const COMPANY_FIELDS = ['company_name', 'gstin', 'drug_license_number', 'state', 'phone', 'invoice_prefix', 'address', 'bank_details', 'terms'] as const;
+pharmaRouter.get('/pharma/company', authenticate, reader, async (req, res) => {
+  const industryTypeId = resolveIndustryTypeId(req.industryScope!, typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : null);
+  if (!industryTypeId) throw bad('industryTypeId is required.');
+  const { data, error } = await supabaseAdmin.from('pharma_company_profile').select('*')
+    .eq('organization_id', org(req)).eq('industry_type_id', industryTypeId).maybeSingle();
+  if (error) throw error;
+  res.json({ data: data ?? null });
+});
+pharmaRouter.put('/pharma/company', authenticate, manager, async (req, res) => {
+  const body = (req.body ?? {}) as Row;
+  const industryTypeId = resolveIndustryTypeId(req.industryScope!, typeof body.industryTypeId === 'string' ? body.industryTypeId : null);
+  if (!industryTypeId) throw bad('industryTypeId is required.');
+  const row: Row = { organization_id: org(req), industry_type_id: industryTypeId, updated_at: new Date().toISOString() };
+  for (const k of COMPANY_FIELDS) row[k] = typeof body[k] === 'string' ? (body[k] as string).trim() || null : null;
+  if (!row.company_name) throw bad('Company name is required.');
+  if (!row.invoice_prefix) row.invoice_prefix = 'INV';
+  if (row.gstin) {
+    row.gstin = String(row.gstin).toUpperCase();
+    if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(String(row.gstin))) throw bad('GSTIN format is invalid (15 characters, e.g. 33AAAAA0000A1Z5).');
+  }
+  const { data, error } = await supabaseAdmin.from('pharma_company_profile')
+    .upsert(row, { onConflict: 'organization_id,industry_type_id' }).select('*').single();
+  if (error) throw error;
+  res.json({ data });
+});
 pharmaRouter.get('/pharma/summary', authenticate, reader, async (req, res) => {
   const industryTypeId = resolveIndustryTypeId(req.industryScope!, typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : null);
   await refreshBatchStatuses(org(req), industryTypeId);
@@ -858,7 +952,7 @@ for (const r of PHARMA_RESOURCES) {  const base = `/pharma/${r.path}`;
     if (!industryTypeId) throw bad('industry_type_id is required.');
     const missing = r.requiredFields.filter((k) => payload[k] === undefined || payload[k] === null || payload[k] === '');
     if (missing.length && !(prepare && missing.every((k) => ['product_name'].includes(k)))) throw bad(`${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} required.`);
-    const ctx: Ctx = { orgId: org(req), industryTypeId, payload, existing: null, actor: actorOf(req) };
+    const ctx: Ctx = { orgId: org(req), industryTypeId, payload, existing: null, actor: actorOf(req), role: req.industryScope!.role };
     if (prepare) await prepare(ctx);
     if (r.table !== 'pharma_batches' && payload[r.codeField]) payload[r.codeField] = await nextFreeCode(r.table, r.codeField, org(req), payload[r.codeField]);
     const { data, error } = await supabaseAdmin.from(r.table).insert({ ...payload, industry_type_id: industryTypeId, organization_id: org(req) }).select().single();  
@@ -883,7 +977,7 @@ for (const r of PHARMA_RESOURCES) {  const base = `/pharma/${r.path}`;
     if (own) { if (ex.sales_rep !== own) throw notFound(); delete payload.sales_rep; }
     const locked = statusMoveProblem(r.table, ex.status, payload.status);
     if (locked) throw new AppError(409, 'STATUS_LOCKED', locked);
-    const ctx: Ctx = { orgId: org(req), industryTypeId: ex.industry_type_id as string, payload, existing: ex, actor: actorOf(req) };
+    const ctx: Ctx = { orgId: org(req), industryTypeId: ex.industry_type_id as string, payload, existing: ex, actor: actorOf(req), role: req.industryScope!.role };
     if (prepare) await prepare(ctx);
     const { data, error } = await supabaseAdmin.from(r.table).update(payload).eq('organization_id', org(req)).eq('id', idOf(req)).select().maybeSingle();
     if (error) { if (error.code === '23505') throw dup(error); throw error; }

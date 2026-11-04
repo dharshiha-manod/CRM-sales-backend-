@@ -1,0 +1,104 @@
+/* PharmaTheme.css: professional look for EVERY Pharma module page.
+   Everything is scoped under .pharma-ui, which App.tsx sets on <main> only while a Pharma page is open,
+   so no other industry is affected. */
+
+.pharma-ui { --ph-radius: 14px; --ph-shadow: 0 1px 2px rgba(16, 21, 31, .05), 0 4px 14px rgba(16, 21, 31, .04); --ph-focus: 0 0 0 3px rgba(52, 87, 213, .18); }
+
+/* ---- page shell + heading ---- */
+.pharma-ui .page-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 1.5rem 1.6rem 1.7rem; box-shadow: var(--ph-shadow); }
+.pharma-ui .page-panel-heading { padding-bottom: 1rem; margin-bottom: .4rem; border-bottom: 1px solid var(--line); }
+.pharma-ui .page-panel-heading .eyebrow { display: inline-block; margin: 0; padding: .2rem .6rem; border-radius: 999px; background: rgba(46, 125, 107, .12); color: var(--ind-pharma); font-size: .68rem; font-weight: 800; letter-spacing: .09em; }
+.pharma-ui .page-panel-heading h2 { font-size: 1.55rem; font-weight: 800; letter-spacing: -.01em; margin: .5rem 0 0; }
+.pharma-ui .page-panel-heading > div > p:not(.eyebrow) { display: block; margin: .35rem 0 0; color: var(--text-muted); font-size: .9rem; max-width: 62rem; }
+
+/* ---- KPI cards ---- */
+.pharma-ui .kpi-grid { gap: .9rem; margin: 1.1rem 0; }
+.pharma-ui .kpi-card { border: 1px solid var(--line); border-radius: var(--ph-radius); padding: 1rem 1.1rem; align-items: center; box-shadow: var(--ph-shadow); background: linear-gradient(180deg, var(--surface), #fcfbf8); }
+.pharma-ui .kpi-card:hover { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(16, 21, 31, .09); }
+.pharma-ui .kpi-card span { font-size: .68rem; letter-spacing: .07em; }
+.pharma-ui .kpi-card strong { font-size: 1.45rem; font-weight: 800; }
+.pharma-ui .kpi-icon { width: 2.6rem; height: 2.6rem; border-radius: 12px; background: var(--paper); }
+.pharma-ui .kpi-card[data-tone='blue'] .kpi-icon { background: var(--accent-blue-soft); color: var(--accent-blue); }
+.pharma-ui .kpi-card[data-tone='amber'] .kpi-icon { background: var(--amber-soft); color: var(--amber-strong); }
+.pharma-ui .kpi-card[data-tone='green'] .kpi-icon { background: var(--green-soft); color: var(--green); }
+.pharma-ui .kpi-card[data-tone='red'] .kpi-icon { background: var(--red-soft); color: var(--red); }
+
+/* ---- toolbar, search, filters ---- */
+.pharma-ui .master-toolbar { gap: .75rem; margin: .9rem 0; padding: .7rem .8rem; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
+.pharma-ui .master-search { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+
+/* ---- form controls ---- */
+.pharma-ui input:not([type='checkbox']):not([type='radio']):not([type='file']), .pharma-ui select, .pharma-ui textarea {
+  min-height: 2.5rem; padding: .5rem .75rem; border: 1px solid #d6d3c8; border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; font-size: .9rem; font-weight: 500; transition: border-color .15s, box-shadow .15s; box-sizing: border-box; }
+.pharma-ui textarea { min-height: 5rem; }
+.pharma-ui input::placeholder, .pharma-ui textarea::placeholder { color: var(--text-faint); font-weight: 400; }
+.pharma-ui input:hover:not(:disabled), .pharma-ui select:hover:not(:disabled), .pharma-ui textarea:hover:not(:disabled) { border-color: #b9b5a6; }
+.pharma-ui input:focus, .pharma-ui select:focus, .pharma-ui textarea:focus { outline: none; border-color: var(--accent-blue); box-shadow: var(--ph-focus); }
+.pharma-ui input:disabled, .pharma-ui select:disabled, .pharma-ui textarea:disabled { background: var(--paper); color: var(--text-faint); cursor: not-allowed; }
+.pharma-ui input[type='checkbox'], .pharma-ui input[type='radio'] { width: 1.1rem; height: 1.1rem; accent-color: var(--ink); cursor: pointer; flex: none; }
+
+/* form grid: every .fieldset-grid becomes a clean responsive grid with stacked labels */
+.pharma-ui .fieldset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem 1.25rem; align-items: start; }
+.pharma-ui .fieldset-grid > label { display: grid; gap: .4rem; font-size: .76rem; font-weight: 700; letter-spacing: .02em; color: var(--text-muted); }
+.pharma-ui .fieldset-grid > label > input:not([type='checkbox']), .pharma-ui .fieldset-grid > label > select, .pharma-ui .fieldset-grid > label > textarea { width: 100%; font-size: .92rem; color: var(--text); }
+/* checkbox options become tidy "switch rows" */
+.pharma-ui .fieldset-grid > label:has(> input[type='checkbox']) { display: flex; align-items: center; gap: .7rem; padding: .75rem .9rem; min-height: 2.5rem; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); font-size: .88rem; font-weight: 600; letter-spacing: 0; color: var(--text); cursor: pointer; transition: border-color .15s, background .15s; }
+.pharma-ui .fieldset-grid > label:has(> input[type='checkbox']:checked) { border-color: var(--green); background: var(--green-soft); }
+.pharma-ui .fieldset-grid > label:has(> input[type='checkbox']):hover { border-color: #b9b5a6; }
+.pharma-ui .modal-fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem 1.1rem; background: #fcfbf8; }
+.pharma-ui .modal-fieldset legend { padding: 0 .5rem; color: var(--ind-pharma); }
+
+/* ---- buttons ---- */
+.pharma-ui .primary-action, .pharma-ui .quiet-button { border-radius: 10px; min-height: 2.4rem; padding: .5rem 1rem; font-size: .84rem; font-weight: 600; transition: background .15s, border-color .15s, box-shadow .15s, transform .1s; }
+.pharma-ui .primary-action { box-shadow: 0 2px 6px rgba(16, 21, 31, .22); }
+.pharma-ui .primary-action:hover:not(:disabled) { box-shadow: 0 4px 12px rgba(16, 21, 31, .28); }
+.pharma-ui .primary-action:disabled, .pharma-ui .quiet-button:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+.pharma-ui .quiet-button:hover:not(:disabled) { background: var(--paper); border-color: #b9b5a6; }
+.pharma-ui .primary-action:focus-visible, .pharma-ui .quiet-button:focus-visible { outline: none; box-shadow: var(--ph-focus); }
+
+/* ---- tables ---- */
+.pharma-ui .data-table-wrap { border-radius: var(--ph-radius); border: 1px solid var(--line); box-shadow: var(--ph-shadow); background: var(--surface); }
+.pharma-ui .data-table-wrap table { border-collapse: separate; border-spacing: 0; width: 100%; }
+.pharma-ui .data-table-wrap thead th { background: #f1efe8; color: var(--text-muted); font-size: .68rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; padding: .8rem 1rem; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; }
+.pharma-ui .data-table-wrap tbody td { padding: .8rem 1rem; font-size: .88rem; border-bottom: 1px solid #efede5; }
+.pharma-ui .data-table-wrap tbody tr:nth-child(even) td { background: #fcfbf8; }
+.pharma-ui .data-table-wrap tbody tr:hover td { background: #f4f2ea; }
+.pharma-ui .data-table-wrap td[style*='right'], .pharma-ui .data-table-wrap th[style*='right'] { font-variant-numeric: tabular-nums; }
+.pharma-ui .pd-lines th { background: var(--paper); border-radius: 0; opacity: 1; color: var(--text-muted); font-weight: 800; }
+.pharma-ui .pd-lines input, .pharma-ui .pd-lines select { min-height: 2.2rem; }
+.pharma-ui .pd-total { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; margin-top: .6rem; padding: .7rem 1rem; }
+
+/* ---- status badges ---- */
+.pharma-ui .status-badge { display: inline-flex; align-items: center; gap: .35rem; padding: .22rem .65rem; border-radius: 999px; font-size: .72rem; font-weight: 700; letter-spacing: .02em; }
+.pharma-ui .status-badge::before { content: ''; width: .42rem; height: .42rem; border-radius: 50%; background: currentColor; opacity: .8; }
+
+/* ---- messages ---- */
+.pharma-ui .error-message, .pharma-ui .success-message { display: flex; align-items: center; gap: .55rem; border-radius: 10px; padding: .7rem .95rem; margin: .6rem 0; font-size: .88rem; font-weight: 600; }
+.pharma-ui .error-message { background: var(--red-soft); color: var(--red); border: 1px solid rgba(166, 64, 43, .25); }
+.pharma-ui .success-message { background: var(--green-soft); color: var(--green); border: 1px solid rgba(47, 107, 79, .25); }
+
+/* ---- empty + loading ---- */
+.pharma-ui .empty-state { padding: 2.2rem 1rem; text-align: center; color: var(--text-muted); }
+.pharma-ui .empty-state-icon { width: 3.4rem; height: 3.4rem; margin: 0 auto .6rem; display: grid; place-items: center; border-radius: 50%; background: var(--paper); border: 1px dashed #cfcabb; }
+.pharma-ui .skeleton-row, .pharma-ui .skeleton-block { border-radius: 8px; }
+
+/* ---- tabs (any page using pd-tabs) ---- */
+.pharma-ui .pd-tabs { display: inline-flex; gap: .25rem; padding: .3rem; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
+.pharma-ui .pd-tabs button { border: 0; background: transparent; border-radius: 9px; font-weight: 600; }
+.pharma-ui .pd-tabs button.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(16, 21, 31, .14); }
+.pharma-ui .pd-scan video { border: 1px solid var(--line); box-shadow: var(--ph-shadow); }
+
+/* ---- modals / drawers ---- */
+.pharma-ui .modal-backdrop { backdrop-filter: blur(3px); background: rgba(16, 21, 31, .45); }
+.pharma-ui .modal-heading { padding-bottom: .8rem; border-bottom: 1px solid var(--line); }
+.pharma-ui .modal-heading h2, .pharma-ui .modal-heading h3 { font-weight: 800; }
+.pharma-ui .master-modal-form label { font-size: .8rem; font-weight: 700; color: var(--text-muted); }
+.pharma-ui .modal-actions { position: sticky; bottom: 0; background: var(--surface); padding: .9rem 0 .2rem; border-top: 1px solid var(--line); gap: .6rem; }
+
+@media (max-width: 900px) { .pharma-ui .page-panel { padding: 1.1rem; } .pharma-ui .fieldset-grid { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .pharma-ui * { transition: none !important; } }
+
+/* ---- batch status colours (one unique colour per status) ---- */
+.status-badge.status-batch-critical { background: #fde4d3; color: #b4440e; }
+.status-badge.status-batch-expired { background: #a6402b; color: #fff; }
+.status-badge.status-batch-recalled { background: var(--accent-violet-soft); color: var(--accent-violet); }

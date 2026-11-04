@@ -5,6 +5,7 @@ export interface ModuleDef {
   label: string;
   icon: string;
   description?: string;
+  group?: string;
 }
 
 export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
@@ -55,6 +56,7 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'specific-pricing-discount', label: 'Specific Pricing & Discount Management', icon: '％' },
   ],
   pharma: [
+    { id: 'automation', label: 'Automation Center', icon: '⚡' },
     { id: 'company', label: 'Company & GST', icon: '🏢' },
     { id: 'supplier', label: 'Supplier Management', icon: '🏭' },
     { id: 'purchase-order', label: 'Purchase Orders', icon: '🧾' },
@@ -68,8 +70,25 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'customer-outstanding', label: 'Customer Outstanding', icon: '⏰' },
     { id: 'purchase-return', label: 'Purchase Returns', icon: '📤' },
     { id: 'supplier-payment', label: 'Supplier Payments', icon: '💳' },
-    { id: 'recall', label: 'Recall Management', icon: '⚠' },
-    { id: 'pharma-reports', label: 'Pharma Reports', icon: '📊' },
+      { id: 'recall', label: 'Recall Management', icon: '⚠' },
+    { id: 'drug-schedule', label: 'Drug Schedules', icon: '℞' },
+    { id: 'samples', label: 'Samples', icon: '🎁' },
+    { id: 'promotions', label: 'Product Promotions', icon: '📣' },
+    // Hospital Engagement is hidden from the menu (page and API are untouched); remove the comment to show it again.
+    // { id: 'hospital-engagement', label: 'Hospital Engagement', icon: '🏥' },
+    { id: 'report-sales', label: 'Sales (GST)', icon: '▪', group: 'reports' },
+    { id: 'report-credit-notes', label: 'Credit notes (GST)', icon: '▪', group: 'reports' },
+    { id: 'report-debit-notes', label: 'Debit notes (GST)', icon: '▪', group: 'reports' },
+    { id: 'report-gstr1', label: 'GSTR-1 register', icon: '▪', group: 'reports' },
+    { id: 'report-gstr3b', label: 'GSTR-3B summary', icon: '▪', group: 'reports' },
+    { id: 'report-hsn', label: 'HSN summary', icon: '▪', group: 'reports' },
+    { id: 'report-purchase', label: 'Purchases', icon: '▪', group: 'reports' },
+    { id: 'report-inventory', label: 'Batch stock', icon: '▪', group: 'reports' },
+    { id: 'report-expiry', label: 'Expiry (180 days)', icon: '▪', group: 'reports' },
+    { id: 'report-low-stock', label: 'Low stock', icon: '▪', group: 'reports' },
+    { id: 'report-schedule-register', label: 'Schedule drug register', icon: '▪', group: 'reports' },
+    { id: 'report-customer-outstanding', label: 'Customer outstanding', icon: '▪', group: 'reports' },
+    { id: 'report-supplier-outstanding', label: 'Supplier payables', icon: '▪', group: 'reports' },
   ],
  // Sales Orders, Stock/Inventory, Collections and Reports are intentionally
   // NOT listed here — they are covered by the existing Core Orders,

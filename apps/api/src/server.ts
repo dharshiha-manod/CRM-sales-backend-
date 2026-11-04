@@ -5,6 +5,7 @@ import { startSupplierReplyPolling } from './services/purchase-enquiry-reply-pol
 import { startOverdueFollowUpScheduler } from './services/overdue-followup-scheduler.service.js';
 import { startBeatScheduler } from './services/beat-automation.service.js';
 import { startPharmaScheduler } from './services/pharma-scheduler.service.js';
+import { startPoReplyPolling } from './services/pharma-po-reply-poller.service.js';
 app.listen(env.PORT, () => logger.info({ port: env.PORT }, 'API listening'));
 // No-op unless SUPPLIER_REPLY_IMAP_HOST/USER/PASS are set — see that
 // service's file comment for why this stays entirely optional.
@@ -15,3 +16,5 @@ startBeatScheduler();
 startOverdueFollowUpScheduler();
 // Keeps Pharma batch expiry, campaign status and product stock current without anyone opening a page. Set PHARMA_AUTOMATION=off to disable.
 startPharmaScheduler();
+// Reads supplier replies to Purchase Orders / Purchase Returns (no-op unless the IMAP settings are set).
+startPoReplyPolling();

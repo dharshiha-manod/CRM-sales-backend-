@@ -1,4 +1,6 @@
 import { assertNoActiveShipments } from './fmcg-shipment.repository.js';
+import { assertPharmaOrderRules, assertPharmaMrp, assertPharmaOrderMovable } from '../lib/pharma-order-rules.js';
+import { assertNoLivePharmaInvoice } from '../lib/pharma-billing.js';
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { getOrderConfig, industryTypeIdOfClient } from '../lib/settings.js';
@@ -98,7 +100,8 @@ export async function createOrderFromVisit(organizationId: string, representativ
     throw new AppError(422, 'ORDER_BELOW_MINIMUM', `Order total (₹${totalInr}) is below the minimum order value of ₹${orderConfig.minOrderValue} set in Settings.`);
   }
 
-  await assertPharmaLicenseValid(organizationId, visit.client_id);
+   await assertPharmaLicenseValid(organizationId, visit.client_id);
+  await assertPharmaOrderRules(organizationId, visit.client_id, lines);
   await assertWithinCreditLimit(organizationId, visit.client_id, totalInr);
 
   const orderNumber = await uniqueOrderNumber(organizationId, orderConfig.numberingFormat);
@@ -159,6 +162,7 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
   }
 
   await assertPharmaLicenseValid(organizationId, client.id as string);
+  await assertPharmaOrderRules(organizationId, client.id as string, lines);
   await assertWithinCreditLimit(organizationId, client.id as string, totalInr);
 
   const orderNumber = await uniqueOrderNumber(organizationId, orderConfig.numberingFormat);
@@ -219,8 +223,9 @@ export async function cancelOrder(organizationId: string, scope: IndustryScope, 
     const orderConfig = await getOrderConfig(organizationId, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null);
     if (!orderConfig.allowCancellation) throw new AppError(422, 'CANCELLATION_DISABLED', 'Order cancellation is turned off in Settings → Order Configuration.');
   }
-
   await assertNoReturns(organizationId, id, 'cancelled');
+  await assertPharmaOrderMovable(organizationId, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null, (order as { dispatch_status?: string | null }).dispatch_status, 'cancelled'); // Pharma only
+  await assertNoLivePharmaInvoice(organizationId, id, 'cancelled'); // Pharma only: cancel the GST invoice first
   // School: goods that already left (dispatched / delivered) cannot be cancelled - undo the dispatch first or record a return.
   if (['dispatched', 'delivered'].includes(String((order as { dispatch_status?: string | null }).dispatch_status ?? '')) && await isSchoolIndustry(organizationId, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
     throw new AppError(422, 'ORDER_ALREADY_DISPATCHED', 'This order has already been dispatched. Move it back to Pending first, or record a sales return.');
@@ -283,7 +288,9 @@ export async function updateOrder(organizationId: string, scope: IndustryScope, 
 
   if (input.items) {
     await assertNoReturns(organizationId, id, 'edited');
-    await assertNoActiveShipments(organizationId, id, 'edited');
+      await assertNoActiveShipments(organizationId, id, 'edited');
+    await assertPharmaOrderMovable(organizationId, orderIndustryTypeId, (order as { dispatch_status?: string | null }).dispatch_status, 'edited', (order as { tax_amount?: number | null }).tax_amount); // Pharma only
+    await assertNoLivePharmaInvoice(organizationId, id, 'edited'); // Pharma only
     // School only: once the goods have left the store the lines are locked, and an order whose total includes tax
     // (converted from a quotation) cannot be re-priced here because this edit path has no tax. Notes stay editable.
     if (await isSchoolIndustry(organizationId, orderIndustryTypeId)) {
@@ -305,6 +312,8 @@ export async function updateOrder(organizationId: string, scope: IndustryScope, 
     const totalInr = doc ? toBase(total, doc.exchange_rate) : total;
     if (totalInr < orderConfig.minOrderValue) throw new AppError(422, 'ORDER_BELOW_MINIMUM', `Order total (₹${totalInr}) is below the minimum order value of ₹${orderConfig.minOrderValue} set in Settings.`);
     // The old total is already part of the client's unpaid balance, so only the increase is new credit.
+    await assertPharmaLicenseValid(organizationId, order.client_id as string | null); // Pharma only
+    await assertPharmaOrderRules(organizationId, order.client_id as string | null, lines, { skipCreditHold: true }); // Pharma only: scheduled drugs / untracked products on an edited order
     await assertWithinCreditLimit(organizationId, order.client_id as string | null, totalInr - Number(order.base_total ?? order.total_amount ?? 0));
 
     // Stock: give back exactly what the old lines took, take what the new lines need. If stock is short, the old state is restored.
@@ -318,7 +327,8 @@ export async function updateOrder(organizationId: string, scope: IndustryScope, 
       await applyAllocations(organizationId, oldAllocs, 'give');
       try {
         newPlan = await planAllocations(organizationId, lines.map((l) => ({ product_id: l.product_id, quantity: l.quantity, free_quantity: (l as { free_quantity?: number }).free_quantity ?? 0 })));
-        newAllocs = [...newPlan.values()].flat();
+             newAllocs = [...newPlan.values()].flat();
+        await assertPharmaMrp(organizationId, lines, newPlan);
         await applyAllocations(organizationId, newAllocs, 'take');
       } catch (stockError) {
         await applyAllocations(organizationId, oldAllocs, 'take').catch(() => undefined);

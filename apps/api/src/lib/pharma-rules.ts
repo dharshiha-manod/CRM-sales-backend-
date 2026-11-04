@@ -1,9 +1,10 @@
+import { todayLocal } from './ist-date.js';
 // Pure Pharma rules (no database) so routes, stock engine, jobs and tests all share one definition.
 export const BATCH_BLOCKED = ['Expired', 'Recalled', 'Quarantined'];
 /** Batches closer to expiry than this many days are not picked for orders. 0 = only expired stock is blocked. Override with PHARMA_BLOCK_SALE_DAYS. */
 export const PHARMA_BLOCK_SALE_DAYS = Math.max(0, Number(process.env.PHARMA_BLOCK_SALE_DAYS ?? 0) || 0);
 const toDay = (v: unknown) => String(v ?? '').slice(0, 10);
-export const todayIso = () => new Date().toISOString().slice(0, 10);
+export const todayIso = () => todayLocal();
 export const daysLeft = (expiry: unknown, today = todayIso()): number | null => {
   const d = toDay(expiry); if (!d) return null;
   return Math.round((Date.parse(d) - Date.parse(today)) / 86_400_000);
@@ -53,4 +54,11 @@ export const statusMoveProblem = (table: string, from: unknown, to: unknown): st
   if (!b || a === b) return null;
   if ((TERMINAL_STATUS[table] ?? []).includes(a)) return `This record is ${a} and cannot be moved to ${b}. Create a new record instead.`;
   return null;
+};
+
+/** Goods receipt: stock that is already inside the "block sale within N days of expiry" window could never be sold, so it is refused on arrival. 0 = off. */
+export const tooShortShelfLife = (expiry: unknown, minDays: number, today = todayIso()): boolean => {
+  if (!(minDays > 0)) return false;
+  const d = daysLeft(expiry, today);
+  return d !== null && d <= minDays;
 };

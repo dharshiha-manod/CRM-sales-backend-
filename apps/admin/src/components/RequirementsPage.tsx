@@ -262,7 +262,8 @@ export function RequirementsPage() {
       return setFormError('Industry Type context is still loading — wait a moment and try again.');
     }
     if (!form.representativeId) return setFormError('Select a representative.');
-    if (!form.title.trim()) return setFormError('Enter a requirement title.');
+    if (form.title.trim().length < 2) return setFormError('Requirement title must be at least 2 characters.');
+    if (form.title.trim().length < 2) return setFormError('Requirement title must be at least 2 characters.');
     for (const row of form.items) {
       if (!row.productId && !row.freeTextItem.trim()) {
         return setFormError(row.mode === 'catalog' ? 'Select a product for each item.' : 'Describe each custom item.');

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { PharmaDrugSchedulePage } from './components/PharmaDrugSchedulePage';
 import type { ReactNode } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { useCurrentMembership } from './auth/useCurrentMembership';
@@ -33,10 +34,14 @@ import { FabricRollPage } from './components/FabricRollPage';
 import { TextileSamplePage } from './components/TextileSamplePage';
 import { QualityInspectionPage } from './components/QualityInspectionPage';
 import { PharmaBatchExpiryPage } from './components/PharmaBatchExpiryPage';
+import { PharmaSamplePage } from './components/PharmaSamplePage';
+import { PharmaProductPromotionPage } from './components/PharmaProductPromotionPage';
+import { PharmaHospitalEngagementPage } from './components/PharmaHospitalEngagementPage';
 import { PharmaMedicineReturnPage } from './components/PharmaMedicineReturnPage';
 import { PharmaRefundsPage } from './components/PharmaRefundsPage';
 import { PharmaRecallPage } from './components/PharmaRecallPage';
 import { PharmaCompanyPage, PharmaSuppliersPage, PharmaPurchaseOrdersPage, PharmaGrnPage, PharmaPurchaseReturnsPage, PharmaSupplierPaymentsPage, PharmaInvoicesPage, PharmaScanPage, PharmaReportsPage, PharmaStockLedgerPage, PharmaOutstandingPage } from './components/PharmaDistributorPages';
+import { PharmaAutomationPage } from './components/PharmaAutomationPage';
 import { TradingDealPage } from './components/TradingDealPage';
 import { TradingSupplierVendorPage } from './components/TradingSupplierVendorPage';
 import { TradingPurchaseEnquiryPage } from './components/TradingPurchaseEnquiryPage';
@@ -95,6 +100,7 @@ function moduleLabel(key: IndustryKey, moduleId: string): string {
 export default function App() {
   const publicToken = window.location.pathname.match(/^\/quote\/([^/]+)$/)?.[1];
   if (publicToken) return <PublicQuotationPage token={publicToken} />;
+  const [reportsOpen, setReportsOpen] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [loadingSession, setLoadingSession] = useState(Boolean(supabase));
    const validPages: string[] = ['dashboard', 'clients', 'representatives', 'users', 'leads', 'fieldActivity', 'products', 'brandsCategories', 'requirements', 'quotations', 'orders', 'collections', 'followUps', 'calls', 'reports', 'target', 'inventory', 'gpsTracking', 'settings', 'notifications'];
@@ -144,15 +150,20 @@ content['industry:school:school-management'] = <SchoolManagementPage />;
   content['industry:pharma:medicine-return'] = <PharmaMedicineReturnPage />;
   content['industry:pharma:refunds'] = <PharmaRefundsPage />;
   content['industry:pharma:recall'] = <PharmaRecallPage />;
+  content['industry:pharma:drug-schedule'] = <PharmaDrugSchedulePage />;
+  content['industry:pharma:samples'] = <PharmaSamplePage />;
+  content['industry:pharma:promotions'] = <PharmaProductPromotionPage />;
+  content['industry:pharma:hospital-engagement'] = <PharmaHospitalEngagementPage />;
   content['industry:pharma:company'] = <PharmaCompanyPage />;
   content['industry:pharma:supplier'] = <PharmaSuppliersPage />;
   content['industry:pharma:purchase-order'] = <PharmaPurchaseOrdersPage />;
   content['industry:pharma:grn'] = <PharmaGrnPage />;
+  content['industry:pharma:automation'] = <PharmaAutomationPage />;
   content['industry:pharma:scan'] = <PharmaScanPage />;
   content['industry:pharma:gst-invoice'] = <PharmaInvoicesPage />;
   content['industry:pharma:purchase-return'] = <PharmaPurchaseReturnsPage />;
   content['industry:pharma:supplier-payment'] = <PharmaSupplierPaymentsPage />;
-  content['industry:pharma:pharma-reports'] = <PharmaReportsPage />;
+  for (const mod of INDUSTRY_MODULES.pharma) if (mod.group === 'reports') content[`industry:pharma:${mod.id}`] = <PharmaReportsPage kind={mod.id.replace('report-', '')} />;
   content['industry:pharma:stock-ledger'] = <PharmaStockLedgerPage />;
   content['industry:pharma:customer-outstanding'] = <PharmaOutstandingPage />;
   content['industry:trading:deal'] = <TradingDealPage />;
@@ -208,13 +219,22 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
         <div className="brand"><span className="brand-mark">SC</span><span>Sales CRM<small>FIELD OPERATIONS</small></span></div>
         <nav className="side-nav" aria-label="Main navigation">
           <p className="nav-label">OVERVIEW</p>{item('dashboard', 'Dashboard', '▦')}{!isPharma && item('reports', 'Reports', '↗')}
-          <p className="nav-label">{isPharma ? 'CUSTOMERS' : 'PIPELINE'}</p>{!isPharma && item('leads', 'Leads', '✦')}{item('clients', isPharma ? 'Customers & Pharmacies' : 'Clients', '◎')}{!isPharma && item('requirements', 'Requirements', '⚑')}{!isPharma && item('quotations', 'Quotations', '≡')}
-          <p className="nav-label">SALES OPERATIONS</p>{item('orders', 'Sales orders', '₹')}{item('collections', isPharma ? 'Collections & Outstanding' : 'Collections', '₹')}{!isPharma && item('followUps', 'Follow-ups', '◷')}{!isPharma && item('fieldActivity', 'Field activity', '⌖')}{!isPharma && item('gpsTracking', 'GPS Verified Tracking', '⦿')}
+          <p className="nav-label">PIPELINE</p>{item('leads', 'Leads', '✦')}{item('clients', isPharma ? 'Customers & Pharmacies' : 'Clients', '◎')}{item('requirements', 'Requirements', '⚑')}{item('quotations', 'Quotations', '≡')}
+          <p className="nav-label">SALES OPERATIONS</p>{item('orders', 'Sales orders', '₹')}{item('collections', isPharma ? 'Collections & Outstanding' : 'Collections', '₹')}{item('followUps', 'Follow-ups', '◷')}{!isPharma && item('fieldActivity', 'Field activity', '⌖')}{!isPharma && item('gpsTracking', 'GPS Verified Tracking', '⦿')}
                   <p className="nav-label">PRODUCT &amp; INVENTORY</p>{item('products', 'Products', '▣')}{item('brandsCategories', 'Brands & Categories', '◆')}{item('inventory', 'Inventory', '▤')}
           {!isPharma && <p className="nav-label">TEAM &amp; PERFORMANCE</p>}{!isPharma && item('target', 'Target', '◎')}{!isPharma && item('representatives', 'Sales representatives', '♙')}
           <p className="nav-label">ADMINISTRATION</p>{item('users', 'User management', '♧')}{item('settings', 'Settings', '⚙')}{item('notifications', 'Notification', '⚑')}{!isPharma && item('calls', 'Calls & IVR', '☎')}
                <p className="nav-label">{INDUSTRY_CONFIGS[activeIndustry].label.toUpperCase()} MODULES</p>
-          {INDUSTRY_MODULES[activeIndustry].map((mod) => item(`industry:${activeIndustry}:${mod.id}` as Page, mod.label, mod.icon))}
+          {INDUSTRY_MODULES[activeIndustry].filter((mod) => mod.group !== 'reports').map((mod) => item(`industry:${activeIndustry}:${mod.id}` as Page, mod.label, mod.icon))}
+          {INDUSTRY_MODULES[activeIndustry].some((mod) => mod.group === 'reports') && (() => {
+            const reps = INDUSTRY_MODULES[activeIndustry].filter((mod) => mod.group === 'reports');
+            const onReport = reps.some((mod) => pageBase === `industry:${activeIndustry}:${mod.id}`);
+            const open = reportsOpen || onReport;
+            return (<>
+              <button className={onReport ? 'active' : ''} onClick={() => setReportsOpen(!open)} title="Reports" aria-expanded={open}><span>📊</span><span className="nav-label-text">{INDUSTRY_CONFIGS[activeIndustry].label} Reports</span><span style={{ marginLeft: 'auto' }}>{open ? '▾' : '▸'}</span></button>
+              {open && reps.map((mod) => { const v = `industry:${activeIndustry}:${mod.id}`; return <button key={v} className={pageBase === v ? 'active' : ''} style={{ paddingLeft: '1.6rem', fontSize: '.82rem' }} onClick={() => setPage(v as Page)} title={mod.label}><span aria-hidden>•</span><span className="nav-label-text">{mod.label}</span></button>; })}
+            </>);
+          })()}
         </nav>
         <div className="sidebar-footer"><span className="online-dot" />Secure organization workspace</div>
       </aside>

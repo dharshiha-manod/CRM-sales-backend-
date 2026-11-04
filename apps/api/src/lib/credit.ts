@@ -2,6 +2,7 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from './supabase.js';
 import { collectionBase, orderBase } from './fmcg-market.js';
 import { fmcgInvoicedByOrder } from './fmcg-paperwork.js';
+import { pharmaInvoicedByOrder } from './pharma-billing.js';
 
 export type ClientCredit = {
   clientName: string;
@@ -41,7 +42,10 @@ export async function getClientCredit(organizationId: string, clientId: string):
   // Approved returns / damage are credit notes: they lower what the client owes. (Before the returns table exists this is simply 0.)
   const credited = returnsRes.error ? 0 : (returnsRes.data ?? []).reduce((sum, row) => sum + Number((row as { base_credit?: unknown }).base_credit ?? 0), 0);
   // An FMCG customer can be invoiced more than the goods (freight / extra charges): the order counts for the larger of the two.
-  const invoicedByOrder = await fmcgInvoicedByOrder(organizationId, (orders ?? []).map((o) => String((o as { id: string }).id)));
+  const orderIds = (orders ?? []).map((o) => String((o as { id: string }).id));
+  const invoicedByOrder = await fmcgInvoicedByOrder(organizationId, orderIds);
+  // Pharma: the GST invoice (tax included) is what the customer owes, same figure as Customer Outstanding and Collections.
+  for (const [orderId, amount] of await pharmaInvoicedByOrder(organizationId, orderIds)) invoicedByOrder.set(orderId, amount);
   const valueOf = (row: unknown): number => {
     const r = row as { id: string; total_amount?: unknown; exchange_rate?: unknown };
     const extra = Math.max(0, (invoicedByOrder.get(r.id) ?? 0) - Number(r.total_amount ?? 0));

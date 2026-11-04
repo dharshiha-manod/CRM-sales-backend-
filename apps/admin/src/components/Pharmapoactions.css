@@ -1,0 +1,28 @@
+/* Purchase Orders: action buttons, supplier-mail chip and reply thread */
+.po-actions { display: flex; align-items: center; gap: .45rem; flex-wrap: nowrap; white-space: nowrap; }
+
+.po-actions button.po-btn {
+  padding: .38rem .8rem; font-size: .78rem; font-weight: 600; line-height: 1.2;
+  border-radius: 999px; cursor: pointer; transition: background .15s, border-color .15s, color .15s, box-shadow .15s;
+  background: var(--surface); color: var(--text); border: 1px solid var(--line);
+}
+.po-actions button.po-btn:hover:not(:disabled) { background: var(--paper); border-color: var(--ink); }
+
+/* main action: filled dark */
+.po-actions button.po-btn-dark { background: var(--ink); color: #f5f3ec; border-color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+.po-actions button.po-btn-dark:hover:not(:disabled) { background: #2b3445; border-color: #2b3445; }
+
+/* destructive: quiet red text, fills on hover */
+.po-actions button.po-btn-danger { background: transparent; color: var(--red); border-color: transparent; }
+.po-actions button.po-btn-danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); }
+
+.po-mail { display: inline-flex; flex-direction: column; gap: 1px; padding: .3rem .7rem; border-radius: 10px; font-size: .76rem; line-height: 1.25; white-space: nowrap; }
+.po-mail b { font-weight: 700; }
+.po-mail small { opacity: .75; font-size: .68rem; }
+.po-mail-sent { background: #e3ecfd; color: #1d4ed8; }
+.po-mail-replied { background: var(--green-soft); color: var(--green); }
+.po-mail-none { background: var(--paper); color: var(--text-faint); font-weight: 600; }
+
+.po-thread { margin-top: 1rem; padding: .9rem 1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+.po-thread p { margin: .2rem 0; }
+.po-thread pre { white-space: pre-wrap; font: inherit; margin: .5rem 0 0; padding: .7rem; background: var(--surface); border-radius: 8px; }

@@ -2,10 +2,12 @@
 // and one place that moves stock for an order.
 // Products whose stock_quantity is empty (null) are "not tracked": orders for them never take or block stock.
 import { AppError } from '../errors/app-error.js';
+import { assertPharmaMrp } from './pharma-order-rules.js';
 import { supabaseAdmin } from './supabase.js';
 import { changeProductStock } from '../repositories/products.repository.js';
 import { getFmcgExpiryRules, getPharmaExpiryRules } from './settings.js';
 import { BATCH_BLOCKED, PHARMA_BLOCK_SALE_DAYS, daysLeft } from './pharma-rules.js';
+import { todayLocal } from './ist-date.js';
 
 export type BatchPart = { batchId: string; batchNo: string; quantity: number; restocked?: number; src?: 'pharma' };
 export type Allocation = { productId: string; total: number; batches: BatchPart[] };
@@ -31,7 +33,11 @@ export async function changeBatch(org: string, batchId: string, delta: number, s
     if (updated) {
       // Pharma: every order take / give-back lands in the same stock audit log as manual changes (best effort, never blocks the sale).
       if (src === 'pharma' && delta !== 0) {
-        try { await supabaseAdmin.from('pharma_stock_movements').insert({ organization_id: org, batch_id: batchId, batch_number: String((row as unknown as Record<string, unknown>)[noCol] ?? ''), delta, source, actor: null, note: null }); } catch { /* audit is best effort */ }
+        const mv = { organization_id: org, batch_id: batchId, batch_number: String((row as unknown as Record<string, unknown>)[noCol] ?? ''), delta, source, actor: null, note: null };
+        for (let k = 0; k < 3; k += 1) { // never blocks the sale, but a lost audit row must not go unnoticed
+          try { const { error: me } = await supabaseAdmin.from('pharma_stock_movements').insert(mv); if (!me) break; if (k === 2) console.error('[pharma] STOCK LEDGER ROW LOST', JSON.stringify(mv), me.message); }
+          catch (e) { if (k === 2) console.error('[pharma] STOCK LEDGER ROW LOST', JSON.stringify(mv), e instanceof Error ? e.message : e); }
+        }
       }
       return;
     }
@@ -56,7 +62,7 @@ export async function planAllocations(org: string, lines: StockLine[]): Promise<
   if (error) fail(error);
   const tracked = new Map((products ?? []).filter((p) => p.stock_quantity != null).map((p) => [p.id as string, p]));
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal(); // business (IST) date: UTC says "yesterday" between 00:00 and 05:30 IST, which let a batch expiring today be sold
   const blockDays = (await getFmcgExpiryRules(org)).blockSaleWithinDaysOfExpiry;
   const pharmaBlockDays = Math.max(PHARMA_BLOCK_SALE_DAYS, (await getPharmaExpiryRules(org)).blockSaleWithinDaysOfExpiry);
   const { data: batchRows, error: batchError } = await supabaseAdmin.from('product_batches').select('id, product_id, batch_no, expiry_date, quantity').eq('organization_id', org).in('product_id', productIds).gt('quantity', 0).order('expiry_date', { ascending: true, nullsFirst: false });
@@ -163,10 +169,11 @@ export async function takeStockForOrder(org: string, orderId: string) {
   const { data: order, error } = await supabaseAdmin.from('sale_orders').select('id, order_number, stock_deducted').eq('organization_id', org).eq('id', orderId).maybeSingle();
   if (error) fail(error);
   if (!order || order.stock_deducted) return;
-  const { data: lines, error: lineError } = await supabaseAdmin.from('sale_order_items').select('id, product_id, quantity, free_quantity').eq('order_id', orderId);
+  const { data: lines, error: lineError } = await supabaseAdmin.from('sale_order_items').select('id, product_id, quantity, free_quantity, subtotal').eq('order_id', orderId);
   if (lineError) fail(lineError);
   const rows = (lines ?? []) as StockLine[];
   const plan = await planAllocations(org, rows);
+  await assertPharmaMrp(org, (lines ?? []) as { quantity: unknown; subtotal?: unknown }[], plan); // Pharma only: never sell above MRP
   const all = [...plan.values()].flat();
   await applyAllocations(org, all, 'take', `Order ${String((order as { order_number?: string }).order_number ?? orderId)} confirmed`);
   try {

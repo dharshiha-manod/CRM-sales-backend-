@@ -276,7 +276,14 @@ const SAMPLE_STATUS_CLASS: Record<string, string> = {
   'taken for visit': 'status-badge status-qualified',
   'distributed': 'status-badge status-completed',
   'acknowledged': 'status-badge status-completed',
-  'returned': 'status-badge status-quoted',
+   'returned': 'status-badge status-quoted',
+  // Pharma batch statuses: one distinct colour each
+  'valid': 'status-badge status-completed',
+  'expiring soon': 'status-badge status-quoted',
+  'critical expiry': 'status-badge status-batch-critical',
+  'expired': 'status-badge status-batch-expired',
+  'quarantined': 'status-badge status-new',
+  'recalled': 'status-badge status-batch-recalled',
 };
 
 function statusBadgeClass(status?: string): string {

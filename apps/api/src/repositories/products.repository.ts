@@ -1,4 +1,5 @@
 import { AppError } from '../errors/app-error.js';
+import { syncDrugScheduleFromProduct } from '../lib/pharma-schedule-sync.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { setProductIndustryTypes } from './industry-types.repository.js';
 const fail = (error: unknown): never => { throw error; };
@@ -48,6 +49,7 @@ export async function createProduct(org: string, input: Record<string, unknown>)
   if (error) fail(error);
   const industryTypeIds = input.industryTypeIds as string[] | undefined;
   if (industryTypeIds) await setProductIndustryTypes(org, data.id, industryTypeIds);
+  await syncDrugScheduleFromProduct(org, data, input); // Pharma only: keeps Drug Schedules in step with the product form
   return data;
 }
 export async function updateProduct(org: string, id: string, input: Record<string, unknown>) {
@@ -56,6 +58,7 @@ export async function updateProduct(org: string, id: string, input: Record<strin
   if (!data) throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product was not found.');
   const industryTypeIds = input.industryTypeIds as string[] | undefined;
   if (industryTypeIds) await setProductIndustryTypes(org, id, industryTypeIds);
+  await syncDrugScheduleFromProduct(org, data, input); // Pharma only
   return data;
 }
 // Adds (+) or removes (-) stock. It re-reads the current stock and only saves if nobody else changed it in
@@ -86,6 +89,11 @@ async function assertProductNeverUsed(org: string, id: string, productCode: stri
   }
   if (productCode) { // Pharma batches are linked by product code: batches already used by samples, returns or recalls keep the product alive
     const { data: batches } = await supabaseAdmin.from('pharma_batches').select('batch_number').eq('organization_id', org).eq('product_code', productCode);
+    // Purchase and billing history keep the product code inside their JSON lines: a product that was ever bought or invoiced is not deleted.
+    for (const table of ['pharma_grn', 'pharma_purchase_orders', 'pharma_purchase_returns', 'pharma_invoices', 'pharma_credit_notes']) {
+      const { data, error } = await supabaseAdmin.from(table).select('id').eq('organization_id', org).contains('lines', [{ product_code: productCode }]).limit(1);
+      if (!error && (data ?? []).length > 0) throw inUse();
+    }
     const numbers = (batches ?? []).map((b) => b.batch_number as string);
     if (numbers.length > 0) {
       for (const table of ['pharma_samples', 'pharma_medicine_returns', 'pharma_recalls']) {

@@ -64,11 +64,10 @@ const config: PharmaModuleConfig = {
     { key: 'manufacture_date', label: 'Manufacture date', type: 'date', listColumn: true, group: 'Batch details', onValueChange: (_v, form) => expiryPatch(form) },
     { key: 'expiry_date', label: 'Expiry date', type: 'date', required: true, listColumn: true, group: 'Batch details' },
     {
-      key: 'expiry_status',
+     key: 'expiry_status',
       label: 'Expiry status',
       type: 'text',
       readOnly: true,
-      listColumn: true,
       format: (_v, record) => {
         const days = daysToExpiry(record.expiry_date);
         if (days === null) return '—';
@@ -81,6 +80,9 @@ const config: PharmaModuleConfig = {
     },
     { key: 'quantity', label: 'Available quantity', type: 'number', listColumn: true, min: 0, group: 'Batch details' },
     { key: 'unit', label: 'Unit', type: 'text', group: 'Batch details', placeholder: 'e.g. strips, vials, boxes' },
+    { key: 'mrp', label: 'MRP (per unit)', type: 'number', min: 0, group: 'Pricing', helpText: 'Printed MRP. Sales above this (rate + GST) are blocked.' },
+    { key: 'purchase_rate', label: 'Purchase rate (per unit)', type: 'number', min: 0, group: 'Pricing', helpText: 'Used for stock value in the Batch stock report.' },
+    { key: 'gst_percent', label: 'GST %', type: 'number', min: 0, group: 'Pricing' },
 
     repField('sales_rep', 'Sales rep allocation', { group: 'Batch details' }),
     { key: 'warehouse_location', label: 'Warehouse / location', type: 'text', group: 'Batch details', placeholder: 'e.g. Cold storage A-3' },

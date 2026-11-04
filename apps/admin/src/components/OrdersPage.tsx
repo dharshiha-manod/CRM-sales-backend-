@@ -10,6 +10,7 @@ import { lineDiscountView } from '../lib/productDiscount';
 import './MasterDataPages.css';
 import { SchoolPeriodTag } from './SchoolPeriodTag';
 import { SchoolDeliveryBadge, SchoolDeliveryPanel } from './SchoolDeliveryPanel';
+import { PharmaDeliveryBadge, PharmaDeliveryPanel } from './PharmaDeliveryPanel';
 import { SchoolReturnsPanel } from './SchoolReturnsPanel';
 import { SchoolRefundPanel } from './SchoolRefundPanel';
 import { TextileDeliveryBadge, TextileDeliveryPanel } from './TextileDeliveryPanel';
@@ -62,6 +63,7 @@ type Order = {
   export_docs?: Record<string, boolean> | null;
   payment_type?: string | null;
   dispatch_status?: string | null;
+  pharma_packed_at?: string | null; pharma_dispatched_at?: string | null; pharma_delivered_at?: string | null; pharma_vehicle_no?: string | null; pharma_received_by?: string | null; pharma_delivery_note?: string | null; // Pharma delivery
   transport_ref?: string | null;
   shipped_at?: string | null;
   expected_arrival?: string | null;
@@ -729,7 +731,7 @@ export function OrdersPage() {
                         <td>{itemCount} {itemCount === 1 ? 'Item' : 'Items'}</td>
                         <td>{currency(order.total_amount, order.currency_code ?? 'INR')}{order.currency_code && order.currency_code !== 'INR' && <small className="lead-code"><br />≈ {currency(Number(order.base_total ?? 0))}</small>}{payableOf(order) > Number(order.total_amount) + 0.005 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Invoiced {currency(payableOf(order), order.currency_code ?? 'INR')} (with extra charges)</small>}{Number(order.returns_credit ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>Returns credit − {currency(Number(order.returns_credit), order.currency_code ?? 'INR')}</small>}{activeIndustry === 'school' && Number(order.refunded_amount ?? 0) > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--green)' }}>Refunded {currency(Number(order.refunded_amount), order.currency_code ?? 'INR')}</small>}{activeIndustry === 'school' && Number(order.returns_credit ?? 0) > 0 && (collected[order.order_number] ?? 0) - Number(order.refunded_amount ?? 0) + Number(order.returns_credit ?? 0) - Number(order.total_amount) > 0.005 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--red)' }}>Refund due {currency((collected[order.order_number] ?? 0) - Number(order.refunded_amount ?? 0) + Number(order.returns_credit ?? 0) - Number(order.total_amount), order.currency_code ?? 'INR')}</small>}</td>
                         <td><span className={`status-badge status-${ps.tone === 'good' ? 'paid' : ps.tone === 'warn' ? 'quoted' : 'overdue'}`}>{ps.tone === 'good' ? 'Paid' : ps.tone === 'warn' ? 'Partial' : 'Outstanding'}</span>{refundBadge(order) && <><br />{refundBadge(order)}</>}</td>
-                        <td><span className={`status-badge status-${order.status}`}>{order.status}</span>{activeIndustry === 'school' && <SchoolDeliveryBadge order={order} />}{isTextile && <TextileDeliveryBadge order={order} />}</td>
+                        <td><span className={`status-badge status-${order.status}`}>{order.status}</span>{activeIndustry === 'school' && <SchoolDeliveryBadge order={order} />}{activeIndustry === 'pharma' && <PharmaDeliveryBadge order={order} />}{isTextile && <TextileDeliveryBadge order={order} />}</td>
                         {activeIndustry === 'fmcg' && (
                           <td>
                             {order.status === 'confirmed' || order.status === 'completed'
@@ -875,6 +877,10 @@ export function OrdersPage() {
               )}
 
               {activeIndustry === 'pharma' && (
+                <PharmaDeliveryPanel key={`pdeliv-${selected.id}`} order={selected} onSaved={(saved) => { setSelected((s) => (s ? { ...s, ...saved } : s)); void load(); }} />
+              )}
+
+              {activeIndustry === 'pharma' && (
                 <SchoolRefundPanel industry="pharma" key={`refund-${selected.id}`} order={selected} onChanged={(patch) => { setSelected((s) => (s ? { ...s, ...patch } : s)); void load(); }} />
               )}
 
@@ -901,7 +907,7 @@ export function OrdersPage() {
                       <option value="cod">Cash on delivery</option>
                     </select>
                   </label>
-                  {activeIndustry !== 'fmcg' && activeIndustry !== 'school' && ( // School tracks dispatch in the Delivery to school panel above
+                  {activeIndustry !== 'fmcg' && activeIndustry !== 'school' && activeIndustry !== 'pharma' && ( // School / Pharma track dispatch in their own Delivery panel above
                     <label>
                       Dispatch status
                       <select value={orderMeta.dispatchStatus} onChange={(e) => updateOrderMeta({ dispatchStatus: e.target.value })}>
