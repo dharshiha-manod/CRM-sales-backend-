@@ -13,6 +13,7 @@ import { applyAllocations, planAllocations, readAllocation, releaseStockForOrder
 import { billedTotalsForCoreOrders } from './trading.repository.js';
 import { refundedByOrder } from './fmcg-refunds.repository.js';
 import { releaseRollsForOrder } from '../lib/textile-rolls.js';
+import { onVehicleOrderCancelled, onVehicleOrderCreated } from '../lib/vehicle-links.js';
 import { applySchoolAdvance, applySchoolPricingToOrder, isSchoolIndustry, loadSchoolContext, restoreSchoolAdvance, schoolStamp } from '../lib/school.js';
 const fail = (error: unknown): never => { throw error; };
 type OrderItem = { productId: string; quantity: number; discountPercent: number; freeQuantity?: number };
@@ -117,6 +118,7 @@ export async function createOrderFromVisit(organizationId: string, representativ
 
   if (initialStatus === 'confirmed') await takeStockOrUndo(organizationId, order.id as string, tracksStock);
   await applySchoolAdvance(organizationId, schoolCtx, order);
+  await onVehicleOrderCreated(organizationId, order.id as string);
   return { ...order, items: savedLines, stock_deducted: initialStatus === 'confirmed' && tracksStock };
 }
 
@@ -238,8 +240,7 @@ export async function cancelOrder(organizationId: string, scope: IndustryScope, 
   if (error) { if (order.stock_deducted) await takeStockForOrder(organizationId, id).catch(() => undefined); return fail(error); }
   // School only: the advance this order had used up goes back to the school (no-op for every other industry).
   await restoreSchoolAdvance(organizationId, id, order.client_id as string, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null);
-  await releaseRollsForOrder(organizationId, id); // Textile: rolls Issued to this order go back to In stock (no-op for other industries)
-  return data;
+   await onVehicleOrderCancelled(organizationId, id);
 }
 
 export async function approveOrder(organizationId: string, scope: IndustryScope, id: string) {
@@ -263,8 +264,7 @@ export async function approveOrder(organizationId: string, scope: IndustryScope,
   }
   // School only: orders waiting for approval skip the advance at creation, so use it up now that the order is confirmed (no-op for every other industry).
   const approvedSchoolCtx = await loadSchoolContext(organizationId, { id: order.client_id as string, industry_type_id: (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null }, []);
-  await applySchoolAdvance(organizationId, approvedSchoolCtx, data);
-  return data;
+  await onVehicleOrderCreated(organizationId, id);
 }
 
 export async function updateOrder(organizationId: string, scope: IndustryScope, id: string, input: { items?: OrderItem[]; notes?: string | null }) {

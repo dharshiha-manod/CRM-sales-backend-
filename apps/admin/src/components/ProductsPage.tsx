@@ -180,15 +180,19 @@ type PharmaDetails = {
 const blankPharma: PharmaDetails = { genericName: '', composition: '', strength: '', dosageForm: '', manufacturer: '', drugCategory: '', drugSchedule: '', storageCondition: '', coldChain: false };
 
 // Vehicle only — saved as readable text in the existing products.specification column
-// (real DB column, so it works on every device and needs no migration).
-type VehicleDetails = { model: string; variant: string; fuelType: string; transmission: string; color: string; modelYear: string; engineCc: string; seats: string };
-const blankVehicle: VehicleDetails = { model: '', variant: '', fuelType: '', transmission: '', color: '', modelYear: '', engineCc: '', seats: '' };
+// (real DB column, so it works on every device and needs no migration). The API reads the
+// same text to keep the hidden vehicle model in step (syncProductModel), so the labels below
+// must match the API's VEHICLE_SPEC_KEYS exactly.
+type VehicleDetails = { make: string; model: string; variant: string; body: string; fuelType: string; transmission: string; color: string; modelYear: string; engineCc: string; engineType: string; seats: string; condition: string; warranty: string; serviceInterval: string };
+const blankVehicle: VehicleDetails = { make: '', model: '', variant: '', body: '', fuelType: '', transmission: '', color: '', modelYear: '', engineCc: '', engineType: '', seats: '', condition: '', warranty: '', serviceInterval: '' };
 const VEHICLE_SPEC_LABELS: [keyof VehicleDetails, string][] = [
-  ['model', 'Model'], ['variant', 'Variant'], ['fuelType', 'Fuel'], ['transmission', 'Transmission'],
-  ['color', 'Colour'], ['modelYear', 'Year'], ['engineCc', 'Engine (cc)'], ['seats', 'Seats'],
+  ['make', 'Make'], ['model', 'Model'], ['variant', 'Variant'], ['body', 'Body'], ['fuelType', 'Fuel'], ['transmission', 'Transmission'],
+  ['color', 'Colour'], ['modelYear', 'Year'], ['engineCc', 'Engine (cc)'], ['engineType', 'Engine type'], ['seats', 'Seats'],
+  ['condition', 'Condition'], ['warranty', 'Warranty'], ['serviceInterval', 'Service interval'],
 ];
 const VEHICLE_FUEL_TYPES = ['Petrol', 'Diesel', 'CNG', 'Electric', 'Hybrid'];
 const VEHICLE_TRANSMISSIONS = ['Manual', 'Automatic', 'AMT', 'CVT'];
+const VEHICLE_CONDITIONS = ['New', 'Used'];
 function packVehicleSpec(v: VehicleDetails): string {
   return VEHICLE_SPEC_LABELS.filter(([key]) => v[key].trim()).map(([key, label]) => `${label}: ${v[key].trim().replace(/\|/g, '/')}`).join(' | ');
 }
@@ -602,7 +606,8 @@ export function ProductsPage() {
       currency: product.currency ?? 'INR',
       textile: textileFromProduct(product),
           pharma: pharmaFromProduct(product),
-      vehicle: unpackVehicleSpec(product.specification),
+          vehicle: unpackVehicleSpec(product.specification),
+      ...(isVehicle ? { brand: loadFmcgMeta(product.id).brand || unpackVehicleSpec(product.specification).make, subCategory: loadFmcgMeta(product.id).subCategory || unpackVehicleSpec(product.specification).body } : {}),
     });
     setMessage('');
     setModalOpen(true);
@@ -657,7 +662,7 @@ export function ProductsPage() {
       unit: form.unit || null,
       taxPercent: form.taxPercent === '' ? (activeIndustry === 'pharma' ? 0 : null) : Number(form.taxPercent),
       hsnCode: form.hsnCode || null,
-         specification: isVehicle ? (packVehicleSpec(form.vehicle) || null) : (form.specification || null),
+       specification: isVehicle ? (packVehicleSpec({ ...form.vehicle, make: form.brand || form.vehicle.make, body: form.subCategory || form.vehicle.body }) || null) : (form.specification || null),
       originCountry: form.originCountry || null,
       supplierName: form.supplierName || null,
       currency: form.currency || null,
@@ -994,13 +999,11 @@ export function ProductsPage() {
                     {categoryOptions.map((category) => <option key={category} value={category}>{category}</option>)}
                   </select>
                 </label>
-                              {!isVehicle && (
-                <label>
-                  Sub-category
+                                <label>
+                  {isVehicle ? 'Sub-category (body type, e.g. Hatchback)' : 'Sub-category'}
                   <input list="subcategory-options" value={form.subCategory} onChange={(event) => setForm({ ...form, subCategory: event.target.value })} />
                   <datalist id="subcategory-options">{subCategories.map((subCategory) => <option key={subCategory} value={subCategory} />)}</datalist>
                 </label>
-                )}
                               {!isVehicle && <label>
                   Unit
                                  <select value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })}>
@@ -1033,6 +1036,15 @@ export function ProductsPage() {
                   <label>Model year<input type="number" min="1990" placeholder="e.g. 2026" value={form.vehicle.modelYear} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, modelYear: event.target.value } })} /></label>
                   <label>Engine capacity (cc)<input type="number" min="0" placeholder="e.g. 1197" value={form.vehicle.engineCc} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, engineCc: event.target.value } })} /></label>
                   <label>Seating capacity<input type="number" min="1" placeholder="e.g. 5" value={form.vehicle.seats} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, seats: event.target.value } })} /></label>
+                  <label>New / Used
+                    <select value={form.vehicle.condition} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, condition: event.target.value } })}>
+                      <option value="">Select</option>
+                      {VEHICLE_CONDITIONS.map((item) => <option key={item} value={item}>{item}</option>)}
+                    </select>
+                  </label>
+                  <label>Engine type<input placeholder="e.g. 4-cylinder, single cylinder" value={form.vehicle.engineType} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, engineType: event.target.value } })} /></label>
+                  <label>Standard warranty<input placeholder="e.g. 3 years / 1,00,000 km" value={form.vehicle.warranty} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, warranty: event.target.value } })} /></label>
+                  <label>Service interval<input placeholder="e.g. every 10,000 km or 12 months" value={form.vehicle.serviceInterval} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, serviceInterval: event.target.value } })} /></label>
                 </>)}
                 {activeIndustry === 'pharma' && (<>
                   <label>Generic name<input placeholder="e.g. Atorvastatin" value={form.pharma.genericName} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, genericName: event.target.value } })} /></label>

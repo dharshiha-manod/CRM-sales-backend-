@@ -15,6 +15,8 @@ import { documentCurrencyForClient, isFmcgIndustry, toBase } from '../lib/fmcg-m
 import { planAllocations, takeStockForOrder, tracksOrderStock } from '../lib/stock.js';
 import { bestSchemeFor, loadLiveSchemes } from '../lib/fmcg-schemes.js';
 import { applySchoolAdvance, loadSchoolContext, schoolRuleFor, schoolStamp } from '../lib/school.js';
+import { onVehicleOrderCreated } from '../lib/vehicle-links.js';
+
 
 const fail = (error: unknown): never => { throw error; };
 type ItemInput = { productId: string; quantity: number; discountPercent: number; colour?: string | null };
@@ -198,7 +200,8 @@ export async function convertToOrder(organizationId: string, representativeId: s
   // consumer can present this quotation as completed rather than actionable.
   const { error: updateError } = await supabaseAdmin.from('quotations').update({ status: 'converted', converted_order_id: order.id }).eq('id', id).eq('organization_id', organizationId); if (updateError) fail(updateError);
   await applySchoolAdvance(organizationId, await loadSchoolContext(organizationId, { id: quotation.client_id as string | null, industry_type_id: (quotation.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null }, []), order);
-  if (quotation.requirement_id) await supabaseAdmin.from('requirements').update({ status: 'converted' }).eq('id', quotation.requirement_id).eq('organization_id', organizationId);
+    if (quotation.requirement_id) await supabaseAdmin.from('requirements').update({ status: 'converted' }).eq('id', quotation.requirement_id).eq('organization_id', organizationId);
+  await onVehicleOrderCreated(organizationId, order.id as string);
   return getQuotation(organizationId, id, scope);
 }
 export async function sendQuotation(organizationId: string, representativeId: string | null, id: string, publicAppUrl: string, scope?: IndustryScope) {

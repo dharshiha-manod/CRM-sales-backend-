@@ -1,4 +1,5 @@
 import { AppError } from '../errors/app-error.js';
+import { isVehicleIndustry } from '../lib/vehicle-links.js';
 import { isSchoolIndustry } from '../lib/school.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
@@ -137,7 +138,7 @@ async function withAchievement<T extends {
     if (!buckets.has(key)) buckets.set(key, { representativeId: r.representative_id, industryTypeId: r.industry_type_id, start: r.period_start, end: r.period_end });
   }
 
-  type Agg = { ordersAmount: number; ordersCount: number; itemQty: number; collections: number; visits: number; newCustomers: number; students?: number };
+  type Agg = { ordersAmount: number; ordersCount: number; itemQty: number; collections: number; visits: number; newCustomers: number; students?: number; vehiclesDelivered?: number };
   const agg = new Map<string, Agg>();
 
   await Promise.all([...buckets.entries()].map(async ([key, b]) => {
@@ -195,7 +196,25 @@ async function withAchievement<T extends {
       }, 0);
     }
 
+    // Vehicle only: "quantity sold" counts vehicles actually handed over (Delivered) on this rep's orders, not order lines.
+    let vehiclesDelivered: number | undefined;
+    if (rows.some((r) => bucketKey(r) === key && r.target_type === 'quantity_sold') && await isVehicleIndustry(organizationId, b.industryTypeId)) {
+      const { data: dl, error: dlError } = await supabaseAdmin.from('vehicle_deliveries').select('order_id')
+        .eq('organization_id', organizationId).eq('industry_type_id', b.industryTypeId).eq('status', 'Delivered').not('order_id', 'is', null)
+        .gte('delivery_date', b.start).lte('delivery_date', b.end);
+      if (dlError) fail(dlError);
+      const ids = (dl ?? []).map((x) => x.order_id as string);
+      let mine = new Set<string>();
+      if (ids.length) {
+        const { data: own, error: ownError } = await supabaseAdmin.from('sale_orders').select('id').eq('organization_id', organizationId).eq('representative_id', b.representativeId).in('id', ids);
+        if (ownError) fail(ownError);
+        mine = new Set((own ?? []).map((x) => x.id as string));
+      }
+      vehiclesDelivered = ids.filter((id) => mine.has(id)).length;
+    }
+
     agg.set(key, {
+      vehiclesDelivered,
       // base_total is the INR value of the order (a USD order's total_amount is in dollars); older orders fall back to total_amount.
       ordersAmount: (orders.data ?? []).reduce((sum, o) => sum + Number(o.base_total ?? o.total_amount), 0),
       ordersCount: (orders.data ?? []).length,
@@ -221,6 +240,7 @@ async function withAchievement<T extends {
     if (r.target_type === 'sales_amount') achieved = a.collections;
     else if (r.target_type === 'order_value') achieved = a.ordersAmount;
     else if (r.target_type === 'order_count') achieved = a.ordersCount;
+    else if (r.target_type === 'quantity_sold' && a.vehiclesDelivered !== undefined) achieved = a.vehiclesDelivered;
     else if (QUANTITY_TYPES.has(r.target_type)) achieved = a.itemQty;
     else if (COLLECTION_TYPES.has(r.target_type)) achieved = a.collections;
     else if (VISIT_TYPES.has(r.target_type)) achieved = a.visits;

@@ -1,5 +1,6 @@
 import { AppError } from '../errors/app-error.js';
 import { assertIndustryIdsInScope, isGlobalRole, resolveIndustryTypeId, type IndustryScope } from '../lib/industry-scope.js';
+import { syncProductModel } from '../lib/vehicle-links.js';
 import { listProductIndustryTypes } from '../repositories/industry-types.repository.js';
 import * as repository from '../repositories/products.repository.js';
 
@@ -21,12 +22,16 @@ export const productService = {
     const requestedIds = input.industryTypeIds as string[] | undefined;
     assertIndustryIdsInScope(scope, requestedIds);
     const industryTypeIds = isGlobalRole(scope.role) ? requestedIds : (requestedIds ?? (scope.lockedIndustryTypeId ? [scope.lockedIndustryTypeId] : undefined));
-    return repository.createProduct(org, { ...input, industryTypeIds });
+    const product = await repository.createProduct(org, { ...input, industryTypeIds });
+    await syncProductModel(org, product); // Vehicle products only; a failure here never blocks the save
+    return product;
   },
   async update(org: string, id: string, input: Record<string, unknown>, scope: IndustryScope) {
     await assertProductInScope(org, id, scope);
     assertIndustryIdsInScope(scope, input.industryTypeIds as string[] | undefined);
-    return repository.updateProduct(org, id, input);
+    const product = await repository.updateProduct(org, id, input);
+    await syncProductModel(org, product); // Vehicle products only
+    return product;
   },
   async changeStock(org: string, id: string, input: { delta: number; allowNegative?: boolean }, scope: IndustryScope) {
     await assertProductInScope(org, id, scope);

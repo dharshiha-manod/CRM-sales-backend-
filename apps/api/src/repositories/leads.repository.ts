@@ -6,6 +6,7 @@ import { listProducts } from './products.repository.js';
 import { getFollowUpConfig, getSalesConfig } from '../lib/settings.js';
 import { findRateToInr } from '../lib/fmcg-market.js';
 import { isSchoolIndustry } from '../lib/school.js';
+import { isVehicleIndustry } from '../lib/vehicle-links.js';
 
 const fail = (error: unknown): never => {
   throw error;
@@ -168,7 +169,7 @@ export async function continueLeadChain(organizationId: string, leadId: string, 
       await logLeadNote(organizationId, leadId, actorId, `Expected order value is in ${leadCurrency} but there is no ${leadCurrency} to INR rate in Currency Rates yet, so the quantity was set to 1. Add the rate and adjust the quantity on the Requirement.`);
     }
   }
-   const quantity = matchedProduct && matchedProduct.selling_price > 0 ? Math.max(1, Math.round(expectedValue / matchedProduct.selling_price)) : 1;
+  const quantity = (await isVehicleIndustry(organizationId, lead.industry_type_id)) ? 1 : matchedProduct && matchedProduct.selling_price > 0 ? Math.max(1, Math.round(expectedValue / matchedProduct.selling_price)) : 1;
   // Textile only (a product with no textile colours gives null): pick the colour named in the lead's interest, or the product's only colour.
   const textileColour = (() => {
     const colours = ((matchedProduct as unknown as { textile_details?: { colors?: Array<{ name: string }> } | null } | null)?.textile_details?.colors ?? []).map((c) => c.name).filter(Boolean);

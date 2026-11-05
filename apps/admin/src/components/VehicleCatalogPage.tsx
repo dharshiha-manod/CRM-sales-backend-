@@ -193,17 +193,18 @@ function UnitIntakePanel({ rows }: { rows: VehicleRecord[] }) {
   );
 }
 export function VehicleCatalogPage() {
-  const [tab, setTab] = useState<'models' | 'units' | 'parts'>('models');
+  // Vehicle models are now added in Products (the API keeps the linked model record in step),
+  // so this page only keeps the physical units (VIN) and the spare parts.
+  const [tab, setTab] = useState<'units' | 'parts'>('units');
   return (
     <div>
       <div className="master-toolbar" style={{ marginBottom: '0.75rem' }}>
         <div className="master-search">
-          <button type="button" className={tab === 'models' ? 'primary-action' : 'quiet-button'} onClick={() => setTab('models')}>Model / variant</button>
-          <button type="button" className={tab === 'units' ? 'primary-action' : 'quiet-button'} onClick={() => setTab('units')} style={{ marginLeft: '0.5rem' }}>Individual units (VIN)</button>
+          <button type="button" className={tab === 'units' ? 'primary-action' : 'quiet-button'} onClick={() => setTab('units')}>Individual units (VIN)</button>
           <button type="button" className={tab === 'parts' ? 'primary-action' : 'quiet-button'} onClick={() => setTab('parts')} style={{ marginLeft: '0.5rem' }}>Spare parts</button>
         </div>
       </div>
-      {tab === 'models' ? <VehicleMasterPage config={modelConfig} /> : tab === 'parts' ? <VehicleMasterPage config={partsConfig} /> : <VehicleMasterPage config={{ ...unitConfig, renderInsights: (rows) => <UnitIntakePanel rows={rows} /> }} />}
+      {tab === 'parts' ? <VehicleMasterPage config={partsConfig} /> : <VehicleMasterPage config={{ ...unitConfig, renderInsights: (rows) => <UnitIntakePanel rows={rows} /> }} />}
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { startOverdueFollowUpScheduler } from './services/overdue-followup-sched
 import { startBeatScheduler } from './services/beat-automation.service.js';
 import { startPharmaScheduler } from './services/pharma-scheduler.service.js';
 import { startPoReplyPolling } from './services/pharma-po-reply-poller.service.js';
+import { startVehicleScheduler } from './services/vehicle-aftersales.service.js';
 app.listen(env.PORT, () => logger.info({ port: env.PORT }, 'API listening'));
 // No-op unless SUPPLIER_REPLY_IMAP_HOST/USER/PASS are set — see that
 // service's file comment for why this stays entirely optional.
@@ -18,3 +19,5 @@ startOverdueFollowUpScheduler();
 startPharmaScheduler();
 // Reads supplier replies to Purchase Orders / Purchase Returns (no-op unless the IMAP settings are set).
 startPoReplyPolling();
+// Vehicle after-sales: first/next service scheduling, service / insurance / warranty reminders. Set VEHICLE_AUTOMATION=off to disable.
+startVehicleScheduler();
