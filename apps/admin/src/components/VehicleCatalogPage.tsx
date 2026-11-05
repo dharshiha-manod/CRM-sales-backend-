@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { VehicleMasterPage, VehicleModuleConfig } from './VehicleMasterPage';
+import { VehicleMasterPage, VehicleModuleConfig, VehicleRecord } from './VehicleMasterPage';
+import { api } from '../lib/api';
+import { useIndustryScope } from '../industry/useIndustryScope';
 
 /**
  * A vehicle model/variant is not the same record as an individual vehicle
@@ -53,10 +55,39 @@ const modelConfig: VehicleModuleConfig = {
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Active', value: (r) => String(r.filter((x) => x.status === 'Active').length) },
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Upcoming', value: (r) => String(r.filter((x) => x.status === 'Upcoming').length) },
   ],
-  sampleRecords: [
-    { id: 'demo-model-1', model_code: 'MDL-0001', make: 'Tata', brand: 'Tata Motors', model_name: 'Nexon', variant: 'XZ+ Petrol', vehicle_type: 'SUV', fuel_type: 'Petrol', ex_showroom_price: 950000, status: 'Active' },
-    { id: 'demo-model-2', model_code: 'MDL-0002', make: 'Hyundai', brand: 'Hyundai', model_name: 'Creta', variant: 'SX(O) Diesel', vehicle_type: 'SUV', fuel_type: 'Diesel', ex_showroom_price: 1850000, status: 'Upcoming' },
+  sampleRecords: [],
+};
+
+const partsConfig: VehicleModuleConfig = {
+  resource: '/vehicle/parts',
+  eyebrowModule: 'VEHICLE / PARTS CATALOG',
+  title: 'Spare parts',
+  description: 'Parts master and stock. In a service record write the parts as "PART-CODE x qty" (one per line): when the service is Completed the stock is reduced once and the service cost is filled in (parts + labour).',
+  icon: '⚙',
+  emptyIcon: '⚙',
+  codeField: 'part_code',
+  nameField: 'part_name',
+  statusOptions: ['Active', 'Inactive', 'Discontinued'],
+  searchableKeys: ['part_code', 'part_name', 'category', 'supplier'],
+  fields: [
+    { key: 'part_code', label: 'Part code', type: 'text', required: true, listColumn: true },
+    { key: 'part_name', label: 'Part name', type: 'text', required: true, listColumn: true },
+    { key: 'category', label: 'Category', type: 'text', group: 'Part' },
+    { key: 'unit', label: 'Unit', type: 'text', group: 'Part' },
+    { key: 'compatible_models', label: 'Compatible models', type: 'text', group: 'Part' },
+    { key: 'stock_quantity', label: 'Stock', type: 'number', listColumn: true, group: 'Stock' },
+    { key: 'reorder_level', label: 'Reorder level', type: 'number', group: 'Stock' },
+    { key: 'cost_price', label: 'Cost price', type: 'number', group: 'Pricing' },
+    { key: 'selling_price', label: 'Selling price', type: 'number', listColumn: true, group: 'Pricing' },
+    { key: 'supplier', label: 'Supplier', type: 'text', group: 'Pricing' },
+    { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Inactive', 'Discontinued'], listColumn: true, group: 'Pricing' },
   ],
+  kpis: [
+    { icon: '⚙', iconClass: 'kpi-icon-ink', label: 'Parts', value: (r) => String(r.length) },
+    { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Low stock', value: (r) => String(r.filter((x) => x.reorder_level !== null && x.reorder_level !== undefined && Number(x.stock_quantity) <= Number(x.reorder_level)).length) },
+    { icon: '₹', iconClass: 'kpi-icon-green', label: 'Stock value (cost)', value: (r) => `₹${r.reduce((s, x) => s + (Number(x.stock_quantity) || 0) * (Number(x.cost_price) || 0), 0).toLocaleString('en-IN')}` },
+  ],
+  sampleRecords: [],
 };
 
 const UNIT_STATUSES = ['In Transit', 'Received', 'PDI Pending', 'Available', 'Reserved', 'Booked', 'Allocated', 'Demo', 'Under Service', 'Damaged', 'Sold', 'Delivered', 'Returned'];
@@ -103,22 +134,76 @@ const unitConfig: VehicleModuleConfig = {
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Booked / reserved', value: (r) => String(r.filter((x) => x.status === 'Booked' || x.status === 'Reserved').length) },
     { icon: '↗', iconClass: 'kpi-icon-school', label: 'Sold / delivered', value: (r) => String(r.filter((x) => x.status === 'Sold' || x.status === 'Delivered').length) },
   ],
-  sampleRecords: [
-    { id: 'demo-unit-1', vin: 'MA3ERLF1S00123456', model_name: 'Nexon', variant: 'XZ+ Petrol', dealer_name: 'City Motors', status: 'Available' },
-    { id: 'demo-unit-2', vin: 'MA3FYEB1S00654321', model_name: 'Creta', variant: 'SX(O) Diesel', dealer_name: 'Highway Auto', status: 'Booked' },
-  ],
+  sampleRecords: [],
 };
+
+// Stock intake: paste VINs to add many units at once, and mark a whole PDI batch as passed.
+function UnitIntakePanel({ rows }: { rows: VehicleRecord[] }) {
+  const { activeIndustryTypeId } = useIndustryScope();
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const q = activeIndustryTypeId ? `?industryTypeId=${activeIndustryTypeId}` : '';
+  const waiting = rows.filter((r) => (r.status === 'Received' || r.status === 'PDI Pending') && typeof r.vin === 'string' && !String(r.id).startsWith('demo-'));
+
+  async function passPdi() {
+    setBusy(true); setMsg('');
+    try {
+      const res = await api<{ data: { passed: number } }>(`/vehicle/units/pdi-pass${q}`, { method: 'POST', body: JSON.stringify({ vins: waiting.map((r) => r.vin) }) });
+      setMsg(`${res.data.passed} unit(s) are now Available; waiting bookings were allocated.`);
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (e) { setMsg(e instanceof Error ? e.message : 'Could not mark PDI passed'); } finally { setBusy(false); }
+  }
+
+  async function importUnits() {
+    setBusy(true); setMsg('');
+    try {
+      const models = (await api<{ data: Record<string, unknown>[] }>(`/vehicle/models${q}`)).data;
+      const byCode = new Map(models.map((m) => [String(m.model_code).toLowerCase(), m.id]));
+      const units: Record<string, unknown>[] = [];
+      const bad: string[] = [];
+      text.split('\n').map((l) => l.trim()).filter(Boolean).forEach((line, i) => {
+        const [vin, code, color, engine, cost, price] = line.split(/[,\t]/).map((x) => x.trim());
+        const modelId = byCode.get((code ?? '').toLowerCase());
+        if (!vin || !modelId) { bad.push(`Line ${i + 1}: ${!vin ? 'missing VIN' : `unknown model code "${code ?? ''}"`}`); return; }
+        units.push({ vin, model_id: modelId, color, engine_number: engine, purchase_cost: cost, selling_price: price });
+      });
+      if (!units.length) { setMsg(bad.join(' | ') || 'Nothing to import.'); return; }
+      const res = await api<{ data: { created: number; errors: { row: number; vin: string; error: string }[] } }>(`/vehicle/units/bulk${q}`, { method: 'POST', body: JSON.stringify({ units }) });
+      const failed = [...bad, ...res.data.errors.map((e) => `${e.vin || `row ${e.row}`}: ${e.error}`)];
+      setMsg(`${res.data.created} unit(s) added as PDI Pending.${failed.length ? ` Not added: ${failed.join(' | ')}` : ''}`);
+      if (res.data.created) setTimeout(() => window.location.reload(), 2500);
+    } catch (e) { setMsg(e instanceof Error ? e.message : 'Import failed'); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="master-toolbar" style={{ display: 'block', marginBottom: '0.75rem' }}>
+      <button type="button" className="quiet-button" onClick={() => setOpen(!open)}>{open ? 'Hide stock intake' : 'Stock intake (bulk add / PDI)'}</button>
+      <button type="button" className="primary-action" style={{ marginLeft: '0.5rem' }} disabled={busy || !waiting.length} onClick={passPdi}>PDI passed for all waiting ({waiting.length})</button>
+      {open && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <p style={{ margin: '0 0 0.4rem' }}>One unit per line: <code>VIN, model code, colour, engine number, purchase cost, selling price</code> (only VIN and model code are required).</p>
+          <textarea rows={6} style={{ width: '100%' }} value={text} onChange={(e) => setText(e.target.value)} />
+          <button type="button" className="primary-action" disabled={busy || !text.trim()} onClick={importUnits}>Add units</button>
+        </div>
+      )}
+      {msg && <p style={{ margin: '0.5rem 0 0' }}>{msg}</p>}
+    </div>
+  );
+}
 export function VehicleCatalogPage() {
-  const [tab, setTab] = useState<'models' | 'units'>('models');
+  const [tab, setTab] = useState<'models' | 'units' | 'parts'>('models');
   return (
     <div>
       <div className="master-toolbar" style={{ marginBottom: '0.75rem' }}>
         <div className="master-search">
           <button type="button" className={tab === 'models' ? 'primary-action' : 'quiet-button'} onClick={() => setTab('models')}>Model / variant</button>
           <button type="button" className={tab === 'units' ? 'primary-action' : 'quiet-button'} onClick={() => setTab('units')} style={{ marginLeft: '0.5rem' }}>Individual units (VIN)</button>
+          <button type="button" className={tab === 'parts' ? 'primary-action' : 'quiet-button'} onClick={() => setTab('parts')} style={{ marginLeft: '0.5rem' }}>Spare parts</button>
         </div>
       </div>
-      {tab === 'models' ? <VehicleMasterPage config={modelConfig} /> : <VehicleMasterPage config={unitConfig} />}
+      {tab === 'models' ? <VehicleMasterPage config={modelConfig} /> : tab === 'parts' ? <VehicleMasterPage config={partsConfig} /> : <VehicleMasterPage config={{ ...unitConfig, renderInsights: (rows) => <UnitIntakePanel rows={rows} /> }} />}
     </div>
   );
 }

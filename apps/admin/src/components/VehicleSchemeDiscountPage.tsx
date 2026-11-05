@@ -47,10 +47,7 @@ const config: VehicleModuleConfig = {
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Currently active', value: (r) => String(r.filter((x) => x.status === 'Active').length) },
        { icon: '⚠', iconClass: 'kpi-icon-red', label: 'Expired', value: (r) => String(r.filter((x) => x.status === 'Expired').length) },
   ],
-  sampleRecords: [
-    { id: 'demo-scheme-1', scheme_id: 'SCH-0001', scheme_name: 'Festive Cash Discount', model_name: 'Nexon', start_date: '2026-09-01', end_date: '2026-10-15', discount_type: 'Fixed Amount', discount_value: 25000, status: 'Active' },
-    { id: 'demo-scheme-2', scheme_id: 'SCH-0002', scheme_name: 'Exchange Bonus Offer', model_name: 'Creta', start_date: '2026-06-01', end_date: '2026-07-31', discount_type: 'Exchange Bonus', discount_value: 15000, status: 'Expired' },
-  ],
+  sampleRecords: [],
 };
 
 export function VehicleSchemeDiscountPage() {

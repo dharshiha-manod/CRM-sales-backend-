@@ -17,6 +17,8 @@ const config: VehicleModuleConfig = {
     { key: 'return_number', label: 'Return / cancellation number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'RTN' },
     { key: 'return_type', label: 'Type', type: 'select', options: ['Booking Cancellation', 'Sales Cancellation', 'Vehicle Return', 'Exchange Cancellation'], listColumn: true },
     { key: 'client_name', label: 'Client', type: 'text', required: true, listColumn: true },
+    { key: 'client_id', label: 'Client (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/clients', lookupLabelKey: 'client_name', autoFillMap: { client_name: 'client_name' } },
+    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', lookupResource: '/orders', lookupLabelKey: 'order_number' },
     { key: 'vin', label: 'VIN', type: 'lookup', group: 'Reference', lookupResource: '/vehicle/units', lookupLabelKey: 'model_name' },
     { key: 'sales_order_reference', label: 'Sales order reference (Core Orders)', type: 'text', group: 'Reference' },
     { key: 'booking_reference', label: 'Booking reference', type: 'text', group: 'Reference' },
@@ -35,10 +37,7 @@ const config: VehicleModuleConfig = {
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Refunded / closed', value: (r) => String(r.filter((x) => x.status === 'Refunded' || x.status === 'Closed').length) },
       { icon: '₹', iconClass: 'kpi-icon-school', label: 'Refunded amount', value: (r) => `₹${r.reduce((sum, x) => sum + (Number(x.refund_amount) || 0), 0).toLocaleString()}` },
   ],
-  sampleRecords: [
-    { id: 'demo-rtn-1', return_number: 'RTN-0001', return_type: 'Booking Cancellation', client_name: 'Arjun Nair', request_date: '2026-08-20', refund_amount: 25000, status: 'Refunded' },
-    { id: 'demo-rtn-2', return_number: 'RTN-0002', return_type: 'Vehicle Return', client_name: 'Divya Suresh', request_date: '2026-09-01', refund_amount: 0, status: 'Inspection' },
-  ],
+  sampleRecords: [],
 };
 
 export function VehicleReturnsPage() {

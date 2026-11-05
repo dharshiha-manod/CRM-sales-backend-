@@ -31,10 +31,7 @@ const config: VehicleModuleConfig = {
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Active', value: (r) => String(r.filter((x) => x.status === 'Active').length) },
       { icon: '⚠', iconClass: 'kpi-icon-red', label: 'Expiring / expired', value: (r) => String(r.filter((x) => x.status === 'Expiring Soon' || x.status === 'Expired').length) },
   ],
-  sampleRecords: [
-    { id: 'demo-ins-1', policy_number: 'POL-0001', client_name: 'Ramesh Iyer', provider: 'ICICI Lombard', expiry_date: '2027-03-14', status: 'Active' },
-    { id: 'demo-ins-2', policy_number: 'POL-0002', client_name: 'Priya Menon', provider: 'Bajaj Allianz', expiry_date: '2026-09-20', status: 'Expiring Soon' },
-  ],
+  sampleRecords: [],
 };
 
 export function VehicleInsurancePage() {

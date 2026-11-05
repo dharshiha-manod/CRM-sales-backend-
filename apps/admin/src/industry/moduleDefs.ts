@@ -49,6 +49,7 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'textile-sample', label: 'Textile Sample Management', icon: '▣' },
     { id: 'quality-inspection', label: 'Quality & Inspection Management', icon: '✔' },
   ],
+ 
   school: [
     { id: 'school-management', label: 'School Management', icon: '◎' },
     { id: 'school-sales-collection', label: 'School-wise Sales & Collection', icon: '₹' },
@@ -109,5 +110,6 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'warranty', label: 'Warranty', icon: '✔' },
     { id: 'service', label: 'Service / After-Sales', icon: '🔧' },
     { id: 'returns', label: 'Returns / Cancellation', icon: '↩' },
+    { id: 'insights', label: 'Insights & Link Health', icon: '◈' },
   ],
 };

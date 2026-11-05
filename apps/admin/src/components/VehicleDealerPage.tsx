@@ -40,10 +40,7 @@ const config: VehicleModuleConfig = {
     { icon: '⚠', iconClass: 'kpi-icon-red', label: 'Suspended', value: (r) => String(r.filter((x) => x.status === 'Suspended').length) },
       { icon: '₹', iconClass: 'kpi-icon-school', label: 'Combined sales target', value: (r) => `₹${r.reduce((sum, x) => sum + (Number(x.sales_target) || 0), 0).toLocaleString()}` },
   ],
-  sampleRecords: [
-    { id: 'demo-dealer-1', dealer_code: 'DLR-0001', dealer_name: 'City Motors', dealer_type: 'Authorized Dealer', city: 'Chennai', sales_target: 5000000, status: 'Active' },
-    { id: 'demo-dealer-2', dealer_code: 'DLR-0002', dealer_name: 'Highway Auto', dealer_type: 'Sub Dealer', city: 'Coimbatore', sales_target: 2000000, status: 'Pending Approval' },
-  ],
+  sampleRecords: [],
 };
 
 export function VehicleDealerPage() {

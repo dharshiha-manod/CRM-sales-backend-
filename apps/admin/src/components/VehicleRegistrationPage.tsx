@@ -15,6 +15,7 @@ const config: VehicleModuleConfig = {
   searchableKeys: ['vin', 'engine_number', 'registration_number', 'registration_authority'],
   fields: [
     { key: 'vin', label: 'VIN', type: 'lookup', required: true, listColumn: true, lookupResource: '/vehicle/units', lookupLabelKey: 'model_name' },
+    { key: 'client_name', label: 'Owner (auto-filled from delivery)', type: 'text', listColumn: true, group: 'References' },
     { key: 'engine_number', label: 'Engine number', type: 'text', group: 'Registration' },
     { key: 'registration_number', label: 'Registration number', type: 'text', listColumn: true, group: 'Registration' },
     { key: 'registration_authority', label: 'Registration authority', type: 'text', group: 'Registration' },
@@ -34,10 +35,7 @@ const config: VehicleModuleConfig = {
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Under process', value: (r) => String(r.filter((x) => x.status === 'Under Process' || x.status === 'Submitted').length) },
        { icon: '✔', iconClass: 'kpi-icon-green', label: 'Completed', value: (r) => String(r.filter((x) => x.status === 'Completed').length) },
   ],
-  sampleRecords: [
-    { id: 'demo-reg-1', vin: 'MA3ERLF1S00123456', registration_number: 'TN 22 AB 1234', registration_authority: 'RTO Chennai', status: 'Completed' },
-    { id: 'demo-reg-2', vin: 'MA3FYEB1S00654321', registration_number: '—', registration_authority: 'RTO Coimbatore', status: 'Under Process' },
-  ],
+  sampleRecords: [],
 };
 export function VehicleRegistrationPage() {
   return <VehicleMasterPage config={config} />;

@@ -16,6 +16,10 @@ const config: VehicleModuleConfig = {
   fields: [
     { key: 'exchange_id', label: 'Exchange ID', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'EXG' },
     { key: 'client_name', label: 'Client', type: 'text', required: true, listColumn: true },
+    { key: 'client_id', label: 'Client (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/clients', lookupLabelKey: 'client_name', autoFillMap: { client_name: 'client_name' } },
+    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', lookupResource: '/orders', lookupLabelKey: 'order_number', autoFillMap: { order_number: 'order_number' } },
+    { key: 'order_number', label: 'Order number (auto-filled)', type: 'text', readOnly: true, group: 'Link' },
+    { key: 'booking_number', label: 'Booking number (auto-linked)', type: 'text', readOnly: true, group: 'Link' },
     { key: 'existing_registration_number', label: 'Existing vehicle registration number', type: 'text', group: 'Existing vehicle' },
     { key: 'existing_make', label: 'Make', type: 'text', group: 'Existing vehicle' },
     { key: 'existing_model', label: 'Model', type: 'text', listColumn: true, group: 'Existing vehicle' },
@@ -38,10 +42,7 @@ const config: VehicleModuleConfig = {
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Approved / converted', value: (r) => String(r.filter((x) => x.status === 'Approved' || x.status === 'Converted').length) },
       { icon: '₹', iconClass: 'kpi-icon-school', label: 'Net exchange value', value: (r) => `₹${r.reduce((sum, x) => sum + (Number(x.net_exchange_value) || 0), 0).toLocaleString()}` },
   ],
-  sampleRecords: [
-    { id: 'demo-exg-1', exchange_id: 'EXG-0001', client_name: 'Suresh Babu', existing_model: 'i10', approved_value: 180000, net_exchange_value: 150000, status: 'Approved' },
-    { id: 'demo-exg-2', exchange_id: 'EXG-0002', client_name: 'Kavitha Raj', existing_model: 'Swift', approved_value: 320000, net_exchange_value: 280000, status: 'Valuation' },
-  ],
+  sampleRecords: [],
 };
 
 export function VehicleExchangePage() {

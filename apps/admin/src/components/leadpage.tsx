@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
+import { queueVehicleDraft } from '../lib/vehicleDraftHandoff';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useIndustry } from '../industry/IndustryContext';
 import { FmcgMarketFields } from './FmcgMarketFields';
@@ -1272,8 +1273,7 @@ async function suggestRep() {
           <table>
             <thead>
               <tr>
-                          <th>Lead</th>
-{activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && activeIndustry !== 'pharma' && <th>{fieldLabelText(shopTypeConfig, activeIndustry)}</th>}
+                       <th>Lead</th>
                 <th>Representative</th>
                 <th>Contact</th>
                 <th>Email</th>
@@ -1292,7 +1292,7 @@ async function suggestRep() {
                                       <td>
                       <strong>{lead.company_name}</strong>
                       <small className="lead-code">{lead.lead_code}</small>
-                    </td>{activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && activeIndustry !== 'pharma' && <td>{optionLabel(shopTypeConfig, activeIndustry, meta.shopType)}</td>}
+                   </td>
                     <td>{(() => { const repLabel = lead.sales_representatives?.user_profiles?.display_name ?? lead.sales_representatives?.employee_code; return repLabel ? <span className="lp-rep"><i>{repLabel.slice(0, 1).toUpperCase()}</i>{repLabel}</span> : <span className="lp-unassigned">Unassigned</span>; })()}</td>
                     <td>
                       {lead.contact_name && <span>{lead.contact_name}</span>}
@@ -1399,6 +1399,16 @@ async function suggestRep() {
                     </svg>
                     <span>Edit</span>
                   </button>
+                  {activeIndustry === 'vehicle' && (
+                    <>
+                      <button type="button" title="Book test drive" onClick={() => { setMenuFor(null); queueVehicleDraft('test-drive', { lead_id: lead.id, client_name: lead.company_name ?? '', ...((lead as unknown as { converted_client_id?: string | null }).converted_client_id ? { client_id: String((lead as unknown as { converted_client_id?: string }).converted_client_id) } : {}) }); }}>
+                        <span>Book test drive</span>
+                      </button>
+                      <button type="button" title="Book vehicle" onClick={() => { setMenuFor(null); queueVehicleDraft('booking', { lead_id: lead.id, client_name: lead.company_name ?? '', ...((lead as unknown as { converted_client_id?: string | null }).converted_client_id ? { client_id: String((lead as unknown as { converted_client_id?: string }).converted_client_id) } : {}) }); }}>
+                        <span>Book vehicle</span>
+                      </button>
+                    </>
+                  )}
                   <button
                     type="button"
                     title="Delete"
@@ -1448,13 +1458,7 @@ async function suggestRep() {
                   <dt>Area / Route</dt>
                   <dd>{unpackFmcgMeta(selected.notes).meta.areaRoute || '—'}</dd>
                 </>
-              )}
-                        {activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && activeIndustry !== 'pharma' && (
-                <>
-                  <dt>{fieldLabelText(shopTypeConfig, activeIndustry)}</dt>
-                  <dd>{optionLabel(shopTypeConfig, activeIndustry, unpackFmcgMeta(selected.notes).meta.shopType)}</dd>
-                </>
-              )}
+                      )}
               <dt>Expected value</dt>
 <dd>{(() => { const v = unpackFmcgMeta(selected.notes).meta.expectedOrderValue; if (!v) return '—'; const n = Number(v); if (['fmcg', 'trading'].includes(String(activeIndustry).toLowerCase()) && Number.isFinite(n)) return formatMoneyWithBase(n, selected.currency_code); return `${selected.currency_code && selected.currency_code !== 'INR' ? selected.currency_code + ' ' : '₹'}${v}`; })()}</dd>
               <dt>Contact</dt>
@@ -1782,20 +1786,7 @@ async function suggestRep() {
                       Area / Route
                       <input placeholder="e.g. Route 4 - MG Road belt" value={form.areaRoute} onChange={(e) => setForm({ ...form, areaRoute: e.target.value })} />
                     </label>
-                  )}
-               {activeIndustry !== 'school' && activeIndustry !== 'trading' && activeIndustry !== 'fmcg' && activeIndustry !== 'textile' && activeIndustry !== 'pharma' && (
-                    <label>
-                      {fieldLabelText(shopTypeConfig, activeIndustry)}
-                      <LeadTypeComboBox
-                        id="lead-shop-type"
-                        config={shopTypeConfig}
-                        industry={activeIndustry}
-                        value={form.shopType}
-                        customOptions={customTypeOptions['shop-type']}
-                        onChange={(shopType) => setForm({ ...form, shopType })}
-                      />
-                    </label>
-                  )}
+                                )}
                 </div>
               </fieldset>
 

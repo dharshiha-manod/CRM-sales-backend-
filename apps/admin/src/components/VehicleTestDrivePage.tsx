@@ -1,8 +1,10 @@
 import { VehicleMasterPage, VehicleModuleConfig } from './VehicleMasterPage';
+import { consumeVehicleDraft } from '../lib/vehicleDraftHandoff';
 
 const STATUSES = ['Requested', 'Scheduled', 'Confirmed', 'In Progress', 'Completed', 'Cancelled', 'No Show'];
 
 const config: VehicleModuleConfig = {
+  consumePendingDraft: () => consumeVehicleDraft('test-drive'),
   resource: '/vehicle/test-drives',
   eyebrowModule: 'TEST DRIVE MANAGEMENT',
   title: 'Test drive management',
@@ -16,6 +18,8 @@ const config: VehicleModuleConfig = {
   fields: [
     { key: 'test_drive_number', label: 'Test drive number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'TD' },
     { key: 'client_name', label: 'Lead / client', type: 'text', required: true, listColumn: true },
+    { key: 'client_id', label: 'Client (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/clients', lookupLabelKey: 'client_name', autoFillMap: { client_name: 'client_name' } },
+    { key: 'lead_id', label: 'Lead (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/leads', industryScoped: true, lookupLabelKey: 'company_name', autoFillMap: { client_name: 'company_name' } },
     {
       key: 'model_id', label: 'Model / variant', type: 'lookup', listColumn: true,
       lookupResource: '/vehicle/models', lookupLabelKey: 'model_name', autoFillMap: { model_name: 'model_name' },
@@ -51,10 +55,7 @@ const config: VehicleModuleConfig = {
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Completed', value: (r) => String(r.filter((x) => x.status === 'Completed').length) },
         { icon: '⚠', iconClass: 'kpi-icon-red', label: 'No show / cancelled', value: (r) => String(r.filter((x) => x.status === 'No Show' || x.status === 'Cancelled').length) },
   ],
-  sampleRecords: [
-    { id: 'demo-td-1', test_drive_number: 'TD-0001', client_name: 'Arjun Nair', model_name: 'Nexon', drive_date: '2026-09-10', status: 'Scheduled' },
-    { id: 'demo-td-2', test_drive_number: 'TD-0002', client_name: 'Divya Suresh', model_name: 'Creta', drive_date: '2026-09-02', status: 'Completed' },
-  ],
+  sampleRecords: [],
 };
 
 export function VehicleTestDrivePage() {

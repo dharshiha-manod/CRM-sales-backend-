@@ -16,6 +16,10 @@ const config: VehicleModuleConfig = {
   fields: [
     { key: 'application_number', label: 'Finance application number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'FIN' },
     { key: 'client_name', label: 'Client', type: 'text', required: true, listColumn: true },
+    { key: 'client_id', label: 'Client (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/clients', lookupLabelKey: 'client_name', autoFillMap: { client_name: 'client_name' } },
+    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', lookupResource: '/orders', lookupLabelKey: 'order_number', autoFillMap: { order_number: 'order_number' } },
+    { key: 'order_number', label: 'Order number (auto-filled)', type: 'text', readOnly: true, group: 'Link' },
+    { key: 'booking_number', label: 'Booking number (auto-linked)', type: 'text', readOnly: true, group: 'Link' },
     { key: 'vin', label: 'Vehicle (VIN)', type: 'lookup', group: 'Vehicle & order', lookupResource: '/vehicle/units', lookupLabelKey: 'model_name' },
     { key: 'sales_order_reference', label: 'Sales order reference (Core Orders)', type: 'text', group: 'Vehicle & order' },
     { key: 'finance_provider', label: 'Finance provider', type: 'text', listColumn: true, group: 'Loan details' },
@@ -39,10 +43,7 @@ const config: VehicleModuleConfig = {
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Approved / disbursed', value: (r) => String(r.filter((x) => x.status === 'Approved' || x.status === 'Disbursed').length) },
      { icon: '⚠', iconClass: 'kpi-icon-red', label: 'Rejected', value: (r) => String(r.filter((x) => x.status === 'Rejected').length) },
   ],
-  sampleRecords: [
-    { id: 'demo-fin-1', application_number: 'FIN-0001', client_name: 'Ramesh Iyer', finance_provider: 'HDFC Bank', loan_amount: 700000, disbursed_amount: 700000, status: 'Disbursed' },
-    { id: 'demo-fin-2', application_number: 'FIN-0002', client_name: 'Priya Menon', finance_provider: 'ICICI Bank', loan_amount: 1500000, disbursed_amount: 0, status: 'Under Review' },
-  ],
+  sampleRecords: [],
 };
 
 export function VehicleFinanceLoanPage() {

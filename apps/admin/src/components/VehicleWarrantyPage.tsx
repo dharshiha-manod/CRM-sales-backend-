@@ -29,10 +29,7 @@ const config: VehicleModuleConfig = {
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Expiring soon', value: (r) => String(r.filter((x) => x.status === 'Expiring Soon').length) },
        { icon: '⚠', iconClass: 'kpi-icon-red', label: 'Expired', value: (r) => String(r.filter((x) => x.status === 'Expired').length) },
   ],
-  sampleRecords: [
-    { id: 'demo-war-1', warranty_number: 'WAR-0001', client_name: 'Ramesh Iyer', vin: 'MA3ERLF1S00123456', end_date: '2029-09-05', status: 'Active' },
-    { id: 'demo-war-2', warranty_number: 'WAR-0002', client_name: 'Kavitha Raj', vin: 'MA3ABCD1S00987654', end_date: '2026-10-01', status: 'Expiring Soon' },
-  ],
+  sampleRecords: [],
 };
 
 export function VehicleWarrantyPage() {

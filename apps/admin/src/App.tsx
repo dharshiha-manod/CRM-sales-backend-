@@ -62,6 +62,7 @@ import { TradeProfitabilityPage } from './components/TradeProfitabilityPage';
 import { TradeCompliancePage } from './components/TradeCompliancePage';
 import { TradeFinanceLCPage } from './components/TradeFinanceLCPage';
 import { VehicleDealerPage } from './components/VehicleDealerPage';
+import { VehicleInsightsPage } from './components/VehicleInsightsPage';
 import { VehicleCatalogPage } from './components/VehicleCatalogPage';
 import { VehicleTestDrivePage } from './components/VehicleTestDrivePage';
 import { VehicleBookingPage } from './components/VehicleBookingPage';
@@ -198,6 +199,7 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
   content['industry:vehicle:warranty'] = <VehicleWarrantyPage />;
   content['industry:vehicle:service'] = <VehicleServicePage />;
   content['industry:vehicle:returns'] = <VehicleReturnsPage />;
+  content['industry:vehicle:insights'] = <VehicleInsightsPage />;
   const isPharma = activeIndustry === 'pharma'; // Pharma Distributor / Wholesaler hides field-sales / rep menus (other industries unchanged)
    const pageBase = page.split(':').slice(0, 3).join(':');
   const item = (value: Page, text: string, icon: string) => (

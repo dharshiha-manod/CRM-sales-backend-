@@ -178,6 +178,30 @@ type PharmaDetails = {
   drugCategory: '' | 'OTC' | 'Prescription' | 'Narcotic / Psychotropic'; drugSchedule: string; storageCondition: string; coldChain: boolean;
 };
 const blankPharma: PharmaDetails = { genericName: '', composition: '', strength: '', dosageForm: '', manufacturer: '', drugCategory: '', drugSchedule: '', storageCondition: '', coldChain: false };
+
+// Vehicle only — saved as readable text in the existing products.specification column
+// (real DB column, so it works on every device and needs no migration).
+type VehicleDetails = { model: string; variant: string; fuelType: string; transmission: string; color: string; modelYear: string; engineCc: string; seats: string };
+const blankVehicle: VehicleDetails = { model: '', variant: '', fuelType: '', transmission: '', color: '', modelYear: '', engineCc: '', seats: '' };
+const VEHICLE_SPEC_LABELS: [keyof VehicleDetails, string][] = [
+  ['model', 'Model'], ['variant', 'Variant'], ['fuelType', 'Fuel'], ['transmission', 'Transmission'],
+  ['color', 'Colour'], ['modelYear', 'Year'], ['engineCc', 'Engine (cc)'], ['seats', 'Seats'],
+];
+const VEHICLE_FUEL_TYPES = ['Petrol', 'Diesel', 'CNG', 'Electric', 'Hybrid'];
+const VEHICLE_TRANSMISSIONS = ['Manual', 'Automatic', 'AMT', 'CVT'];
+function packVehicleSpec(v: VehicleDetails): string {
+  return VEHICLE_SPEC_LABELS.filter(([key]) => v[key].trim()).map(([key, label]) => `${label}: ${v[key].trim().replace(/\|/g, '/')}`).join(' | ');
+}
+function unpackVehicleSpec(spec?: string | null): VehicleDetails {
+  const out: VehicleDetails = { ...blankVehicle };
+  (spec ?? '').split(' | ').forEach((part) => {
+    const index = part.indexOf(': ');
+    if (index === -1) return;
+    const found = VEHICLE_SPEC_LABELS.find(([, label]) => label === part.slice(0, index));
+    if (found) out[found[0]] = part.slice(index + 2);
+  });
+  return out;
+}
 const DRUG_SCHEDULES = ['None (non-scheduled)', 'Schedule G', 'Schedule H', 'Schedule H1', 'Schedule X', 'Schedule C / C1'];
 const DOSAGE_FORMS = ['Tablet', 'Capsule', 'Syrup', 'Suspension', 'Injection', 'Ointment / Cream', 'Drops', 'Inhaler', 'Powder / Sachet', 'Other'];
 function pharmaFromProduct(product: Product): PharmaDetails {
@@ -279,7 +303,7 @@ type ProductForm = {
   originCountry: string;
   supplierName: string;
   currency: string;
-} & FmcgMeta & { textile: TextileDetails; pharma: PharmaDetails };
+} & FmcgMeta & { textile: TextileDetails; pharma: PharmaDetails; vehicle: VehicleDetails };
 
 const blankForm: ProductForm = {
   productCode: '',
@@ -298,8 +322,9 @@ const blankForm: ProductForm = {
   supplierName: '',
   currency: 'INR',
   ...blankFmcgMeta,
-  textile: blankTextile,
+    textile: blankTextile,
   pharma: blankPharma,
+  vehicle: blankVehicle,
 };
 
 // Related-orders lookup: match by product_code against sale_order_items, the
@@ -311,7 +336,8 @@ export function ProductsPage() {
   const { matchesActiveIndustry, activeIndustryTypeId } = useIndustryScope();
   const { activeIndustry } = useIndustry();
   const isTrading = activeIndustry === 'trading';
-  const isTextile = activeIndustry === 'textile';
+   const isTextile = activeIndustry === 'textile';
+  const isVehicle = activeIndustry === 'vehicle';
   const [supplierNames, setSupplierNames] = useState<string[]>([]);
   const [currencyCodes, setCurrencyCodes] = useState<string[]>(['INR']);
   const [items, setItems] = useState<Product[]>([]);
@@ -575,7 +601,8 @@ export function ProductsPage() {
       supplierName: product.supplier_name ?? '',
       currency: product.currency ?? 'INR',
       textile: textileFromProduct(product),
-      pharma: pharmaFromProduct(product),
+          pharma: pharmaFromProduct(product),
+      vehicle: unpackVehicleSpec(product.specification),
     });
     setMessage('');
     setModalOpen(true);
@@ -630,7 +657,7 @@ export function ProductsPage() {
       unit: form.unit || null,
       taxPercent: form.taxPercent === '' ? (activeIndustry === 'pharma' ? 0 : null) : Number(form.taxPercent),
       hsnCode: form.hsnCode || null,
-      specification: form.specification || null,
+         specification: isVehicle ? (packVehicleSpec(form.vehicle) || null) : (form.specification || null),
       originCountry: form.originCountry || null,
       supplierName: form.supplierName || null,
       currency: form.currency || null,
@@ -845,7 +872,7 @@ export function ProductsPage() {
                       {isTextile && item.textile_details?.imageUrl && <img src={item.textile_details.imageUrl} alt="" style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 6, float: 'left', marginRight: 8 }} />}
                       <strong>{item.product_name}</strong>
                       {isTextile && (item.textile_details?.sizes ?? []).length > 0 && <><br /><small className="text-faint-inline">Sizes: {(item.textile_details?.sizes ?? []).join(', ')}</small></>}
-                      {isTrading && item.specification && <><br /><small className="text-faint-inline">{item.specification}</small></>}
+                     {(isTrading || isVehicle) && item.specification && <><br /><small className="text-faint-inline">{item.specification}</small></>}
                     </td>
                     <td>
                       <span style={{ fontFamily: 'var(--font-mono)' }}>{item.product_code}</span>
@@ -952,9 +979,9 @@ export function ProductsPage() {
                       sidebar Industry Type picker, so every product created
                       or edited here is automatically scoped to that. */}   
                 </label>
-                <label>Barcode<input value={form.barcode} placeholder="Scan or type" onChange={(event) => setForm({ ...form, barcode: event.target.value })} /></label>
+                {!isVehicle && <label>Barcode<input value={form.barcode} placeholder="Scan or type" onChange={(event) => setForm({ ...form, barcode: event.target.value })} /></label>}
                               <label>
-                  Brand
+                  {isVehicle ? 'Make / Brand' : 'Brand'}
                   <select value={form.brand} onChange={(event) => setForm({ ...form, brand: event.target.value })}>
                     <option value="">Select a brand</option>
                     {brands.map((brand) => <option key={brand} value={brand}>{brand}</option>)}
@@ -967,12 +994,14 @@ export function ProductsPage() {
                     {categoryOptions.map((category) => <option key={category} value={category}>{category}</option>)}
                   </select>
                 </label>
+                              {!isVehicle && (
                 <label>
                   Sub-category
                   <input list="subcategory-options" value={form.subCategory} onChange={(event) => setForm({ ...form, subCategory: event.target.value })} />
                   <datalist id="subcategory-options">{subCategories.map((subCategory) => <option key={subCategory} value={subCategory} />)}</datalist>
-                </label>  
-                              <label>
+                </label>
+                )}
+                              {!isVehicle && <label>
                   Unit
                                  <select value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })}>
                     <option value="pcs">Pieces</option>
@@ -982,9 +1011,29 @@ export function ProductsPage() {
                     <option value="litre">Litre</option>
                     {isTrading && <option value="mt">MT (metric tonne)</option>}
                     {isTextile && <><option value="m">Meter</option><option value="yd">Yard</option><option value="roll">Roll</option><option value="than">Than (piece)</option></>}
-                    {savedUnits.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                                      {savedUnits.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
                   </select>
-                </label>  
+                </label>}
+                           {isVehicle && (<>
+                  <label>Model<input placeholder="e.g. Swift" value={form.vehicle.model} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, model: event.target.value } })} /></label>
+                  <label>Variant<input placeholder="e.g. ZXi+" value={form.vehicle.variant} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, variant: event.target.value } })} /></label>
+                  <label>Fuel type
+                    <select value={form.vehicle.fuelType} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, fuelType: event.target.value } })}>
+                      <option value="">Select</option>
+                      {VEHICLE_FUEL_TYPES.map((fuel) => <option key={fuel} value={fuel}>{fuel}</option>)}
+                    </select>
+                  </label>
+                  <label>Transmission
+                    <select value={form.vehicle.transmission} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, transmission: event.target.value } })}>
+                      <option value="">Select</option>
+                      {VEHICLE_TRANSMISSIONS.map((item) => <option key={item} value={item}>{item}</option>)}
+                    </select>
+                  </label>
+                  <label>Colour<input placeholder="e.g. Pearl White" value={form.vehicle.color} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, color: event.target.value } })} /></label>
+                  <label>Model year<input type="number" min="1990" placeholder="e.g. 2026" value={form.vehicle.modelYear} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, modelYear: event.target.value } })} /></label>
+                  <label>Engine capacity (cc)<input type="number" min="0" placeholder="e.g. 1197" value={form.vehicle.engineCc} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, engineCc: event.target.value } })} /></label>
+                  <label>Seating capacity<input type="number" min="1" placeholder="e.g. 5" value={form.vehicle.seats} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, seats: event.target.value } })} /></label>
+                </>)}
                 {activeIndustry === 'pharma' && (<>
                   <label>Generic name<input placeholder="e.g. Atorvastatin" value={form.pharma.genericName} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, genericName: event.target.value } })} /></label>
                   <label>Composition<input placeholder="e.g. Atorvastatin Calcium IP 10 mg" value={form.pharma.composition} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, composition: event.target.value } })} /></label>
@@ -998,7 +1047,7 @@ export function ProductsPage() {
                     <input type="checkbox" style={{ width: 'auto', padding: 0, border: 'none', boxShadow: 'none', background: 'none' }} checked={form.pharma.coldChain} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, coldChain: event.target.checked } })} /> Cold-chain product (2–8°C)
                   </label>
                 </>)}
-{!isTextile && <label>Pack size<input placeholder={PACK_SIZE_PLACEHOLDERS[activeIndustry] ?? 'e.g. 10 pcs per box'} value={form.packSize} onChange={(event) => setForm({ ...form, packSize: event.target.value })} /></label>}
+{!isTextile && !isVehicle && <label>Pack size<input placeholder={PACK_SIZE_PLACEHOLDERS[activeIndustry] ?? 'e.g. 10 pcs per box'} value={form.packSize} onChange={(event) => setForm({ ...form, packSize: event.target.value })} /></label>}
                 {isTextile && (
                   <>
                     <label>
@@ -1073,7 +1122,7 @@ export function ProductsPage() {
                 )}
 {!isTrading && (
   <>
-    <label>MRP (₹)<input min="0" type="number" step="0.01" value={form.mrp} onChange={(event) => { const mrp = event.target.value; setForm((current) => ({ ...current, mrp, sellingPrice: computeSellingPrice(mrp, current.discountPercent) || current.sellingPrice })); }} /></label>
+    <label>{isVehicle ? 'Ex-showroom price (₹)' : 'MRP (₹)'}<input min="0" type="number" step="0.01" value={form.mrp} onChange={(event) => { const mrp = event.target.value; setForm((current) => ({ ...current, mrp, sellingPrice: computeSellingPrice(mrp, current.discountPercent) || current.sellingPrice })); }} /></label>
     <label>Discount (%)<input min="0" max="100" type="number" step="0.01" value={form.discountPercent} onChange={(event) => { const discountPercent = event.target.value; setForm((current) => ({ ...current, discountPercent, sellingPrice: computeSellingPrice(current.mrp, discountPercent) || current.sellingPrice })); }} /></label>
   </>
 )}
@@ -1081,7 +1130,7 @@ export function ProductsPage() {
 <label>{isTrading ? 'Selling price (₹)' : 'Selling price (₹) — auto from MRP & Discount'}<input required min="0" type="number" step="0.01" value={form.sellingPrice} readOnly={!isTrading} disabled={!isTrading && Boolean(form.mrp)} onChange={(event) => setForm({ ...form, sellingPrice: event.target.value })} /></label>
                 <label>Tax / GST (%)<input min="0" max="100" type="number" step="0.01" value={form.taxPercent} onChange={(event) => setForm({ ...form, taxPercent: event.target.value })} /></label>
                 <label>Final price incl. GST (₹)<input readOnly disabled value={form.sellingPrice && form.taxPercent ? (Number(form.sellingPrice) + (Number(form.sellingPrice) * Number(form.taxPercent)) / 100).toFixed(2) : form.sellingPrice} /></label>
-                <label>{isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '') ? 'Total stock (sum of colours)' : 'Opening stock'}<input readOnly={isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '')} min="0" type="number" step="1" value={form.stockQuantity} onChange={(event) => setForm({ ...form, stockQuantity: event.target.value })} /></label>
+                <label>{isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '') ? 'Total stock (sum of colours)' : isVehicle ? 'Units in stock' : 'Opening stock'}<input readOnly={isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '')} min="0" type="number" step="1" value={form.stockQuantity} onChange={(event) => setForm({ ...form, stockQuantity: event.target.value })} /></label>
                 <label>Minimum stock level<input min="0" type="number" step="1" value={form.minStockLevel} onChange={(event) => setForm({ ...form, minStockLevel: event.target.value })} /></label>
                 {showBatchUi && <label>Shelf life (days)<input min="1" type="number" step="1" placeholder="e.g. 180" value={form.shelfLifeDays} onChange={(event) => setForm({ ...form, shelfLifeDays: event.target.value })} /><small className="text-faint-inline">Expiry = manufacturing date + this</small></label>}
                 {activeIndustry !== 'fmcg' && !isTextile && (<>
@@ -1117,9 +1166,10 @@ export function ProductsPage() {
               </div>
               <dl className="detail-dl">
                 <dt>SKU</dt><dd>{viewing.product_code}</dd>
-                <dt>Barcode</dt><dd>{meta.barcode || 'Not recorded'}</dd>
+             {!isVehicle && <><dt>Barcode</dt><dd>{meta.barcode || 'Not recorded'}</dd></>}
                 <dt>Brand</dt><dd>{meta.brand || 'Not recorded'}</dd>
-                <dt>Category</dt><dd>{viewing.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</dd>
+      <dt>Category</dt><dd>{viewing.category ?? '—'}{meta.subCategory ? ` / ${meta.subCategory}` : ''}</dd>
+                {isVehicle && viewing.specification && <><dt>Vehicle details</dt><dd>{viewing.specification}</dd></>}
                 {activeIndustry === 'pharma' && (() => {
                   const d = viewing.pharma_details;
                   return (
@@ -1160,7 +1210,7 @@ export function ProductsPage() {
                     <dt>Currency</dt><dd>{viewing.currency || 'INR'}</dd>
                   </>
                 )}
-                <dt>Unit / Pack size</dt><dd>{meta.unit}{meta.packSize ? ` · ${meta.packSize}` : ''}</dd>
+            {!isVehicle && <><dt>Unit / Pack size</dt><dd>{meta.unit}{meta.packSize ? ` · ${meta.packSize}` : ''}</dd></>}
              <dt>Selling price</dt><dd>{formatMoney(Number(viewing.selling_price))}</dd>
                 <dt>Purchase price</dt><dd>{viewing.cost_price == null ? 'Not recorded' : formatMoney(Number(viewing.cost_price))}</dd>
                 {activeIndustry === 'fmcg' && (() => {

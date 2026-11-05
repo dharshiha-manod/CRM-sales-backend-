@@ -1,8 +1,10 @@
 import { VehicleMasterPage, VehicleModuleConfig } from './VehicleMasterPage';
+import { consumeVehicleDraft } from '../lib/vehicleDraftHandoff';
 
 const STATUSES = ['Requested', 'Reserved', 'Confirmed', 'Allocation Pending', 'Vehicle Allocated', 'Converted to Order', 'Cancelled'];
 
 const config: VehicleModuleConfig = {
+  consumePendingDraft: () => consumeVehicleDraft('booking'),
   resource: '/vehicle/bookings',
   eyebrowModule: 'VEHICLE BOOKING',
   title: 'Vehicle booking / reservation',
@@ -16,6 +18,10 @@ const config: VehicleModuleConfig = {
   fields: [
     { key: 'booking_number', label: 'Booking number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'BK' },
     { key: 'client_name', label: 'Client', type: 'text', required: true, listColumn: true },
+    { key: 'client_id', label: 'Client (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/clients', lookupLabelKey: 'client_name', autoFillMap: { client_name: 'client_name' } },
+    { key: 'lead_id', label: 'Lead (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/leads', industryScoped: true, lookupLabelKey: 'company_name', autoFillMap: { client_name: 'company_name' } },
+    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', lookupResource: '/orders', lookupLabelKey: 'order_number', autoFillMap: { order_number: 'order_number' } },
+    { key: 'order_number', label: 'Order number (auto-filled)', type: 'text', readOnly: true, group: 'Link' },
     {
       key: 'model_id', label: 'Model / variant', type: 'lookup', listColumn: true,
       lookupResource: '/vehicle/models', lookupLabelKey: 'model_name', autoFillMap: { model_name: 'model_name' },
@@ -46,10 +52,7 @@ const config: VehicleModuleConfig = {
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Converted to order', value: (r) => String(r.filter((x) => x.status === 'Converted to Order').length) },
      { icon: '₹', iconClass: 'kpi-icon-school', label: 'Booking amount collected', value: (r) => `₹${r.reduce((sum, x) => sum + (Number(x.booking_amount) || 0), 0).toLocaleString()}` },
   ],
-  sampleRecords: [
-    { id: 'demo-booking-1', booking_number: 'BK-0001', client_name: 'Ramesh Iyer', model_name: 'Nexon', dealer_name: 'City Motors', expected_delivery_date: '2026-10-05', booking_amount: 25000, status: 'Confirmed' },
-    { id: 'demo-booking-2', booking_number: 'BK-0002', client_name: 'Priya Menon', model_name: 'Creta', dealer_name: 'Highway Auto', expected_delivery_date: '2026-10-20', booking_amount: 50000, status: 'Allocation Pending' },
-  ],
+  sampleRecords: [],
 };
 
 export function VehicleBookingPage() {

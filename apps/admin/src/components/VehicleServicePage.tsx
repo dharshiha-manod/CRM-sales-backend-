@@ -1,4 +1,7 @@
 import { VehicleMasterPage, VehicleModuleConfig } from './VehicleMasterPage';
+import { api } from '../lib/api';
+import { useIndustryScope } from '../industry/useIndustryScope';
+import { ServiceBillData, openServiceBill } from '../lib/vehicleBill';
 
 const SERVICE_TYPES = ['First Service', 'Periodic Service', 'Repair', 'Inspection', 'Breakdown', 'Warranty Service'];
 const STATUSES = ['Scheduled', 'In Progress', 'Completed', 'Cancelled'];
@@ -24,8 +27,8 @@ const config: VehicleModuleConfig = {
     { key: 'odometer', label: 'Odometer', type: 'number', group: 'Service' },
     { key: 'service_advisor', label: 'Service advisor', type: 'text', group: 'Service' },
     { key: 'workshop', label: 'Workshop', type: 'text', group: 'Service' },
-    { key: 'parts_used', label: 'Parts used', type: 'textarea', group: 'Cost' },
-    { key: 'labour', label: 'Labour', type: 'text', group: 'Cost' },
+    { key: 'parts_used', label: 'Parts used (one per line: PART-CODE x qty — taken from Parts stock on Completed)', type: 'textarea', group: 'Cost' },
+    { key: 'labour', label: 'Labour (amount)', type: 'text', group: 'Cost' },
     { key: 'service_cost', label: 'Service cost', type: 'number', listColumn: true, group: 'Cost' },
     { key: 'complaint', label: 'Complaint', type: 'textarea', group: 'Resolution' },
     { key: 'resolution', label: 'Resolution', type: 'textarea', group: 'Resolution' },
@@ -39,11 +42,21 @@ const config: VehicleModuleConfig = {
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Completed', value: (r) => String(r.filter((x) => x.status === 'Completed').length) },
       { icon: '₹', iconClass: 'kpi-icon-school', label: 'Service revenue', value: (r) => `₹${r.reduce((sum, x) => sum + (Number(x.service_cost) || 0), 0).toLocaleString()}` },
   ],
-  sampleRecords: [
-    { id: 'demo-srv-1', service_number: 'SRV-0001', client_name: 'Ramesh Iyer', service_type: 'Periodic Service', service_date: '2026-08-15', service_cost: 4200, status: 'Completed' },
-    { id: 'demo-srv-2', service_number: 'SRV-0002', client_name: 'Suresh Babu', service_type: 'Repair', service_date: '2026-09-01', service_cost: 8900, status: 'In Progress' },
-  ],
+  sampleRecords: [],
 };
+function BillButton({ id }: { id: string }) {
+  const { activeIndustryTypeId } = useIndustryScope();
+  return (
+    <button type="button" className="quiet-button" onClick={async () => {
+      try {
+        const q = activeIndustryTypeId ? `?industryTypeId=${activeIndustryTypeId}` : '';
+        const res = await api<{ data: ServiceBillData }>(`/vehicle/service-records/${id}/bill${q}`);
+        openServiceBill(res.data);
+      } catch (e) { window.alert(e instanceof Error ? e.message : 'Could not open the service bill'); }
+    }}>Service bill</button>
+  );
+}
+
 export function VehicleServicePage() {
-  return <VehicleMasterPage config={config} />;
+  return <VehicleMasterPage config={{ ...config, rowActions: (r) => (typeof r.id === 'string' && !r.id.startsWith('demo-') ? <BillButton id={r.id} /> : null) }} />;
 }
