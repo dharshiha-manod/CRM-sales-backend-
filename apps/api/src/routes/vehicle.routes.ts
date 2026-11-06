@@ -19,6 +19,8 @@ import type { IndustryScope } from '../lib/industry-scope.js';
 import { runVehicleAftersales, scheduleNextService } from '../services/vehicle-aftersales.service.js';
 import { parseLabourAmount, parsePartsUsed } from '../lib/vehicle-calc.js';
 import { enqueueCustomerMessage, processCustomerMessages } from '../lib/vehicle-notify.js';
+import { customerFacts, schemeFitsCustomer, schemeRefsToIds, vehicleSchemeUsage } from '../lib/vehicle-schemes.js';
+import { ALLOWED_DOCUMENT_TYPES, DOCUMENT_BUCKET, MAX_DOCUMENT_BYTES, defaultChecklistFor, documentsComplete, ensureDocumentBucket, normalizeChecklist, pendingDocumentNames, type DeliveryDoc } from '../lib/vehicle-documents.js';
 import { vehicleHandover, vehicleHealth, vehicleOverview, vehicleReports, vehicleRepair, vehicleServiceBill } from '../services/vehicle-insights.service.js';
 
 export const vehicleRouter = Router();
@@ -81,7 +83,7 @@ async function setUnitStatus(orgId: string, industryTypeId: string, vin: unknown
 
 // ---------------------------------------------------------------- normalise (auto-fill / calculate)
 // Runs on every create / update. `m` = existing row merged with the incoming change.
-async function normalise(r: VehicleResource, orgId: string, industryTypeId: string, payload: Row, existing: Row | null) {
+async function normalise(r: VehicleResource, orgId: string, industryTypeId: string, payload: Row, existing: Row | null, role?: string) {
   const m: Row = { ...(existing ?? {}), ...payload };
   for (const k of ['vin', 'new_vehicle_vin']) {
     if (typeof payload[k] === 'string') payload[k] = (payload[k] as string).trim().toUpperCase();
@@ -90,8 +92,15 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
   if (r.columns.includes('model_id') && has(payload.model_id)) {
     const model = await findOne('vehicle_models', orgId, industryTypeId, 'id', payload.model_id);
     if (!model) throw bad('The selected model does not exist.', 'INVALID_REFERENCE');
-    payload.model_name = model.model_name;
+       payload.model_name = model.model_name;
     if (r.table === 'vehicle_units') payload.variant = model.variant ?? null;
+    // Blank VIN on a new unit -> temporary VIN, same pattern as Products "Opening units".
+    if (r.table === 'vehicle_units' && !existing && !has(payload.vin)) {
+      let n = (await countWhere('vehicle_units', orgId, 'model_id', payload.model_id)) + 1;
+      const tempVin = (i: number) => `TEMP-${String(model.model_code)}-${String(i).padStart(3, '0')}`;
+      while (await findOne('vehicle_units', orgId, industryTypeId, 'vin', tempVin(n))) n += 1;
+      payload.vin = tempVin(n);
+    }
   }
   if (r.columns.includes('dealer_id') && has(payload.dealer_id)) {
     const dealer = await findOne('vehicle_dealers', orgId, industryTypeId, 'id', payload.dealer_id);
@@ -105,6 +114,11 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
       if (!has(m.model_id) && unit.model_id) { payload.model_id = unit.model_id; payload.model_name = unit.model_name; }
       if (!has(m.dealer_id) && unit.dealer_id) { payload.dealer_id = unit.dealer_id; payload.dealer_name = unit.dealer_name; }
     }
+  }
+  // Automation: a booking with no dealer takes the showroom's own Branch, when the showroom has exactly one.
+  if (r.table === 'vehicle_bookings' && !has(m.dealer_id) && !has(payload.dealer_id)) {
+    const { data: branches } = await supabaseAdmin.from('vehicle_dealers').select('id, dealer_name').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('dealer_type', 'Branch').limit(2);
+    if (branches && branches.length === 1) { payload.dealer_id = (branches[0] as Row).id; payload.dealer_name = (branches[0] as Row).dealer_name; }
   }
   if (r.table === 'vehicle_deliveries' && has(payload.vin)) {
     const unit = await findOne('vehicle_units', orgId, industryTypeId, 'vin', payload.vin);
@@ -133,7 +147,8 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
     payload.order_number = (ord as Row).order_number;
   }
   // Booking -> Core Order: a booking turned into an order links to the client's matching open order (no second order ledger).
-  if (r.table === 'vehicle_bookings' && m.status === 'Converted to Order' && !has(m.order_id) && !has(payload.order_id)) {
+  // Automation: any live booking (not only 'Converted to Order') links itself to the client's matching open Core order, so nobody picks it by hand.
+  if (r.table === 'vehicle_bookings' && m.status !== 'Cancelled' && !has(m.order_id) && !has(payload.order_id)) {
     const clientId = has(m.client_id) ? String(m.client_id) : has(payload.client_id) ? String(payload.client_id) : null;
     const model = has(m.model_id) ? await findOne('vehicle_models', orgId, industryTypeId, 'id', m.model_id) : null;
     if (clientId && model && has(model.product_id)) {
@@ -154,6 +169,19 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
     if (has(scheme.end_date) && String(scheme.end_date) < today) throw bad(`Scheme "${key}" ended on ${String(scheme.end_date)}.`, 'SCHEME_NOT_ACTIVE');
     if (has(scheme.model_id) && has(m.model_id) && scheme.model_id !== m.model_id) throw bad(`Scheme "${key}" is for ${String(scheme.model_name)}, not the model on this booking.`, 'SCHEME_NOT_APPLICABLE');
     if (has(scheme.dealer_id) && has(m.dealer_id) && scheme.dealer_id !== m.dealer_id) throw bad(`Scheme "${key}" is for dealer ${String(scheme.dealer_name)}, not the dealer on this booking.`, 'SCHEME_NOT_APPLICABLE');
+    // A manager / admin can approve a scheme; everyone else is held back by the rules below.
+    const canApprove = ['super_admin', 'admin', 'sales_manager'].includes(String(role ?? ''));
+    if (str(scheme.approval_required) === 'Yes' && !canApprove) throw bad(`Scheme "${key}" needs manager approval. Ask a manager to select it on this booking.`, 'SCHEME_APPROVAL_REQUIRED');
+    if (has(scheme.customer_type) && scheme.customer_type !== 'All customers') {
+      const facts = await customerFacts(orgId, m.client_id, has(m.order_id) ? String(m.order_id) : null);
+      if (!canApprove && !(facts && schemeFitsCustomer(scheme.customer_type, facts.clientType, facts.isRepeat))) throw bad(`Scheme "${key}" is only for ${String(scheme.customer_type)} customers${facts ? '' : ' (pick the client on this booking first)'}. Ask a manager to select it for this customer.`, 'SCHEME_NOT_APPLICABLE');
+    }
+    // The linked order may already carry a scheme discount: another discount scheme cannot be stacked on the booking (an Exchange Bonus still can).
+    if (has(m.order_id) && (num(scheme.discount_value) > 0 || num(scheme.cash_discount) > 0)) {
+      const { data: lines } = await supabaseAdmin.from('sale_order_items').select('vehicle_scheme_ref, vehicle_scheme_name').eq('order_id', String(m.order_id)).not('vehicle_scheme_ref', 'is', null);
+      const applied = ((lines ?? []) as Row[]).flatMap((l) => schemeRefsToIds(l.vehicle_scheme_ref));
+      if (applied.length && !applied.includes(str(scheme.scheme_id))) throw bad(`Order ${str(m.order_number)} already has the scheme "${((lines ?? []) as Row[]).map((l) => str(l.vehicle_scheme_name)).filter(Boolean).join(', ')}" applied. Only an Exchange Bonus scheme can be added on the booking.`, 'SCHEME_ALREADY_APPLIED');
+    }
     const benefit = [
       num(scheme.cash_discount) > 0 ? `cash discount ${num(scheme.cash_discount)}` : '',
       num(scheme.discount_value) > 0 ? `${String(scheme.discount_type ?? 'discount')} ${num(scheme.discount_value)}` : '',
@@ -162,6 +190,26 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
     ].filter(Boolean).join(', ');
     const note = `Scheme ${String(scheme.scheme_name)}${benefit ? ` — ${benefit}` : ''}.`;
     if (!str(m.remarks).includes(`Scheme ${String(scheme.scheme_name)}`)) payload.remarks = [str(m.remarks), note].filter(Boolean).join('\n');
+  }
+  if (r.table === 'vehicle_schemes') {
+    if (has(m.start_date) && has(m.end_date) && String(m.end_date) < String(m.start_date)) throw bad('End date cannot be before the start date.', 'INVALID_DATE_RANGE');
+    const dtype = String(m.discount_type ?? '');
+    if (['Percentage', 'Fixed Amount', 'Per Vehicle'].includes(dtype) && num(m.discount_value) <= 0) throw bad('Enter the discount value.', 'INVALID_DISCOUNT');
+    if (dtype === 'Exchange Bonus' && num(m.exchange_bonus) <= 0) throw bad('Enter the exchange bonus amount.', 'INVALID_DISCOUNT');
+    // boxes that do not belong to the chosen type are cleared, so old hidden values never count as credit
+    const keep: Record<string, string[]> = { 'Percentage': ['discount_value'], 'Fixed Amount': ['discount_value'], 'Per Vehicle': ['discount_value'], 'Exchange Bonus': ['exchange_bonus'], 'Campaign Offer': ['cash_discount', 'exchange_bonus'] };
+    if (keep[dtype]) for (const k of ['discount_value', 'cash_discount', 'exchange_bonus']) if (!keep[dtype]!.includes(k) && has(m[k])) payload[k] = null;
+    if (String(m.discount_type) === 'Percentage' && num(m.discount_value) > 100) throw bad('A percentage discount cannot be more than 100.', 'INVALID_DISCOUNT');
+    if (!has(m.status)) payload.status = 'Active'; // a new scheme is live unless saved as Draft
+    if (!has(m.approval_required)) payload.approval_required = 'No';
+    if (!has(m.terms)) { // written automatically when left blank
+      const bits = [`Valid ${has(m.start_date) ? `from ${String(m.start_date)}` : 'from today'}${has(m.end_date) ? ` to ${String(m.end_date)}` : ' until withdrawn'}`];
+      if (has(m.model_name)) bits.push(`on ${String(m.model_name)}`);
+      if (has(m.dealer_name)) bits.push(`at ${String(m.dealer_name)}`);
+      if (has(m.customer_type) && m.customer_type !== 'All customers') bits.push(`for ${String(m.customer_type)} customers`);
+      payload.terms = `${bits.join(' ')}.`;
+    }
+    if ((payload.status ?? m.status) === 'Active' && has(m.end_date) && String(m.end_date) < todayLocal()) payload.status = 'Expired'; // already over
   }
   if (r.table === 'vehicle_finance_applications') {
     const loan = num(m.loan_amount), rate = num(m.interest_rate), n = num(m.tenure_months);
@@ -178,6 +226,9 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
   }
   if (r.table === 'vehicle_registrations' && m.status === 'Completed' && !has(m.completion_date)) payload.completion_date = todayLocal();
   if (r.table === 'vehicle_deliveries') {
+    // Document checklist (Vehicle only): when a delivery has one, Documentation follows it by itself - it cannot be set by hand.
+    const checklist = Array.isArray(m.document_checklist) ? (m.document_checklist as DeliveryDoc[]) : [];
+    if (checklist.length) { const docStatus = documentsComplete(checklist) ? 'Complete' : 'Pending'; payload.documentation_status = docStatus; m.documentation_status = docStatus; }
     const status = String(m.status ?? '');
     if (['Preparation', 'PDI Pending', 'Documentation Pending', 'Payment Pending', 'Ready for Delivery'].includes(status)) {
       payload.status = deliveryStageFor(m);
@@ -257,7 +308,7 @@ async function assertRules(r: VehicleResource, orgId: string, ind: string, m: Ro
       if (existing?.id) q = q.neq('id', existing.id as string);
       const { data: others, error } = await q;
       if (error) throw error;
-      if ((others ?? []).length) throw new AppError(409, 'VIN_ALREADY_BOOKED', `Vehicle ${String(m.vin)} is already held by booking ${String((others as Row[])[0]!.booking_number)}.`);
+      if ((others ?? []).length) throw new AppError(409, 'VIN_ALREADY_BOOKED', `Vehicle ${String(m.vin)} is already held by booking ${String((others as Row[])[0]!.booking_number)}. Open that booking and edit it instead of adding a new one, or pick a different Available VIN.`);
       if (BLOCKED_UNIT.includes(String(unit.status))) throw bad(`Vehicle ${String(m.vin)} is ${String(unit.status)} and cannot be booked.`);
     }
   }
@@ -265,7 +316,9 @@ async function assertRules(r: VehicleResource, orgId: string, ind: string, m: Ro
     if (!has(m.vin)) throw bad('Select the vehicle (VIN) before marking the delivery as Delivered.');
     const gaps: string[] = [];
     if (m.pdi_status !== 'Passed') gaps.push('PDI must be Passed');
-    if (m.documentation_status !== 'Complete') gaps.push('documentation must be Complete');
+    const checklist = Array.isArray(m.document_checklist) ? (m.document_checklist as DeliveryDoc[]) : [];
+    if (checklist.length && !documentsComplete(checklist)) gaps.push(`documents still pending: ${pendingDocumentNames(checklist).join(', ')}`);
+    else if (m.documentation_status !== 'Complete') gaps.push('documentation must be Complete');
     if (m.payment_status !== 'Complete') gaps.push('payment must be Complete');
     // insurance blocks handover only when the booking asked for it (older deliveries with a default Pending are not stopped)
     if (!['Complete', 'Not Applicable'].includes(String(m.insurance_status)) && has(m.booking_number)) {
@@ -523,6 +576,14 @@ async function assertCanDelete(r: VehicleResource, orgId: string, row: Row) {
     const n = (await countWhere('vehicle_units', orgId, 'model_id', row.id)) + (await countWhere('vehicle_bookings', orgId, 'model_id', row.id)) + (await countWhere('vehicle_test_drives', orgId, 'model_id', row.id)) + (await countWhere('vehicle_schemes', orgId, 'model_id', row.id));
     if (n) throw inUse(`${n} unit / booking / test drive / scheme record(s)`);
   }
+  if (r.table === 'vehicle_schemes') {
+    const used = (await countWhere('vehicle_bookings', orgId, 'scheme_name', row.scheme_name)) + (await countWhere('vehicle_bookings', orgId, 'scheme_name', row.scheme_id));
+    const like = `%|${str(row.scheme_id)}|%`;
+    const { count: orderLines } = await supabaseAdmin.from('sale_order_items').select('id, sale_orders!inner(organization_id)', { count: 'exact', head: true }).like('vehicle_scheme_ref', like).eq('sale_orders.organization_id', orgId);
+    const { count: quoteLines } = await supabaseAdmin.from('quotation_items').select('id, quotations!inner(organization_id)', { count: 'exact', head: true }).like('vehicle_scheme_ref', like).eq('quotations.organization_id', orgId);
+    const n = used + (orderLines ?? 0) + (quoteLines ?? 0);
+    if (n) throw new AppError(409, 'RECORD_IN_USE', `This scheme is used by ${n} booking / order / quotation record(s), so it cannot be deleted. Set its status to Suspended or Expired instead.`);
+  }
   if (r.table === 'vehicle_dealers') {
     const n = (await countWhere('vehicle_units', orgId, 'dealer_id', row.id)) + (await countWhere('vehicle_bookings', orgId, 'dealer_id', row.id)) + (await countWhere('vehicle_deliveries', orgId, 'dealer_id', row.id));
     if (n) throw inUse(`${n} unit / booking / delivery record(s)`);
@@ -590,6 +651,64 @@ vehicleRouter.get('/vehicle/deliveries/:id/handover', authenticate, reader, asyn
   if (!data) throw new AppError(404, 'RECORD_NOT_FOUND', 'Delivery record was not found.');
   res.json({ data });
 });
+// ---------------------------------------------------------------- delivery document checklist
+const DELIVERY_OPEN = ['Preparation', 'PDI Pending', 'Documentation Pending', 'Payment Pending', 'Ready for Delivery'];
+const deliveryNotFound = () => new AppError(404, 'RECORD_NOT_FOUND', 'Delivery record was not found.');
+async function loadDelivery(req: Req): Promise<Row> {
+  const { data, error } = await supabaseAdmin.from('vehicle_deliveries').select('*').eq('organization_id', org(req)).eq('id', idOf(req)).maybeSingle();
+  if (error) throw error;
+  if (!data) throw deliveryNotFound();
+  assertRecordInScope(req.industryScope!, (data as Row).industry_type_id as string | null, deliveryNotFound());
+  return data as Row;
+}
+vehicleRouter.get('/vehicle/deliveries/:id/documents', authenticate, reader, async (req, res) => {
+  const d = await loadDelivery(req);
+  const saved = Array.isArray(d.document_checklist) && d.document_checklist.length > 0;
+  const documents = saved ? (d.document_checklist as DeliveryDoc[]) : await defaultChecklistFor(org(req), String(d.industry_type_id), d);
+  res.json({ data: { delivery_number: d.delivery_number, client_name: d.client_name, status: d.status, locked: ['Delivered', 'Cancelled'].includes(String(d.status)), saved, documents } });
+});
+const docPrefix = (req: Req, d: Row) => `${org(req)}/${String(d.id)}/`;
+// Step 1 of an upload: the API approves the file (type, size, this delivery's own folder) and hands back a one-time upload token.
+vehicleRouter.post('/vehicle/deliveries/:id/documents/upload-url', authenticate, manager, async (req, res) => {
+  const d = await loadDelivery(req);
+  if (['Delivered', 'Cancelled'].includes(String(d.status))) throw bad('This delivery is closed, so its documents can no longer be changed.');
+  const b = (req.body ?? {}) as { contentType?: unknown; size?: unknown };
+  const ext = ALLOWED_DOCUMENT_TYPES[String(b.contentType)];
+  if (!ext) throw bad('Only PDF, JPG, PNG, WEBP or HEIC files are allowed.');
+  const size = Number(b.size);
+  if (!size || size > MAX_DOCUMENT_BYTES) throw bad('The file must be under 10 MB.');
+  await ensureDocumentBucket();
+  const path = `${docPrefix(req, d)}${crypto.randomUUID()}.${ext}`;
+  const { data, error } = await supabaseAdmin.storage.from(DOCUMENT_BUCKET).createSignedUploadUrl(path);
+  if (error || !data) throw new AppError(500, 'UPLOAD_NOT_READY', `Could not start the upload: ${error?.message ?? 'unknown error'}`);
+  res.json({ data: { bucket: DOCUMENT_BUCKET, path, token: data.token } });
+});
+// View a file: a 5 minute signed link, only for files inside this delivery's folder.
+vehicleRouter.get('/vehicle/deliveries/:id/documents/file', authenticate, reader, async (req, res) => {
+  const d = await loadDelivery(req);
+  const path = String(req.query.path ?? '');
+  if (!path.startsWith(docPrefix(req, d)) || path.includes('..')) throw bad('This file does not belong to this delivery.');
+  const { data, error } = await supabaseAdmin.storage.from(DOCUMENT_BUCKET).createSignedUrl(path, 300);
+  if (error || !data) throw new AppError(404, 'FILE_NOT_FOUND', 'The file could not be found.');
+  res.json({ data: { url: data.signedUrl } });
+});
+vehicleRouter.put('/vehicle/deliveries/:id/documents', authenticate, manager, async (req, res) => {
+  const d = await loadDelivery(req);
+  if (['Delivered', 'Cancelled'].includes(String(d.status))) throw bad('This delivery is closed, so its documents can no longer be changed.');
+  const parsed = normalizeChecklist((req.body as { documents?: unknown } | undefined)?.documents, docPrefix(req, d));
+  if (!parsed.ok) throw bad(parsed.message);
+  const payload: Row = { document_checklist: parsed.docs };
+  if (parsed.docs.length) payload.documentation_status = documentsComplete(parsed.docs) ? 'Complete' : 'Pending';
+  if (DELIVERY_OPEN.includes(String(d.status))) payload.status = deliveryStageFor({ ...d, ...payload });
+  const { data, error } = await supabaseAdmin.from('vehicle_deliveries').update(payload).eq('organization_id', org(req)).eq('id', idOf(req)).select().maybeSingle();
+  if (error) {
+    if (/document_checklist/.test(String(error.message))) throw bad('The document_checklist column is missing. Run: alter table vehicle_deliveries add column if not exists document_checklist jsonb;');
+    throw error;
+  }
+  if (!data) throw deliveryNotFound();
+  await afterSave(resOf('deliveries'), org(req), String(d.industry_type_id), data as Row, d, req.industryScope, req.auth?.sub);
+  res.json({ data });
+});
 vehicleRouter.get('/vehicle/service-records/:id/bill', authenticate, reader, async (req, res) => {
   const data = await vehicleServiceBill(org(req), insightInd(req), idOf(req));
   if (!data) throw new AppError(404, 'RECORD_NOT_FOUND', 'Service record was not found.');
@@ -617,7 +736,7 @@ vehicleRouter.post('/vehicle/units/bulk', authenticate, manager, async (req, res
       const ind = resolveIndustryTypeId(req.industryScope!, typeof payload.industry_type_id === 'string' ? payload.industry_type_id : (typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : undefined));
       if (!ind) throw bad('industry_type_id is required.');
       validateValues(r, payload, false);
-      const merged = await normalise(r, org(req), ind, payload, null);
+      const merged = await normalise(r, org(req), ind, payload, null, req.industryScope?.role);
       if (!has(merged.vin)) throw bad('vin is required.');
       await assertRules(r, org(req), ind, merged, null);
       const { data, error } = await supabaseAdmin.from(r.table).insert({ ...payload, industry_type_id: ind, organization_id: org(req) }).select().single();
@@ -661,6 +780,26 @@ for (const r of VEHICLE_RESOURCES) {
     if (ind) q = q.eq('industry_type_id', ind);
     const { data, error } = await q;
     if (error) throw error;
+    if (r.table === 'vehicle_schemes') { // usage numbers for the Schemes page (how often a scheme was used and what it cost)
+      try {
+        const usage = await vehicleSchemeUsage(org(req));
+        const { data: bk } = await supabaseAdmin.from('vehicle_bookings').select('scheme_name').eq('organization_id', org(req)).neq('status', 'Cancelled').not('scheme_name', 'is', null);
+        const booked = new Map<string, number>();
+        for (const b of (bk ?? []) as Row[]) booked.set(str(b.scheme_name), (booked.get(str(b.scheme_name)) ?? 0) + 1);
+        // model / branch names always come from the linked Models / Dealers record (older schemes saved only the id)
+        const { data: mm } = await supabaseAdmin.from('vehicle_models').select('id, model_name, variant').eq('organization_id', org(req));
+        const { data: dd } = await supabaseAdmin.from('vehicle_dealers').select('id, dealer_name').eq('organization_id', org(req));
+        const modelName = new Map(((mm ?? []) as Row[]).map((m) => [str(m.id), [str(m.model_name), str(m.variant)].filter(Boolean).join(' ')]));
+        const dealerName = new Map(((dd ?? []) as Row[]).map((d) => [str(d.id), str(d.dealer_name)]));
+        for (const row of (data ?? []) as Row[]) {
+          if (has(row.model_id) && modelName.get(str(row.model_id))) row.model_name = modelName.get(str(row.model_id));
+          if (has(row.dealer_id) && dealerName.get(str(row.dealer_id))) row.dealer_name = dealerName.get(str(row.dealer_id));
+          const u = usage.get(str(row.scheme_id));
+          row.times_used = u?.orders ?? 0; row.vehicles_sold = u?.vehicles ?? 0; row.total_discount = u?.discount ?? 0;
+          row.bookings = (booked.get(str(row.scheme_name)) ?? 0) + (booked.get(str(row.scheme_id)) ?? 0);
+        }
+      } catch (e) { logger.warn({ err: e }, 'vehicle schemes: usage numbers unavailable'); }
+    }
     res.json({ data });
   });
 
@@ -673,13 +812,13 @@ for (const r of VEHICLE_RESOURCES) {
   });
 
   vehicleRouter.post(base, authenticate, writer, async (req, res) => {
-    const payload = clean(r, req.body);
+    const payload = clean(r, r.table === 'vehicle_units' ? { status: 'Received', ...req.body } : req.body);
     const ind = resolveIndustryTypeId(req.industryScope!, typeof payload.industry_type_id === 'string' ? payload.industry_type_id : undefined);
     if (!ind) throw bad('industry_type_id is required.');
     validateValues(r, payload, false);
     const autoCode = !has(payload[r.codeField]) && r.codeField !== 'vin';
     if (autoCode) payload[r.codeField] = await nextVehicleCode(r.table, r.prefix, org(req));
-    const merged = await normalise(r, org(req), ind, payload, null);
+    const merged = await normalise(r, org(req), ind, payload, null, req.industryScope?.role);
     const missing = r.requiredFields.filter((k) => !has(merged[k]));
     if (missing.length) throw bad(`${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} required.`);
     await assertRules(r, org(req), ind, merged, null);
@@ -708,7 +847,7 @@ for (const r of VEHICLE_RESOURCES) {
     assertRecordInScope(req.industryScope!, ex.industry_type_id as string | null, notFound());
     const ind = ex.industry_type_id as string;
     if (ex.status === 'Delivered' && r.table === 'vehicle_deliveries' && payload.status && payload.status !== 'Delivered') throw bad('A delivered vehicle cannot be moved back.');
-    const merged = await normalise(r, org(req), ind, payload, ex);
+    const merged = await normalise(r, org(req), ind, payload, ex, req.industryScope?.role);
     await assertRules(r, org(req), ind, merged, ex);
     const { data, error } = await supabaseAdmin.from(r.table).update(payload).eq('organization_id', org(req)).eq('id', idOf(req)).select().maybeSingle();
     if (error) { if (error.code === '23505') throw dup(r, error); throw error; }

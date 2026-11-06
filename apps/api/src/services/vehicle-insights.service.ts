@@ -6,6 +6,7 @@ import { todayLocal } from '../lib/ist-date.js';
 import { allocatePendingBookings, onBookingAllocated, onVehicleOrderCreated, syncModelProduct } from '../lib/vehicle-links.js';
 import { runVehicleAftersales, type AftersalesResult } from './vehicle-aftersales.service.js';
 import { parseLabourAmount, parsePartsUsed } from '../lib/vehicle-calc.js';
+import { vehicleSchemeUsage } from '../lib/vehicle-schemes.js';
 
 type Row = Record<string, unknown>;
 const has = (v: unknown) => v !== null && v !== undefined && v !== '';
@@ -292,9 +293,24 @@ export async function vehicleReports(org: string, ind: string, days = 90) {
     return { model: [str(m.model_name), str(m.variant)].filter(Boolean).join(' '), availableUnits: sellable, productStock: inProducts, difference: inProducts - sellable };
   });
 
+  // Scheme-wise cost: orders / vehicles that took each scheme and the discount given (cancelled orders excluded). Never blocks the other reports.
+  let schemeUsage: { scheme: string; schemeName: string; status: string; orders: number; vehicles: number; discountGiven: number; bookings: number }[] = [];
+  try {
+    const [usage, schemeRows, bookingRows] = await Promise.all([
+      vehicleSchemeUsage(org),
+      rows('vehicle_schemes', org, ind, 'scheme_id, scheme_name, status'),
+      rows('vehicle_bookings', org, ind, 'scheme_name, status'),
+    ]);
+    const booked = new Map<string, number>();
+    for (const b of bookingRows) if (has(b.scheme_name) && str(b.status) !== 'Cancelled') booked.set(str(b.scheme_name), (booked.get(str(b.scheme_name)) ?? 0) + 1);
+    schemeUsage = schemeRows.map((sc) => { const u = usage.get(str(sc.scheme_id)); return { scheme: str(sc.scheme_id), schemeName: str(sc.scheme_name), status: str(sc.status), orders: u?.orders ?? 0, vehicles: u?.vehicles ?? 0, discountGiven: Math.round((u?.discount ?? 0) * 100) / 100, bookings: (booked.get(str(sc.scheme_name)) ?? 0) + (booked.get(str(sc.scheme_id)) ?? 0) }; })
+      .sort((a, b) => b.discountGiven - a.discountGiven);
+  } catch { /* scheme report is optional */ }
+
   const r = (n: number) => r2(n);
   return {
     windowDays,
+    schemeUsage,
     modelSales: [...byModel.values()].map((x) => ({ ...x, revenue: r(x.revenue) })).sort((a, b) => b.delivered - a.delivered),
     dealerSales: [...byDealer.values()].map((x) => ({ ...x, revenue: r(x.revenue) })).sort((a, b) => b.delivered - a.delivered),
     stockAgeing: { inStock: Object.values(buckets).reduce((a, b) => a + b, 0), stockCostValue: r(stockValue), buckets, oldest: oldest.slice(0, 10) },

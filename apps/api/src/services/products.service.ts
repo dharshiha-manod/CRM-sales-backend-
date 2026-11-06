@@ -1,6 +1,6 @@
 import { AppError } from '../errors/app-error.js';
 import { assertIndustryIdsInScope, isGlobalRole, resolveIndustryTypeId, type IndustryScope } from '../lib/industry-scope.js';
-import { syncProductModel } from '../lib/vehicle-links.js';
+import { applyLiveVehicleStock, createInitialUnits, syncProductModel } from '../lib/vehicle-links.js';
 import { listProductIndustryTypes } from '../repositories/industry-types.repository.js';
 import * as repository from '../repositories/products.repository.js';
 
@@ -14,16 +14,18 @@ async function assertProductInScope(org: string, id: string, scope: IndustryScop
 }
 
 export const productService = {
-  list(org: string, search: string | undefined, status: string | undefined, industryTypeId: string | undefined, scope: IndustryScope) {
+  async list(org: string, search: string | undefined, status: string | undefined, industryTypeId: string | undefined, scope: IndustryScope) {
     const effective = resolveIndustryTypeId(scope, industryTypeId);
-    return repository.listProducts(org, search, status, effective ?? undefined);
+    const rows = await repository.listProducts(org, search, status, effective ?? undefined);
+    return applyLiveVehicleStock(org, rows); // Vehicle products show the real Available-unit count
   },
   async create(org: string, input: Record<string, unknown>, scope: IndustryScope) {
     const requestedIds = input.industryTypeIds as string[] | undefined;
     assertIndustryIdsInScope(scope, requestedIds);
     const industryTypeIds = isGlobalRole(scope.role) ? requestedIds : (requestedIds ?? (scope.lockedIndustryTypeId ? [scope.lockedIndustryTypeId] : undefined));
     const product = await repository.createProduct(org, { ...input, industryTypeIds });
-    await syncProductModel(org, product); // Vehicle products only; a failure here never blocks the save
+    await syncProductModel(org, product); // Vehicle products only; never blocks the save
+    await createInitialUnits(org, product, input.stockQuantity); // Vehicle products only; creates the opening units
     return product;
   },
   async update(org: string, id: string, input: Record<string, unknown>, scope: IndustryScope) {

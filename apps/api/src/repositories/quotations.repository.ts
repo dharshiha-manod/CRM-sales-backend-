@@ -15,8 +15,8 @@ import { documentCurrencyForClient, isFmcgIndustry, toBase } from '../lib/fmcg-m
 import { planAllocations, takeStockForOrder, tracksOrderStock } from '../lib/stock.js';
 import { bestSchemeFor, loadLiveSchemes } from '../lib/fmcg-schemes.js';
 import { applySchoolAdvance, loadSchoolContext, schoolRuleFor, schoolStamp } from '../lib/school.js';
-import { onVehicleOrderCreated } from '../lib/vehicle-links.js';
-
+import { activateDealerForClient, onVehicleOrderCreated } from '../lib/vehicle-links.js';
+import { loadVehicleSchemeEngine, vehicleSchemeColumns } from '../lib/vehicle-schemes.js';
 
 const fail = (error: unknown): never => { throw error; };
 type ItemInput = { productId: string; quantity: number; discountPercent: number; colour?: string | null };
@@ -90,6 +90,8 @@ export async function createFromRequirement(organizationId: string, representati
   const listed = await priceListRates(organizationId, quoteClient, input.items.map((item) => ({ productName: String(byId.get(item.productId)?.product_name ?? ''), quantity: item.quantity })));
   const docCurrency = await documentCurrencyForClient(organizationId, quoteClient as { country_code?: string | null; currency_code?: string | null; industry_type_id?: string | null } | null);
   const schemes = docCurrency ? await loadLiveSchemes(organizationId, (quoteClient as { industry_type_id?: string | null } | null)?.industry_type_id, ids) : [];
+  // Vehicle only (null for every other industry): a live Vehicle scheme (Schemes & Discounts) gives money off the vehicle line.
+  const vehicleSchemes = await loadVehicleSchemeEngine(organizationId, (quoteClient as { industry_type_id?: string | null } | null)?.industry_type_id, ids, { clientId: requirement.client_id as string });
   // School only (null for every other industry): this school's negotiated price rules + the running academic year / term.
   const schoolCtx = await loadSchoolContext(organizationId, quoteClient ? { id: requirement.client_id as string, industry_type_id: (quoteClient as { industry_type_id?: string | null }).industry_type_id } : null, ids);
   const lines = input.items.map((item) => {
@@ -105,12 +107,21 @@ export async function createFromRequirement(organizationId: string, representati
     const gross = unitPrice * item.quantity;
     // A live FMCG scheme applies only to a line that has no discount of its own (typed or from the price list).
     const applied = docCurrency && !typedDiscount ? bestSchemeFor(schemes, product.id, item.quantity, unitPrice, docCurrency.exchange_rate) : null;
-    const discountPercent = applied ? applied.discountPercent : typedDiscount;
-    const discount_amount = applied ? applied.discountAmount : Math.round(gross * discountPercent) / 100;
+    // Vehicle only: a live Vehicle scheme applies only to a line that has no discount typed by the rep (or a School rule).
+    // The price-list discount (e.g. 2%) is kept, and the scheme % is taken on the price AFTER that discount (same as the Products price), so both always add up.
+    const repDiscount = item.discountPercent || (schoolRule?.discount_type === 'percentage' ? Number(schoolRule.discount_percent ?? 0) : 0) || 0;
+    const listPercent = Number(fromList?.discount ?? 0);
+    const listDiscountAmount = Math.round(gross * listPercent) / 100;
+    const netUnitPrice = Math.round(unitPrice * (100 - listPercent)) / 100;
+    const schemeHit = !applied && !repDiscount && vehicleSchemes ? vehicleSchemes.discountFor(product.id, item.quantity, netUnitPrice) : null;
+    const vehicleHit = schemeHit && schemeHit.amount > 0 ? schemeHit : null;
+    const vehicleTotalDiscount = vehicleHit ? Math.round((listDiscountAmount + vehicleHit.amount) * 100) / 100 : 0;
+    const discountPercent = applied ? applied.discountPercent : vehicleHit ? (gross > 0 ? Math.round((vehicleTotalDiscount / gross) * 10000) / 100 : 0) : typedDiscount;
+    const discount_amount = applied ? applied.discountAmount : vehicleHit ? vehicleTotalDiscount : Math.round(gross * discountPercent) / 100;
     const subtotal = gross - discount_amount;
     const tax_percent = fromList?.tax != null ? fromList.tax : Number(product.tax_percent ?? 0);
     const tax_amount = Math.round(subtotal * tax_percent) / 100;
-    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_percent: discountPercent, discount_amount, subtotal, tax_percent, tax_amount, ...(item.colour ? { colour: item.colour } : {}), ...(applied ? { scheme_id: applied.schemeId, free_quantity: applied.freeQuantity } : {}) };
+    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_percent: discountPercent, discount_amount, subtotal, tax_percent, tax_amount, ...(item.colour ? { colour: item.colour } : {}), ...(applied ? { scheme_id: applied.schemeId, free_quantity: applied.freeQuantity } : {}), ...vehicleSchemeColumns(vehicleHit) };
   });
   const quotationNumber = `QT-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const subtotalSum = lines.reduce((sum, line) => sum + line.subtotal, 0);
@@ -181,7 +192,7 @@ export async function convertToOrder(organizationId: string, representativeId: s
   // notes text alone isn't enough, the frontend only trusts quotation_id.
   const { data: order, error } = await supabaseAdmin.from('sale_orders').insert({ organization_id: organizationId, order_number: number, client_id: quotation.client_id, representative_id: quotation.representative_id, discount_amount: quotation.discount_amount, tax_amount: quotation.tax_amount, total_amount: quotation.total_amount, notes: `Converted from quotation ${quotation.quotation_number}`, status: 'confirmed', quotation_id: quotation.id, ...(quotation.currency_code ? { currency_code: quotation.currency_code, exchange_rate: quotation.exchange_rate, base_total: quotation.base_total } : {}), ...(quotation.academic_year_id ? { academic_year_id: quotation.academic_year_id, term_id: quotation.term_id ?? null } : {}) }).select().single();
   if (error) fail(error);
-  const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal, tax_percent: item.tax_percent ?? 0, tax_amount: item.tax_amount ?? 0, ...(item.colour ? { colour: item.colour } : {}), ...(item.scheme_id ? { scheme_id: item.scheme_id, free_quantity: item.free_quantity ?? 0 } : {}) }));
+  const items = (quotation.quotation_items as Array<Record<string, unknown>>).map((item) => ({ order_id: order.id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_amount: item.discount_amount, subtotal: item.subtotal, tax_percent: item.tax_percent ?? 0, tax_amount: item.tax_amount ?? 0, ...(item.colour ? { colour: item.colour } : {}), ...(item.scheme_id ? { scheme_id: item.scheme_id, free_quantity: item.free_quantity ?? 0 } : {}), ...(item.vehicle_scheme_ref ? { vehicle_scheme_ref: item.vehicle_scheme_ref, vehicle_scheme_name: item.vehicle_scheme_name ?? null } : {}) }));
   const { error: itemError } = await supabaseAdmin.from('sale_order_items').insert(items);
   if (itemError) { await supabaseAdmin.from('sale_orders').delete().eq('id', order.id).eq('organization_id', organizationId); fail(itemError); }
   // Claim the quotation first (only one request can win), so a double-click can never create two orders or take stock twice.
@@ -239,9 +250,9 @@ export async function getPublicQuotation(token: string) { const { public_token: 
 /** Lets the client change line quantities on the public quote page. Recalculates each changed line, the quotation totals,
  *  and appends an audit note (old -> new) so the team can see exactly what the client changed. */
 async function applyClientQuantities(quotationId: string, requested: Array<{ id: string; quantity: number }>) {
-  const { data: quote, error: quoteError } = await supabaseAdmin.from('quotations').select('id, notes, exchange_rate, quotation_items(id, quantity, unit_price, discount_percent, tax_percent, products(product_name))').eq('id', quotationId).single();
+  const { data: quote, error: quoteError } = await supabaseAdmin.from('quotations').select('id, notes, exchange_rate, organization_id, client_id, clients(industry_type_id), quotation_items(id, product_id, quantity, unit_price, discount_percent, discount_amount, tax_percent, vehicle_scheme_ref, products(product_name))').eq('id', quotationId).single();
   if (quoteError) fail(quoteError);
-  type Row = { id: string; quantity: number; unit_price: number; discount_percent: number | null; tax_percent: number | null; products?: { product_name?: string | null } | null };
+  type Row = { id: string; product_id?: string | null; quantity: number; unit_price: number; discount_percent: number | null; discount_amount?: number | null; tax_percent: number | null; vehicle_scheme_ref?: string | null; products?: { product_name?: string | null } | null };
   const rows = ((quote as unknown as { quotation_items?: Row[] }).quotation_items ?? []);
   const byId = new Map(rows.map((row) => [row.id, row]));
   for (const item of requested) if (!byId.has(item.id)) throw new AppError(422, 'QUOTATION_LINE_NOT_FOUND', 'One of the quotation lines could not be found.');
@@ -252,10 +263,19 @@ async function applyClientQuantities(quotationId: string, requested: Array<{ id:
     if (Number(row.quantity) === item.quantity) continue;
     const gross = Number(row.unit_price) * item.quantity;
     const discountPercent = Number(row.discount_percent ?? 0);
-    const discount_amount = Math.round(gross * discountPercent) / 100;
+    let discount_amount = Math.round(gross * discountPercent) / 100;
+    // Vehicle scheme line: a percentage scheme stays a percentage, but a fixed amount must not grow with the quantity, so it is re-priced with the scheme rules.
+    // If the scheme can no longer be read (ended / limit reached) the original discount amount is kept, never more than the line.
+    if (row.vehicle_scheme_ref && row.product_id) {
+      const q = quote as unknown as { organization_id: string; client_id: string; clients?: { industry_type_id?: string | null } | { industry_type_id?: string | null }[] | null };
+      const indId = (Array.isArray(q.clients) ? q.clients[0] : q.clients)?.industry_type_id;
+      const hit = (await loadVehicleSchemeEngine(q.organization_id, indId, [row.product_id], { clientId: q.client_id }))?.discountFor(row.product_id, item.quantity, Number(row.unit_price)) ?? null;
+      discount_amount = hit ? hit.amount : Math.min(Number(row.discount_amount ?? 0), gross);
+    }
     const subtotal = gross - discount_amount;
     const tax_amount = Math.round(subtotal * Number(row.tax_percent ?? 0)) / 100;
-    const { error } = await supabaseAdmin.from('quotation_items').update({ quantity: item.quantity, discount_amount, subtotal, tax_amount }).eq('id', row.id).eq('quotation_id', quotationId);
+    const repriced = row.vehicle_scheme_ref && gross > 0 ? { discount_percent: Math.round((discount_amount / gross) * 10000) / 100 } : {};
+    const { error } = await supabaseAdmin.from('quotation_items').update({ quantity: item.quantity, discount_amount, subtotal, tax_amount, ...repriced }).eq('id', row.id).eq('quotation_id', quotationId);
     if (error) fail(error);
     changes.push(`${row.products?.product_name ?? 'Item'}: ${row.quantity} -> ${item.quantity}`);
     Object.assign(row, { quantity: item.quantity, discount_amount, subtotal, tax_amount });
@@ -522,6 +542,7 @@ async function linkCoreOrderToDeal(organizationId: string, deal: Record<string, 
 // either way, so we only maintain this logic in one place.
 async function finalizeApprovedQuotation(organizationId: string, id: string, scope?: IndustryScope) {
   const quotation = await getQuotation(organizationId, id, scope);
+  await activateDealerForClient(organizationId, quotation.client_id); // Vehicle only: Pending Approval dealer becomes Active
   const tradingDeal = await runTradingChain(quotation);
   const converted = await convertToOrder(organizationId, null, id, scope);
   if (tradingDeal && converted.converted_order_id) {

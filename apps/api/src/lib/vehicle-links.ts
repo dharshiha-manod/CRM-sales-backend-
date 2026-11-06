@@ -7,6 +7,7 @@ import { todayLocal } from './ist-date.js';
 import { logger } from './logger.js';
 import { VEHICLE_RESOURCES } from './vehicle-resources.js';
 import { schemeCredit, stageFor } from './vehicle-calc.js';
+import { defaultChecklistFor } from './vehicle-documents.js';
 import { enqueueCustomerMessage } from './vehicle-notify.js';
 
 type Row = Record<string, unknown>;
@@ -134,7 +135,7 @@ export async function refreshDeliveryPayments(org: string, ind?: string | null):
     if (!open.length) return;
     const orderIds = [...new Set(open.map((d) => String(d.order_id)))];
     const [orders, coll, loans, exch] = await Promise.all([
-      supabaseAdmin.from('sale_orders').select('id, total_amount, base_total').eq('organization_id', org).in('id', orderIds),
+      supabaseAdmin.from('sale_orders').select('id, total_amount, base_total, discount_amount').eq('organization_id', org).in('id', orderIds),
       supabaseAdmin.from('sales_collections').select('sale_order_id, amount, reference_no').eq('organization_id', org).in('sale_order_id', orderIds),
       supabaseAdmin.from('vehicle_finance_applications').select('order_id, disbursed_amount, application_number').eq('organization_id', org).in('order_id', orderIds),
       supabaseAdmin.from('vehicle_exchanges').select('order_id, approved_value, net_exchange_value, exchange_id').eq('organization_id', org).in('order_id', orderIds).in('status', ['Approved', 'Converted']),
@@ -147,15 +148,23 @@ export async function refreshDeliveryPayments(org: string, ind?: string | null):
     for (const l of (loans.data ?? []) as Row[]) if (!posted.has(`${String(l.order_id)}|${str(l.application_number)}`)) add(l.order_id, num(l.disbursed_amount));
     for (const e of (exch.data ?? []) as Row[]) if (!posted.has(`${String(e.order_id)}|${str(e.exchange_id)}`)) add(e.order_id, has(e.net_exchange_value) ? num(e.net_exchange_value) : num(e.approved_value));
     const total = new Map<string, number>();
-    for (const o of (orders.data ?? []) as Row[]) total.set(String(o.id), num(o.total_amount ?? o.base_total));
+    const orderDiscount = new Map<string, number>();
+    for (const o of (orders.data ?? []) as Row[]) {
+      total.set(String(o.id), num(o.total_amount ?? o.base_total));
+      orderDiscount.set(String(o.id), num(o.discount_amount));
+    }
     // a scheme named on the booking (cash discount / fixed or % discount / exchange bonus) counts as credit against the order; the Core order total is left unchanged
+    // (skipped when the order itself already carries a discount, because the scheme is then already taken off the order total)
     const { data: schemeBookings } = await supabaseAdmin.from('vehicle_bookings').select('order_id, scheme_name').eq('organization_id', org).in('order_id', orderIds).neq('status', 'Cancelled').not('scheme_name', 'is', null);
     for (const b of (schemeBookings ?? []) as Row[]) {
       const key = str(b.scheme_name).trim();
       if (!key || !ind) continue;
       const scheme = (await one('vehicle_schemes', org, 'scheme_name', key, ind)) ?? (await one('vehicle_schemes', org, 'scheme_id', key, ind));
       if (!scheme) continue;
-      const credit = schemeCredit(scheme, total.get(String(b.order_id)) ?? 0);
+      // the order already carries a discount -> the cash / fixed / % part is already off the order total, so only the exchange bonus (never put on a line) still counts
+      const credit = (orderDiscount.get(String(b.order_id)) ?? 0) > 0
+        ? (['Suspended', 'Draft'].includes(String(scheme.status)) ? 0 : num(scheme.exchange_bonus))
+        : schemeCredit(scheme, total.get(String(b.order_id)) ?? 0);
       if (credit > 0) add(b.order_id, credit);
     }
     for (const d of open) {
@@ -230,11 +239,13 @@ export async function onBookingAllocated(org: string, ind: string, booking: Row)
         pdi_status: 'Not Started', documentation_status: 'Pending', payment_status: 'Pending', registration_status: 'Pending',
         insurance_status: booking.insurance_required !== undefined && booking.insurance_required !== null && !yes(booking.insurance_required) ? 'Not Applicable' : 'Pending',
         accessories_status: 'Pending', customer_acknowledgement: 'No', status: 'PDI Pending',
+        document_checklist: await defaultChecklistFor(org, ind, { client_id: booking.client_id, booking_number: bookingNo, finance_required: booking.finance_required, insurance_required: booking.insurance_required }),
       };
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const number = await nextVehicleCode('vehicle_deliveries', 'DLV', org, attempt);
         const { error } = await supabaseAdmin.from('vehicle_deliveries').insert({ ...row, delivery_number: number, organization_id: org, industry_type_id: ind });
         if (!error) break;
+        if (/document_checklist/.test(String(error.message))) { delete row.document_checklist; continue; } // column not added yet: open the file without the checklist
         if (error.code !== '23505') throw error;
       }
     }
@@ -388,6 +399,109 @@ export async function syncProductModel(org: string, product: Row): Promise<void>
   }, undefined);
 }
 
+// ---------------------------------------------------------------- Products: live stock + first units
+/**
+ * Vehicle products show the REAL number of Available units instead of the typed stock number.
+ * Display only: products.stock_quantity in the database is not changed (Core orders still use it).
+ */
+export async function applyLiveVehicleStock(org: string, products: Row[]): Promise<Row[]> {
+  return safe('applyLiveVehicleStock', async () => {
+    const ids = products.map((p) => p.id as string).filter(Boolean);
+    if (!ids.length) return products;
+    const { data: models } = await supabaseAdmin.from('vehicle_models').select('id, product_id').eq('organization_id', org).in('product_id', ids);
+    const modelRows = (models ?? []) as Row[];
+    if (!modelRows.length) return products; // no Vehicle products in this list
+    const { data: units } = await supabaseAdmin.from('vehicle_units').select('model_id').eq('organization_id', org).eq('status', 'Available').in('model_id', modelRows.map((m) => m.id as string));
+    const availableByModel = new Map<string, number>();
+    for (const unit of (units ?? []) as Row[]) availableByModel.set(str(unit.model_id), (availableByModel.get(str(unit.model_id)) ?? 0) + 1);
+    const liveByProduct = new Map<string, number>();
+    for (const model of modelRows) liveByProduct.set(str(model.product_id), availableByModel.get(str(model.id)) ?? 0);
+    return products.map((p) => (liveByProduct.has(str(p.id)) ? { ...p, stock_quantity: liveByProduct.get(str(p.id)) } : p));
+  }, products);
+}
+
+/**
+ * New Vehicle product saved with "Opening units = N": creates N Available units with placeholder VINs
+ * (TEMP-<model code>-001 ...) so stock, test drives and bookings work straight away.
+ * Replace each TEMP VIN with the real one later. Max 50 at a time. Never blocks the product save.
+ */
+export async function createInitialUnits(org: string, product: Row, requested: unknown): Promise<void> {
+  const count = Math.min(Math.floor(num(requested)), 50);
+  if (!(count > 0)) return;
+  await safe('createInitialUnits', async () => {
+    const { data: model } = await supabaseAdmin.from('vehicle_models').select('id, model_code, model_name, variant, industry_type_id').eq('organization_id', org).eq('product_id', product.id as string).limit(1).maybeSingle();
+    if (!model) return; // not a Vehicle product
+    const m = model as Row;
+    const { data: dealers } = await supabaseAdmin.from('vehicle_dealers').select('id, dealer_name').eq('organization_id', org).eq('industry_type_id', m.industry_type_id as string).limit(2);
+    const dealer = ((dealers ?? []) as Row[]).length === 1 ? ((dealers ?? []) as Row[])[0] : null; // only when there is exactly one dealer
+    const colour = parseVehicleSpec(product.specification).colour || null;
+    const rows = Array.from({ length: count }, (_, i) => ({
+      vin: `TEMP-${str(m.model_code)}-${String(i + 1).padStart(3, '0')}`,
+      model_id: m.id,
+      model_name: m.model_name,
+      variant: m.variant ?? null,
+      color: colour,
+      status: 'Available',
+      selling_price: num(product.selling_price) || null,
+      dealer_id: dealer ? dealer.id : null,
+      dealer_name: dealer ? dealer.dealer_name : null,
+      industry_type_id: m.industry_type_id,
+      organization_id: org,
+    }));
+    const { error } = await supabaseAdmin.from('vehicle_units').insert(rows);
+    if (error && error.code !== '23505') throw error;
+  }, undefined);
+}
+
+// ---------------------------------------------------------------- Dealer from lead / active on first approved quotation
+
+
+/**
+ * A Qualified lead with Customer type "Dealer" also gets a Dealer record (type Sub Dealer, status Pending Approval)
+ * with the contact details copied across. Vehicle only; skipped if a dealer with that name already exists.
+ */
+export async function createDealerFromLead(org: string, lead: Row, customerType: unknown): Promise<void> {
+  if (String(customerType ?? '').trim().toLowerCase() !== 'dealer') return;
+  await safe('createDealerFromLead', async () => {
+    const ind = has(lead.industry_type_id) ? String(lead.industry_type_id) : '';
+    const name = str(lead.company_name).trim();
+    if (!ind || !name || !(await isVehicleIndustry(org, ind))) return;
+    const { data: existing } = await supabaseAdmin.from('vehicle_dealers').select('id').eq('organization_id', org).eq('industry_type_id', ind).ilike('dealer_name', escapeLike(name)).limit(1).maybeSingle();
+    if (existing) return;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const dealerCode = await nextVehicleCode('vehicle_dealers', 'DLR', org, attempt);
+      const { error } = await supabaseAdmin.from('vehicle_dealers').insert({
+        dealer_code: dealerCode,
+        dealer_name: name,
+        dealer_type: 'Sub Dealer',
+        contact_person: has(lead.contact_name) ? lead.contact_name : null,
+        phone: has(lead.phone) ? lead.phone : null,
+        email: has(lead.email) ? lead.email : null,
+        address: has(lead.street_address) ? lead.street_address : null,
+        city: has(lead.city) ? lead.city : null,
+        state: has(lead.state) ? lead.state : null,
+        status: 'Pending Approval',
+        notes: `Created automatically from lead ${str(lead.lead_code)}.`,
+        industry_type_id: ind,
+        organization_id: org,
+      });
+      if (!error) return;
+      if (error.code !== '23505') throw error;
+    }
+  }, undefined);
+}
+
+/** When a quotation is approved, the client's Dealer record (matched by name) changes from Pending Approval to Active. Vehicle only. */
+export async function activateDealerForClient(org: string, clientId: unknown): Promise<void> {
+  if (!has(clientId)) return;
+  await safe('activateDealerForClient', async () => {
+    const { data: client } = await supabaseAdmin.from('clients').select('client_name, industry_type_id').eq('organization_id', org).eq('id', clientId as string).maybeSingle();
+    const c = (client ?? null) as Row | null;
+    if (!c || !has(c.client_name) || !has(c.industry_type_id) || !(await isVehicleIndustry(org, String(c.industry_type_id)))) return;
+    await supabaseAdmin.from('vehicle_dealers').update({ status: 'Active' }).eq('organization_id', org).eq('industry_type_id', String(c.industry_type_id)).ilike('dealer_name', escapeLike(str(c.client_name).trim())).eq('status', 'Pending Approval');
+  }, undefined);
+}
+
 // ---------------------------------------------------------------- test drive follow-up
 export async function representativeFor(org: string, ind: string, clientId: unknown, leadId: unknown): Promise<string | null> {
   if (has(leadId)) {
@@ -458,7 +572,7 @@ export async function followUpAfterTestDrive(org: string, ind: string, drive: Ro
 
 // ---------------------------------------------------------------- core order hooks (Vehicle only)
 async function vehicleOrder(org: string, orderId: string): Promise<{ order: Row; ind: string } | null> {
-  const { data } = await supabaseAdmin.from('sale_orders').select('id, order_number, status, client_id, representative_id, clients(industry_type_id, client_name), sale_order_items(product_id, quantity)').eq('organization_id', org).eq('id', orderId).maybeSingle();
+  const { data } = await supabaseAdmin.from('sale_orders').select('id, order_number, status, client_id, representative_id, clients(industry_type_id, client_name), sale_order_items(product_id, quantity, vehicle_scheme_ref)').eq('organization_id', org).eq('id', orderId).maybeSingle();
   if (!data) return null;
   const order = data as unknown as Row;
   const client = (Array.isArray(order.clients) ? order.clients[0] : order.clients) as Row | null;
@@ -493,13 +607,17 @@ export async function onVehicleOrderCreated(org: string, orderId: string): Promi
     for (const model of models as Row[]) {
       const wanted = items.filter((i) => i.product_id === model.product_id).reduce((s, i) => s + Math.max(1, Math.round(num(i.quantity) || 1)), 0);
       const { count } = await supabaseAdmin.from('vehicle_bookings').select('id', { count: 'exact', head: true }).eq('organization_id', org).eq('order_id', orderId).eq('model_id', model.id as string);
+      // the scheme that discounted this vehicle's order line (first one when several are stacked) is written on the booking
+      const refs = items.filter((i) => i.product_id === model.product_id).map((i) => str(i.vehicle_scheme_ref)).find(Boolean);
+      const firstId = refs ? refs.split('|').map((x) => x.trim()).find(Boolean) : undefined;
+      const lineScheme = firstId ? await one('vehicle_schemes', org, 'scheme_id', firstId, ind) : null;
       for (let n = count ?? 0; n < wanted; n += 1) {
         let booking: Row | null = null;
         for (let attempt = 0; attempt < 5 && !booking; attempt += 1) {
           const { data, error } = await supabaseAdmin.from('vehicle_bookings').insert({
             booking_number: await nextVehicleCode('vehicle_bookings', 'BK', org, attempt), client_name: order.client_name, client_id: order.client_id, lead_id: leadId,
             model_id: model.id, model_name: model.model_name, order_id: orderId, order_number: order.order_number, sales_rep: repName, booking_date: todayLocal(),
-            status: 'Confirmed', remarks: `Auto-created from order ${String(order.order_number)}.`, organization_id: org, industry_type_id: ind,
+            status: 'Confirmed', remarks: `Auto-created from order ${String(order.order_number)}.${lineScheme ? ` Scheme ${str(lineScheme.scheme_name)} applied on the order.` : ''}`, ...(lineScheme ? { scheme_name: lineScheme.scheme_name } : {}), organization_id: org, industry_type_id: ind,
           }).select().single();
           if (!error) booking = data as Row;
           else if (error.code !== '23505') throw error;

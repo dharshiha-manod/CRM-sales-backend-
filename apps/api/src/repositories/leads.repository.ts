@@ -6,7 +6,7 @@ import { listProducts } from './products.repository.js';
 import { getFollowUpConfig, getSalesConfig } from '../lib/settings.js';
 import { findRateToInr } from '../lib/fmcg-market.js';
 import { isSchoolIndustry } from '../lib/school.js';
-import { isVehicleIndustry } from '../lib/vehicle-links.js';
+import { createDealerFromLead, isVehicleIndustry } from '../lib/vehicle-links.js';
 
 const fail = (error: unknown): never => {
   throw error;
@@ -28,6 +28,7 @@ type LeadMeta = {
   expectedOrderValue?: string;
   nextFollowUp?: string;
   doctorSpecialty?: string;
+  quantity?: string;
 };
 type LeadForFollowUp = { id: string; company_name: string; representative_id: string | null; next_action_due_at: string | null; priority: string | null; notes: string | null };
 function parseLeadMeta(notes?: string | null): LeadMeta {
@@ -106,6 +107,8 @@ async function autoConvertQualifiedLead(organizationId: string, lead: Record<str
     await logLeadNote(organizationId, lead.id, actorId, reason);
     return { stoppedReason: reason };
   }
+  // Vehicle only: a "Dealer" customer also gets a Dealer record (Pending Approval). Never blocks the chain.
+  await createDealerFromLead(organizationId, lead, meta.customerType);
   return continueLeadChain(organizationId, lead.id, actorId);
 }
 
@@ -169,7 +172,10 @@ export async function continueLeadChain(organizationId: string, leadId: string, 
       await logLeadNote(organizationId, leadId, actorId, `Expected order value is in ${leadCurrency} but there is no ${leadCurrency} to INR rate in Currency Rates yet, so the quantity was set to 1. Add the rate and adjust the quantity on the Requirement.`);
     }
   }
-  const quantity = (await isVehicleIndustry(organizationId, lead.industry_type_id)) ? 1 : matchedProduct && matchedProduct.selling_price > 0 ? Math.max(1, Math.round(expectedValue / matchedProduct.selling_price)) : 1;
+  // Vehicle: the lead's own Quantity field (default 1). Other industries: expected value / product price.
+  const quantity = (await isVehicleIndustry(organizationId, lead.industry_type_id))
+    ? Math.min(Math.max(1, Math.floor(Number(meta.quantity) || 1)), 500)
+    : matchedProduct && matchedProduct.selling_price > 0 ? Math.max(1, Math.round(expectedValue / matchedProduct.selling_price)) : 1;
   // Textile only (a product with no textile colours gives null): pick the colour named in the lead's interest, or the product's only colour.
   const textileColour = (() => {
     const colours = ((matchedProduct as unknown as { textile_details?: { colors?: Array<{ name: string }> } | null } | null)?.textile_details?.colors ?? []).map((c) => c.name).filter(Boolean);

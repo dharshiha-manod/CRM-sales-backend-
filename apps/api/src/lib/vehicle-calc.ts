@@ -28,7 +28,7 @@ export function schemeCredit(scheme: Row, orderTotal: number): number {
   if (['Suspended', 'Draft'].includes(String(scheme.status))) return 0;
   let credit = num(scheme.cash_discount) + num(scheme.exchange_bonus);
   if (scheme.discount_type === 'Percentage') credit += (orderTotal * num(scheme.discount_value)) / 100;
-  else if (scheme.discount_type === 'Fixed Amount') credit += num(scheme.discount_value);
+  else if (scheme.discount_type === 'Fixed Amount' || scheme.discount_type === 'Per Vehicle') credit += num(scheme.discount_value);
   return Math.max(0, Math.min(credit, orderTotal));
 }
 

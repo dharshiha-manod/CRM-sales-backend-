@@ -29,7 +29,7 @@ export const VEHICLE_RESOURCES: VehicleResource[] = [
   { path: 'schemes', table: 'vehicle_schemes', codeField: 'scheme_id', prefix: 'SCH', write: 'manager',
     statuses: ['Draft', 'Active', 'Expired', 'Suspended'], nonNegative: ['discount_value', 'cash_discount', 'exchange_bonus'],
     requiredFields: ['scheme_id', 'scheme_name'],
-    columns: ['scheme_id', 'scheme_name', 'model_id', 'model_name', 'dealer_id', 'dealer_name', 'customer_type', 'start_date', 'end_date', 'discount_type', 'discount_value', 'cash_discount', 'exchange_bonus', 'finance_offer', 'accessories_offer', 'insurance_offer', 'approval_required', 'terms', 'industry_type_id'] },
+    columns: ['scheme_id', 'scheme_name', 'model_id', 'model_name', 'dealer_id', 'dealer_name', 'customer_type', 'start_date', 'end_date', 'discount_type', 'discount_value', 'cash_discount', 'exchange_bonus', 'finance_offer', 'accessories_offer', 'insurance_offer', 'approval_required', 'min_quantity', 'usage_limit', 'budget_cap', 'stackable', 'terms', 'industry_type_id'] },
   { path: 'deliveries', table: 'vehicle_deliveries', codeField: 'delivery_number', prefix: 'DLV', write: 'manager',
     statuses: ['Preparation', 'PDI Pending', 'Documentation Pending', 'Payment Pending', 'Ready for Delivery', 'Delivered', 'Cancelled'], nonNegative: ['odometer'],
     requiredFields: ['delivery_number', 'client_name'],

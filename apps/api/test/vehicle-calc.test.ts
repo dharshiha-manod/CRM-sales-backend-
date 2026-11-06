@@ -12,6 +12,7 @@ describe('parseLabourAmount', () => {
 });
 describe('schemeCredit', () => {
   it('adds cash discount, exchange bonus and a fixed discount', () => { expect(schemeCredit({ status: 'Active', discount_type: 'Fixed Amount', discount_value: 10000, cash_discount: 5000, exchange_bonus: 2000 }, 800000)).toBe(17000); });
+  it('counts a Per Vehicle amount like a fixed amount', () => { expect(schemeCredit({ status: 'Active', discount_type: 'Per Vehicle', discount_value: 3000 }, 100000)).toBe(3000); });
   it('takes a percentage of the order total', () => { expect(schemeCredit({ status: 'Active', discount_type: 'Percentage', discount_value: 2 }, 500000)).toBe(10000); });
   it('never exceeds the total and ignores suspended / draft schemes', () => {
     expect(schemeCredit({ status: 'Active', cash_discount: 900 }, 500)).toBe(500);

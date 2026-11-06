@@ -14,6 +14,7 @@ import { billedTotalsForCoreOrders } from './trading.repository.js';
 import { refundedByOrder } from './fmcg-refunds.repository.js';
 import { releaseRollsForOrder } from '../lib/textile-rolls.js';
 import { onVehicleOrderCancelled, onVehicleOrderCreated } from '../lib/vehicle-links.js';
+import { loadVehicleSchemeEngine, vehicleSchemeColumns, type VehicleSchemeEngine } from '../lib/vehicle-schemes.js';
 import { applySchoolAdvance, applySchoolPricingToOrder, isSchoolIndustry, loadSchoolContext, restoreSchoolAdvance, schoolStamp } from '../lib/school.js';
 const fail = (error: unknown): never => { throw error; };
 type OrderItem = { productId: string; quantity: number; discountPercent: number; freeQuantity?: number };
@@ -27,16 +28,17 @@ async function clientMarket(organizationId: string, clientId: string): Promise<{
 }
 /** Catalog prices are rupee prices; convert to the order currency (1 unit of currency = rate INR). */
 const priceIn = (inrPrice: number, doc: DocumentCurrency | null) => (doc && doc.exchange_rate !== 1 ? Math.round((inrPrice / doc.exchange_rate) * 100) / 100 : inrPrice);
-
-/** Order lines in the order currency. A line with a typed discount keeps it; otherwise a live FMCG scheme may apply. */
-function buildOrderLines(items: OrderItem[], productById: Map<string, { id: string; selling_price: unknown }>, doc: DocumentCurrency | null, schemes: LiveScheme[]) {
+/** Order lines in the order currency. A line with a typed discount keeps it; otherwise a live FMCG scheme (or, for Vehicle only, a live Vehicle scheme) may apply. */
+function buildOrderLines(items: OrderItem[], productById: Map<string, { id: string; selling_price: unknown }>, doc: DocumentCurrency | null, schemes: LiveScheme[], vehicleSchemes: VehicleSchemeEngine | null = null) {
   return items.map((item) => {
     const product = productById.get(item.productId)!;
     const unitPrice = priceIn(Number(product.selling_price), doc);
     const gross = unitPrice * item.quantity;
     const applied = doc && !item.discountPercent ? bestSchemeFor(schemes, product.id, item.quantity, unitPrice, doc.exchange_rate) : null;
-    const discountAmount = applied ? applied.discountAmount : Math.round(gross * item.discountPercent) / 100;
-    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_amount: discountAmount, subtotal: gross - discountAmount, ...((item as { colour?: string | null }).colour ? { colour: (item as { colour?: string | null }).colour } : {}), ...(applied ? { scheme_id: applied.schemeId } : {}), ...(doc && (Number(item.freeQuantity) > 0 || applied) ? { free_quantity: Number(item.freeQuantity) > 0 ? Number(item.freeQuantity) : applied?.freeQuantity ?? 0 } : {}) };
+    // Vehicle only: a live Vehicle scheme applies only to a line that has no discount of its own.
+    const vehicleHit = !applied && !item.discountPercent && vehicleSchemes ? vehicleSchemes.discountFor(product.id, item.quantity, unitPrice) : null;
+    const discountAmount = applied ? applied.discountAmount : vehicleHit ? vehicleHit.amount : Math.round(gross * item.discountPercent) / 100;
+    return { product_id: product.id, quantity: item.quantity, unit_price: unitPrice, discount_amount: discountAmount, subtotal: gross - discountAmount, ...((item as { colour?: string | null }).colour ? { colour: (item as { colour?: string | null }).colour } : {}), ...(applied ? { scheme_id: applied.schemeId } : {}), ...vehicleSchemeColumns(vehicleHit), ...(doc && (Number(item.freeQuantity) > 0 || applied) ? { free_quantity: Number(item.freeQuantity) > 0 ? Number(item.freeQuantity) : applied?.freeQuantity ?? 0 } : {}) };
   });
 }
 
@@ -88,7 +90,7 @@ export async function createOrderFromVisit(organizationId: string, representativ
   // School only: apply this school's negotiated price rules. Everyone else gets the same items / products back, unchanged.
   const schoolCtx = await loadSchoolContext(organizationId, { id: visit.client_id, industry_type_id: industryTypeId }, productIds);
   const priced = applySchoolPricingToOrder(schoolCtx, input.items, productById);
-  const lines = buildOrderLines(priced.items, priced.productById, doc, doc ? await loadLiveSchemes(organizationId, industryTypeId, productIds) : []);
+  const lines = buildOrderLines(priced.items, priced.productById, doc, doc ? await loadLiveSchemes(organizationId, industryTypeId, productIds) : [], await loadVehicleSchemeEngine(organizationId, industryTypeId, productIds, { clientId: visit.client_id as string }));
 
   const total = lines.reduce((sum, line) => sum + line.subtotal, 0);
   const discount = lines.reduce((sum, line) => sum + line.discount_amount, 0);
@@ -152,7 +154,7 @@ export async function createManualOrder(organizationId: string, scope: IndustryS
   const tracksStock = Boolean(doc) || await tracksOrderStock(organizationId, clientIndustryId);
   const schoolCtx = await loadSchoolContext(organizationId, { id: client.id as string, industry_type_id: client.industry_type_id as string | null }, productIds);
   const priced = applySchoolPricingToOrder(schoolCtx, input.items, productById);
-  const lines = buildOrderLines(priced.items, priced.productById, doc, doc ? await loadLiveSchemes(organizationId, client.industry_type_id as string | null, productIds) : []);
+  const lines = buildOrderLines(priced.items, priced.productById, doc, doc ? await loadLiveSchemes(organizationId, client.industry_type_id as string | null, productIds) : [], await loadVehicleSchemeEngine(organizationId, client.industry_type_id as string | null, productIds, { clientId: client.id as string }));
 
   const total = lines.reduce((sum, line) => sum + line.subtotal, 0);
   const discount = lines.reduce((sum, line) => sum + line.discount_amount, 0);
@@ -306,7 +308,7 @@ export async function updateOrder(organizationId: string, scope: IndustryScope, 
     const { doc } = await clientMarket(organizationId, order.client_id as string);
     const schoolCtx = await loadSchoolContext(organizationId, { id: order.client_id as string, industry_type_id: orderIndustryTypeId }, productIds);
     const priced = applySchoolPricingToOrder(schoolCtx, input.items, productById);
-    const lines = buildOrderLines(priced.items, priced.productById, doc, doc ? await loadLiveSchemes(organizationId, orderIndustryTypeId, productIds) : []);
+    const lines = buildOrderLines(priced.items, priced.productById, doc, doc ? await loadLiveSchemes(organizationId, orderIndustryTypeId, productIds) : [], await loadVehicleSchemeEngine(organizationId, orderIndustryTypeId, productIds, { clientId: order.client_id as string, excludeOrderId: id }));
     const total = lines.reduce((sum, line) => sum + line.subtotal, 0);
     const discount = lines.reduce((sum, line) => sum + line.discount_amount, 0);
     const totalInr = doc ? toBase(total, doc.exchange_rate) : total;
