@@ -1,0 +1,189 @@
+.unit-intake { margin-bottom: 1rem; }
+
+/* PDI on the left, Add stock on the right */
+.unit-intake .unit-intake__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+/* Add stock: the one coloured button */
+.unit-intake .unit-intake__stock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1.25rem;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #fff;
+  background: #c97a1f;
+  border: 0;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(201, 122, 31, 0.35);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+.unit-intake .unit-intake__stock-btn:hover { background: #b06a17; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(201, 122, 31, 0.4); }
+.unit-intake .unit-intake__stock-btn:active { transform: translateY(0); }
+.unit-intake .unit-intake__stock-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  font-size: 1.05rem;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+}
+
+/* PDI: outline button with a count badge */
+.unit-intake .unit-intake__pdi-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.68rem 1.1rem;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #18181b;
+  background: #fff;
+  border: 1.5px solid #18181b;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.unit-intake .unit-intake__pdi-btn:hover:not(:disabled) { background: #18181b; color: #fff; }
+.unit-intake .unit-intake__pdi-btn:disabled { color: #a1a1aa; border-color: #e4e4e7; cursor: not-allowed; }
+.unit-intake .unit-intake__count {
+  min-width: 1.5rem;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: center;
+  color: #fff;
+  background: #18181b;
+  border-radius: 999px;
+}
+.unit-intake .unit-intake__pdi-btn:hover:not(:disabled) .unit-intake__count { background: #fff; color: #18181b; }
+.unit-intake .unit-intake__pdi-btn:disabled .unit-intake__count { background: #e4e4e7; color: #71717a; }
+
+/* Intake card */
+.unit-intake .unit-intake__card {
+  margin-top: 0.9rem;
+  margin-left: auto;
+  max-width: 780px;
+  padding: 1.25rem 1.4rem;
+  background: #fff;
+  border: 1px solid #e4e4e7;
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+.unit-intake__title { margin: 0; font-size: 1rem; font-weight: 700; }
+.unit-intake__sub { margin: 0.2rem 0 0; font-size: 0.82rem; color: #71717a; }
+
+.unit-intake__grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 1rem;
+  margin-top: 1.1rem;
+}
+.unit-intake__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #3f3f46;
+}
+.unit-intake__field--wide { grid-column: 1 / -1; }
+.unit-intake__field input[type='number'],
+.unit-intake__field input[type='text'],
+.unit-intake__field select,
+.unit-intake__field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.6rem 0.75rem;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #d4d4d8;
+  border-radius: 8px;
+}
+.unit-intake__field textarea { resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.85rem; }
+.unit-intake__field input:focus,
+.unit-intake__field select:focus,
+.unit-intake__field textarea:focus {
+  outline: none;
+  border-color: #c97a1f;
+  box-shadow: 0 0 0 3px rgba(201, 122, 31, 0.15);
+}
+.unit-intake__field input:disabled { background: #f4f4f5; color: #71717a; }
+.unit-intake__hint { font-size: 0.74rem; font-weight: 400; color: #71717a; }
+
+.unit-intake__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1.15rem;
+  padding-top: 1rem;
+  border-top: 1px solid #f0f0f2;
+}
+.unit-intake__check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer; }
+.unit-intake__actions { display: flex; align-items: center; gap: 0.5rem; }
+.unit-intake__summary { margin-right: 0.4rem; font-size: 0.82rem; color: #52525b; }
+
+.unit-intake__msg {
+  margin: 0.8rem 0 0 auto;
+  max-width: 780px;
+  padding: 0.65rem 0.9rem;
+  font-size: 0.85rem;
+  background: #f4f4f5;
+  border-radius: 8px;
+}
+
+@media (max-width: 720px) {
+  .unit-intake__grid { grid-template-columns: 1fr; }
+}
+.unit-intake .unit-intake__pdi-card { margin-left: 0; }
+.unit-intake__pdi-list {
+  margin-top: 0.7rem;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid #e4e4e7;
+  border-radius: 10px;
+}
+.unit-intake__pdi-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.86rem;
+  border-bottom: 1px solid #f0f0f2;
+  cursor: pointer;
+}
+.unit-intake__pdi-row:last-child { border-bottom: 0; }
+.unit-intake__pdi-row:hover { background: #fafafa; }
+.unit-intake__pdi-vin { min-width: 14rem; font-family: var(--font-mono, ui-monospace, monospace); font-weight: 600; }
+/* Vehicle unit statuses: one colour each */
+.status-badge.vs-in-transit    { background: #dbeafe; color: #1d4ed8; }  /* blue */
+.status-badge.vs-received      { background: #cffafe; color: #0e7490; }  /* cyan */
+.status-badge.vs-pdi-pending   { background: #fef3c7; color: #b45309; }  /* amber */
+.status-badge.vs-available     { background: #dcfce7; color: #15803d; }  /* green */
+.status-badge.vs-reserved      { background: #f3e8ff; color: #7e22ce; }  /* purple */
+.status-badge.vs-booked        { background: #fce7f3; color: #be185d; }  /* pink */
+.status-badge.vs-allocated     { background: #e0e7ff; color: #4338ca; }  /* indigo */
+.status-badge.vs-demo          { background: #ecfccb; color: #4d7c0f; }  /* lime */
+.status-badge.vs-under-service { background: #ffedd5; color: #c2410c; }  /* orange */
+.status-badge.vs-damaged       { background: #fee2e2; color: #b91c1c; }  /* red */
+.status-badge.vs-sold          { background: #e2e8f0; color: #334155; }  /* slate */
+.status-badge.vs-delivered     { background: #efe3d3; color: #78350f; }  /* brown */
+.status-badge.vs-returned      { background: #ccfbf1; color: #0f766e; }  /* teal */

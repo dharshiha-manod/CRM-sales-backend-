@@ -16,7 +16,7 @@ import './MasterDataPages.css';
  * migration under apps/api), not localStorage or jsonb blobs.
  */
 
-export type FieldType = 'text' | 'number' | 'select' | 'combo' | 'date' | 'textarea' | 'lookup' | 'multi-lookup' | 'file';
+export type FieldType = 'text' | 'number' | 'select' | 'combo' | 'date' | 'textarea' | 'lookup' | 'multi-lookup' | 'file' | 'time';
 export type DynamicSelectOption = { value: string; label: string };
 export interface FieldDef {
   key: string;
@@ -134,6 +134,8 @@ export interface FieldDef {
    */
   dynamicOptionsValueKey?: string;
   visibleIf?: (form: Record<string, string>) => boolean;
+  /** Optional: value pre-filled when the Add form opens (e.g. today's date, the signed-in rep). Prefill/draft values still win. */
+  defaultValue?: () => string;
   onValueChange?: (value: string, form: Record<string, string>) => Record<string, string> | void;
   /**
    * Like `onValueChange`, but for work that has to be async (e.g. fetching
@@ -176,6 +178,8 @@ export interface TextileModuleConfig {
   searchableKeys: string[];
   kpis: KpiDef[];
 statusFilterable?: boolean;
+  /** Optional per-module status colours (lower-case status -> badge class). Modules that don't pass it keep the shared colours. */
+  statusClassMap?: Record<string, string>;
   /** Optional, off by default. Wider Add/Edit panel with a multi-column grid so a short form fits on one screen. */
   wideForm?: boolean;
   // Optional: hide the generic Status column entirely. Off by default for
@@ -285,9 +289,9 @@ const SAMPLE_STATUS_CLASS: Record<string, string> = {
   'quarantined': 'status-badge status-new',
   'recalled': 'status-badge status-batch-recalled',
 };
-
-function statusBadgeClass(status?: string): string {
+function statusBadgeClass(status?: string, classMap?: Record<string, string>): string {
   const s = (status ?? '').trim().toLowerCase();
+  if (classMap?.[s]) return classMap[s];
   if (SAMPLE_STATUS_CLASS[s]) return SAMPLE_STATUS_CLASS[s];
   if (GOOD_STATUSES.has(s)) return 'status-badge status-completed';
   if (BAD_STATUSES.has(s)) return 'status-badge inactive';
@@ -488,6 +492,9 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
     blank.__seq = sequenceLabel;
     for (const f of fields) {
       if (f.autoGenerate) blank[f.key] = resolveAutoGenerate(f, blank, sequenceLabel);
+    }
+    for (const f of fields) {
+      if (f.defaultValue) blank[f.key] = f.defaultValue() ?? '';
     }
     if (prefill) {
       for (const f of fields) {
@@ -732,7 +739,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
                     <td>
                       {inlineStatus && !usingDemoData ? (
                         <select
-                          className={`${statusBadgeClass(r.status)} status-select`}
+                       className={`${statusBadgeClass(r.status, config.statusClassMap)} status-select`}
                           value={r.status ?? ''}
                           disabled={statusBusyId === r.id}
                           aria-label={`Change status of ${String(r[nameField] ?? r[codeField] ?? '')}`}
@@ -743,7 +750,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
                           {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
                         </select>
                       ) : (
-                        <span className={statusBadgeClass(r.status)}>{r.status ?? '—'}</span>
+                     <span className={statusBadgeClass(r.status, config.statusClassMap)}>{r.status ?? '—'}</span>
                       )}
                     </td>
                   )}
@@ -792,7 +799,7 @@ const listColumns = fields.filter((f) => f.listColumn && !(f.key === 'status' &&
                <div className="modal-heading">
               <div>
                 <p className="eyebrow">{industryLabel} · {eyebrowModule}</p>
-                <h3>{String(viewing[nameField] ?? viewing[codeField] ?? 'Record')}{viewing.status ? <span className={statusBadgeClass(viewing.status)}>{String(viewing.status)}</span> : null}</h3>
+                <h3>{String(viewing[nameField] ?? viewing[codeField] ?? 'Record')}{viewing.status ? <span className={statusBadgeClass(viewing.status, config.statusClassMap)}>{String(viewing.status)}</span> : null}</h3>
               </div>
               <button className="icon-action" type="button" aria-label="Close" onClick={() => setViewing(null)}>×</button>
             </div>
@@ -1441,6 +1448,9 @@ function renderInput(
   }
   if (f.type === 'textarea') {
     return <textarea required={f.required} value={value} placeholder={f.placeholder} rows={3} onChange={(e) => onChange(e.target.value)} />;
+  }
+  if (f.type === 'time') {
+    return <input type="time" required={f.required} value={value} onChange={(e) => onChange(e.target.value)} />;
   }
   if (f.type === 'date') {
     return <input type="date" required={f.required} value={value} onChange={(e) => onChange(e.target.value)} />;

@@ -1,0 +1,8 @@
+/* Vehicle booking status colours (vehicle booking page only) */
+.status-badge.vb-requested          { background: #e2e8f0; color: #475569; }  /* slate  */
+.status-badge.vb-reserved           { background: #f3e8ff; color: #7e22ce; }  /* purple */
+.status-badge.vb-confirmed          { background: #dbeafe; color: #1d4ed8; }  /* blue   */
+.status-badge.vb-allocation-pending { background: #fef3c7; color: #b45309; }  /* amber  */
+.status-badge.vb-vehicle-allocated  { background: #dcfce7; color: #15803d; }  /* green  */
+.status-badge.vb-converted          { background: #ccfbf1; color: #0f766e; }  /* teal   */
+.status-badge.vb-cancelled          { background: #fee2e2; color: #b91c1c; }  /* red    */

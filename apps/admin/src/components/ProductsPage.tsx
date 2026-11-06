@@ -193,6 +193,23 @@ const VEHICLE_SPEC_LABELS: [keyof VehicleDetails, string][] = [
 const VEHICLE_FUEL_TYPES = ['Petrol', 'Diesel', 'CNG', 'Electric', 'Hybrid'];
 const VEHICLE_TRANSMISSIONS = ['Manual', 'Automatic', 'AMT', 'CVT'];
 const VEHICLE_CONDITIONS = ['New', 'Used'];
+const VEHICLE_ENGINE_TYPES = [
+  'Single cylinder, air-cooled', 'Single cylinder, liquid-cooled', '2-cylinder petrol', 'Parallel twin',
+  '3-cylinder petrol', '3-cylinder turbo petrol', '4-cylinder petrol', '4-cylinder turbo petrol',
+  '4-cylinder diesel', '4-cylinder turbo diesel', 'Common-rail turbo diesel', '6-cylinder petrol', 'V6', 'V8',
+  'CNG (bi-fuel)', 'Hybrid (petrol + electric)', 'Electric motor (single)', 'Electric motor (dual)',
+];
+const VEHICLE_WARRANTIES = [
+  '1 year / unlimited km', '2 years / unlimited km', '2 years / 30,000 km', '2 years / 40,000 km',
+  '3 years / 1,00,000 km', '3 years / unlimited km', '4 years / 1,00,000 km', '5 years / 1,00,000 km',
+  '5 years / unlimited km', '3 years vehicle + 8 years / 1,60,000 km battery', '8 years / 1,60,000 km battery',
+];
+const VEHICLE_SERVICE_INTERVALS = [
+  'Every 3,000 km or 3 months', 'Every 5,000 km or 6 months', 'Every 6,000 km or 6 months',
+  'Every 7,500 km or 6 months', 'Every 10,000 km or 6 months', 'Every 10,000 km or 12 months',
+  'Every 12,000 km or 12 months', 'Every 15,000 km or 12 months', 'Every 20,000 km or 12 months',
+  'Every 6 months', 'Every 12 months',
+];
 function packVehicleSpec(v: VehicleDetails): string {
   return VEHICLE_SPEC_LABELS.filter(([key]) => v[key].trim()).map(([key, label]) => `${label}: ${v[key].trim().replace(/\|/g, '/')}`).join(' | ');
 }
@@ -656,7 +673,7 @@ export function ProductsPage() {
       costPrice: form.costPrice === '' ? null : Number(form.costPrice),
       stockQuantity: isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '')
         ? form.textile.colors.reduce((sum, c) => sum + (Number(c.quantity) || 0), 0)
-        : (form.stockQuantity === '' ? null : Number(form.stockQuantity)),
+        : (isVehicle && editing ? undefined : (form.stockQuantity === '' ? null : Number(form.stockQuantity))),
       ...(showBatchUi ? { shelfLifeDays: form.shelfLifeDays === '' ? null : Number(form.shelfLifeDays) } : {}),
       status: form.status,
       unit: form.unit || null,
@@ -1042,9 +1059,18 @@ export function ProductsPage() {
                       {VEHICLE_CONDITIONS.map((item) => <option key={item} value={item}>{item}</option>)}
                     </select>
                   </label>
-                  <label>Engine type<input placeholder="e.g. 4-cylinder, single cylinder" value={form.vehicle.engineType} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, engineType: event.target.value } })} /></label>
-                  <label>Standard warranty<input placeholder="e.g. 3 years / 1,00,000 km" value={form.vehicle.warranty} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, warranty: event.target.value } })} /></label>
-                  <label>Service interval<input placeholder="e.g. every 10,000 km or 12 months" value={form.vehicle.serviceInterval} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, serviceInterval: event.target.value } })} /></label>
+                  <label>Engine type
+                    <input list="vehicle-engine-types" placeholder="Choose or type" value={form.vehicle.engineType} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, engineType: event.target.value } })} />
+                    <datalist id="vehicle-engine-types">{VEHICLE_ENGINE_TYPES.map((item) => <option key={item} value={item} />)}</datalist>
+                  </label>
+                  <label>Standard warranty
+                    <input list="vehicle-warranties" placeholder="Choose or type" value={form.vehicle.warranty} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, warranty: event.target.value } })} />
+                    <datalist id="vehicle-warranties">{VEHICLE_WARRANTIES.map((item) => <option key={item} value={item} />)}</datalist>
+                  </label>
+                  <label>Service interval
+                    <input list="vehicle-service-intervals" placeholder="Choose or type" value={form.vehicle.serviceInterval} onChange={(event) => setForm({ ...form, vehicle: { ...form.vehicle, serviceInterval: event.target.value } })} />
+                    <datalist id="vehicle-service-intervals">{VEHICLE_SERVICE_INTERVALS.map((item) => <option key={item} value={item} />)}</datalist>
+                  </label>
                 </>)}
                 {activeIndustry === 'pharma' && (<>
                   <label>Generic name<input placeholder="e.g. Atorvastatin" value={form.pharma.genericName} onChange={(event) => setForm({ ...form, pharma: { ...form.pharma, genericName: event.target.value } })} /></label>
@@ -1142,10 +1168,10 @@ export function ProductsPage() {
 <label>{isTrading ? 'Selling price (₹)' : 'Selling price (₹) — auto from MRP & Discount'}<input required min="0" type="number" step="0.01" value={form.sellingPrice} readOnly={!isTrading} disabled={!isTrading && Boolean(form.mrp)} onChange={(event) => setForm({ ...form, sellingPrice: event.target.value })} /></label>
                 <label>Tax / GST (%)<input min="0" max="100" type="number" step="0.01" value={form.taxPercent} onChange={(event) => setForm({ ...form, taxPercent: event.target.value })} /></label>
                 <label>Final price incl. GST (₹)<input readOnly disabled value={form.sellingPrice && form.taxPercent ? (Number(form.sellingPrice) + (Number(form.sellingPrice) * Number(form.taxPercent)) / 100).toFixed(2) : form.sellingPrice} /></label>
-                <label>{isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '') ? 'Total stock (sum of colours)' : isVehicle ? 'Units in stock' : 'Opening stock'}<input readOnly={isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '')} min="0" type="number" step="1" value={form.stockQuantity} onChange={(event) => setForm({ ...form, stockQuantity: event.target.value })} /></label>
+                <label>{isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '') ? 'Total stock (sum of colours)' : isVehicle ? (editing ? 'Units in stock (live count from Units)' : 'Opening units (creates this many units)') : 'Opening stock'}<input readOnly={(isTextile && form.textile.colors.some((c) => c.quantity.trim() !== '')) || (isVehicle && Boolean(editing))} min="0" type="number" step="1" value={form.stockQuantity} onChange={(event) => setForm({ ...form, stockQuantity: event.target.value })} /></label>
                 <label>Minimum stock level<input min="0" type="number" step="1" value={form.minStockLevel} onChange={(event) => setForm({ ...form, minStockLevel: event.target.value })} /></label>
                 {showBatchUi && <label>Shelf life (days)<input min="1" type="number" step="1" placeholder="e.g. 180" value={form.shelfLifeDays} onChange={(event) => setForm({ ...form, shelfLifeDays: event.target.value })} /><small className="text-faint-inline">Expiry = manufacturing date + this</small></label>}
-                {activeIndustry !== 'fmcg' && !isTextile && (<>
+                      {activeIndustry !== 'fmcg' && !isTextile && !isVehicle && (<>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '.6rem' }}>
 <input type="checkbox" style={{ width: 'auto', padding: 0, border: 'none', boxShadow: 'none', background: 'none' }} checked={form.trackBatch} onChange={(event) => setForm({ ...form, trackBatch: event.target.checked })} />                  This product has batch / expiry
                 </label>

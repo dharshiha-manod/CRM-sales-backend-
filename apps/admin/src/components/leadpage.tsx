@@ -97,6 +97,7 @@ type LeadForm = {
   customerType: string;
   interestedProduct: string;
   expectedOrderValue: string;
+  quantity: string;
   nextFollowUp: string;
   nextActionType: string;
   doctorSpecialty: string;
@@ -124,6 +125,7 @@ const blankForm: LeadForm = {
   customerType: 'retailer',
   interestedProduct: '',
   expectedOrderValue: '',
+  quantity: '1',
   nextFollowUp: '',
   nextActionType: '',
   doctorSpecialty: '',
@@ -429,6 +431,7 @@ type FmcgMeta = {
   expectedOrderValue?: string;
   nextFollowUp?: string;
   doctorSpecialty?: string;
+  quantity?: string;
 };
 
 function packFmcgMeta(freeTextNotes: string, meta: FmcgMeta): string {
@@ -701,6 +704,46 @@ const cardProps = (key: typeof cardFilter) => ({
   onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setCardFilter(key); } },
 });
 
+// Vehicle only: Expected order value = product selling price × quantity.
+// Returns null when no price can be found, so the current value is left untouched.
+function vehicleOrderValue(productName: string, quantityRaw: string): string | null {
+  if (activeIndustry !== 'vehicle') return null;
+  const product = productOptions.find((p) => p.product_name === productName);
+  if (!product) return null;
+  const price = Number(product.selling_price);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const parsed = Math.floor(Number(quantityRaw));
+  const qty = Number.isFinite(parsed) && parsed >= 1 ? Math.min(parsed, 500) : 1;
+  return String(price * qty);
+}
+
+// Vehicle only: hand a lead over to Test drive / Booking, with the lead's interested model pre-selected.
+async function openVehicleDraft(kind: 'test-drive' | 'booking', lead: Lead) {
+  setMenuFor(null);
+  const draft: Record<string, string> = { lead_id: lead.id, client_name: lead.company_name ?? '' };
+  if (lead.converted_client_id) draft.client_id = String(lead.converted_client_id);
+  // The lead's assigned sales representative carries over so the Test drive / Booking form needn't ask again.
+  const leadRep = lead.sales_representatives?.user_profiles?.display_name ?? lead.sales_representatives?.employee_code;
+  if (leadRep) draft.sales_rep = leadRep;
+  const interested = unpackFmcgMeta(lead.notes).meta.interestedProduct?.trim();
+  const product = interested ? productOptions.find((p) => p.product_name === interested) : undefined;
+  if (product) {
+    try {
+      const models = (await api<{ data: Array<{ id: string; model_name?: string | null; product_id?: string | null }> }>(
+        `/vehicle/models${activeIndustryTypeId ? `?industryTypeId=${encodeURIComponent(activeIndustryTypeId)}` : ''}`,
+      )).data ?? [];
+      const model = models.find((m) => m.product_id === product.id);
+      if (model) {
+        draft.model_id = model.id;
+        draft.model_name = model.model_name ?? '';
+      }
+    } catch {
+      // The form still opens; the user can pick the model by hand.
+    }
+  }
+  queueVehicleDraft(kind, draft);
+}
+
 function openCreate() {
   setEditingLeadId(null);
   setForm({
@@ -743,7 +786,8 @@ function openCreate() {
       shopType: meta.shopType ?? defaultOptionValue(shopTypeConfig, activeIndustry),
       customerType: meta.customerType ?? defaultOptionValue(customerTypeConfig, activeIndustry),
       interestedProduct: meta.interestedProduct ?? '',
-      expectedOrderValue: meta.expectedOrderValue ?? '',
+        expectedOrderValue: meta.expectedOrderValue ?? '',
+      quantity: meta.quantity ?? '1',
       doctorSpecialty: meta.doctorSpecialty ?? '',
       // Prefer the real next_action_due_at column (what the table/KPIs read)
       // and fall back to the legacy meta-only value for leads saved before
@@ -852,6 +896,7 @@ function openCreate() {
           customerType: form.customerType,
           interestedProduct: form.interestedProduct.trim(),
           expectedOrderValue: form.expectedOrderValue.trim(),
+          ...(activeIndustry === 'vehicle' ? { quantity: form.quantity.trim() } : {}),  
           nextFollowUp: form.nextFollowUp,
           ...(activeIndustry === 'pharma' ? { doctorSpecialty: form.doctorSpecialty.trim() } : {}),
         }) || null,
@@ -1401,12 +1446,19 @@ async function suggestRep() {
                   </button>
                   {activeIndustry === 'vehicle' && (
                     <>
-                      <button type="button" title="Book test drive" onClick={() => { setMenuFor(null); queueVehicleDraft('test-drive', { lead_id: lead.id, client_name: lead.company_name ?? '', ...((lead as unknown as { converted_client_id?: string | null }).converted_client_id ? { client_id: String((lead as unknown as { converted_client_id?: string }).converted_client_id) } : {}) }); }}>
+                                      <button type="button" title="Book test drive" onClick={() => void openVehicleDraft('test-drive', lead)}>
                         <span>Book test drive</span>
                       </button>
-                      <button type="button" title="Book vehicle" onClick={() => { setMenuFor(null); queueVehicleDraft('booking', { lead_id: lead.id, client_name: lead.company_name ?? '', ...((lead as unknown as { converted_client_id?: string | null }).converted_client_id ? { client_id: String((lead as unknown as { converted_client_id?: string }).converted_client_id) } : {}) }); }}>
-                        <span>Book vehicle</span>
-                      </button>
+                      {lead.status === 'converted' ? (
+                        // Converted = the order exists, so its booking was created automatically: open the bookings instead of adding a duplicate.
+                        <button type="button" title="View booking" onClick={() => { setMenuFor(null); window.location.hash = 'industry:vehicle:booking'; }}>
+                          <span>View booking</span>
+                        </button>
+                      ) : (
+                        <button type="button" title="Book vehicle" onClick={() => void openVehicleDraft('booking', lead)}>
+                          <span>Book vehicle</span>
+                        </button>
+                      )}
                     </>
                   )}
                   <button
@@ -1848,9 +1900,17 @@ async function suggestRep() {
                   </label>
                                                      <label>
                     Interested product / category
-                    <select
+                                     <select
                       value={form.interestedProduct}
-                      onChange={(e) => setForm({ ...form, interestedProduct: e.target.value })}
+                      onChange={(e) => {
+                        const interestedProduct = e.target.value;
+                        const autoValue = vehicleOrderValue(interestedProduct, form.quantity);
+                        setForm({
+                          ...form,
+                          interestedProduct,
+                          ...(autoValue !== null ? { expectedOrderValue: autoValue } : {}),
+                        });
+                      }}
                     >
                       <option value="">Select a product</option>
                       {productOptions.map((product) => (
@@ -1862,8 +1922,29 @@ async function suggestRep() {
                   </label>
                   <label>
                     Expected order value ({['fmcg', 'trading'].includes(String(activeIndustry).toLowerCase()) && form.currencyCode && form.currencyCode !== 'INR' ? form.currencyCode : '₹'})
-                    <input type="number" min="0" value={form.expectedOrderValue} onChange={(e) => setForm({ ...form, expectedOrderValue: e.target.value })} />
+                                    <input type="number" min="0" value={form.expectedOrderValue} onChange={(e) => setForm({ ...form, expectedOrderValue: e.target.value })} />
                   </label>
+                  {activeIndustry === 'vehicle' && (
+                    <label>
+                      Quantity (number of vehicles)
+                      <input
+                        type="number"
+                        min="1"
+                        max="500"
+                        step="1"
+                        value={form.quantity}
+                        onChange={(e) => {
+                          const quantity = e.target.value;
+                          const autoValue = vehicleOrderValue(form.interestedProduct, quantity);
+                          setForm({
+                            ...form,
+                            quantity,
+                            ...(autoValue !== null ? { expectedOrderValue: autoValue } : {}),
+                          });
+                        }}
+                      />
+                    </label>
+                  )}
                             <label>
                     Priority
                     <select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>

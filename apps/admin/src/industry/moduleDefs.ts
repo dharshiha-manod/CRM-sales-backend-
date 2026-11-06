@@ -98,7 +98,7 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
   // Vehicle-specific modules belong in this array.
   vehicle: [
     { id: 'dealers', label: 'Dealer Management', icon: '◎' },
-    { id: 'catalog', label: 'Vehicle / Parts Catalog', icon: '▣' },
+       { id: 'catalog', label: 'Vehicle Units & Spare Parts', icon: '▣' },
     { id: 'test-drive', label: 'Test Drive Management', icon: '○' },
     { id: 'booking', label: 'Vehicle Booking', icon: '▣' },
     { id: 'schemes', label: 'Schemes & Discounts', icon: '％' },
