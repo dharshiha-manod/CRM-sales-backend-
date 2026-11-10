@@ -9,6 +9,9 @@ import { VEHICLE_RESOURCES } from './vehicle-resources.js';
 import { schemeCredit, stageFor } from './vehicle-calc.js';
 import { defaultChecklistFor } from './vehicle-documents.js';
 import { enqueueCustomerMessage } from './vehicle-notify.js';
+import { syncDeliveryDocuments } from './vehicle-doc-sync.js';
+import { cancelVehicleInvoices, ensureVehicleInvoice, markVehicleInvoicePaid } from './vehicle-invoice.js';
+import type { IndustryScope } from './industry-scope.js';
 
 type Row = Record<string, unknown>;
 
@@ -172,10 +175,58 @@ export async function refreshDeliveryPayments(org: string, ind?: string | null):
       if (t > 0 && (paid.get(String(d.order_id)) ?? 0) >= t - 0.5) {
         const merged = { ...d, payment_status: 'Complete' };
         await supabaseAdmin.from('vehicle_deliveries').update({ payment_status: 'Complete', status: deliveryStageFor(merged) }).eq('id', d.id as string);
+        await markVehicleInvoicePaid(org, String(d.industry_type_id), d.vin, d.order_id);
         if (deliveryStageFor(merged) === 'Ready for Delivery') await enqueueCustomerMessage(org, ind ?? null, { key: `dlv:${String(d.id)}:ready`, kind: 'delivery_ready', clientId: d.client_id, subject: 'Your vehicle is ready for delivery', body: `Dear ${str(d.client_name) || 'Customer'}, your vehicle ${str(d.vin)} is ready for delivery. Please contact us to confirm the handover time.` });
       }
     }
   }, undefined);
+}
+
+// ---------------------------------------------------------------- booking cancelled -> everything it opened is released
+/**
+ * A booking was cancelled (by itself, by an approved "Booking Cancellation" return, or deleted): its open Delivery / PDI file is
+ * cancelled, its Issued tax invoice is withdrawn, the VIN goes back to stock and the next waiting booking of that model gets it.
+ * A Delivered vehicle is never touched. Vehicle only (it only reads vehicle tables). Never throws.
+ */
+export async function releaseBookingFiles(org: string, ind: string, booking: Row): Promise<void> {
+  await safe('releaseBookingFiles', async () => {
+    const bookingNo = str(booking.booking_number);
+    if (bookingNo) {
+      const { data: open } = await supabaseAdmin.from('vehicle_deliveries').select('id, vin, order_id').eq('organization_id', org).eq('industry_type_id', ind).eq('booking_number', bookingNo).in('status', OPEN_DELIVERY);
+      for (const d of (open ?? []) as Row[]) {
+        await supabaseAdmin.from('vehicle_deliveries').update({ status: 'Cancelled', remarks: `Booking ${bookingNo} was cancelled.` }).eq('id', d.id as string);
+        await cancelVehicleInvoices(org, ind, { vin: d.vin ?? booking.vin, orderId: d.order_id ?? booking.order_id });
+      }
+    }
+    if (has(booking.vin)) await setUnitStatus(org, ind, booking.vin, 'Available', HELD);
+    await allocatePendingBookings(org, ind, booking.model_id);
+  }, undefined);
+}
+
+// ---------------------------------------------------------------- booking advance -> Core Collections (also for bookings linked to an order later)
+/**
+ * Every live booking that has an advance amount and a Core order, but whose advance never reached Core Collections
+ * (the order was linked after the booking was saved), is posted now - once (the booking number is the unique reference).
+ */
+export async function postPendingBookingAdvances(org: string, ind: string): Promise<number> {
+  return safe('postPendingBookingAdvances', async () => {
+    const { data } = await supabaseAdmin.from('vehicle_bookings').select('id, booking_number, order_id, booking_amount').eq('organization_id', org).eq('industry_type_id', ind)
+      .not('order_id', 'is', null).gt('booking_amount', 0).is('payment_reference', null).neq('status', 'Cancelled').limit(200);
+    if (!(data ?? []).length) return 0;
+    const { collectionsService } = await import('../services/collections.service.js'); // loaded here to avoid an import cycle
+    const scope: IndustryScope = { role: 'admin', lockedIndustryTypeId: ind, activeIndustryTypeId: ind };
+    let posted = 0;
+    for (const b of (data ?? []) as Row[]) {
+      try {
+        const ref = str(b.booking_number);
+        const { data: dupe } = await supabaseAdmin.from('sales_collections').select('id').eq('organization_id', org).eq('sale_order_id', String(b.order_id)).eq('reference_no', ref).limit(1).maybeSingle();
+        if (!dupe) await collectionsService.createForOrder(org, { orderId: String(b.order_id), amount: num(b.booking_amount), mode: 'other', referenceNo: ref, notes: `Booking advance ${ref}` }, scope);
+        await supabaseAdmin.from('vehicle_bookings').update({ payment_reference: ref }).eq('id', b.id as string);
+        posted += 1;
+      } catch (e) { logger.warn({ err: e, booking: b.booking_number }, 'vehicle: booking advance could not be posted to Collections'); }
+    }
+    return posted;
+  }, 0);
 }
 
 // ---------------------------------------------------------------- allocation (first in, first out)
@@ -218,6 +269,62 @@ export async function allocatePendingBookings(org: string, ind: string, modelId:
 }
 
 /** A booking holds a VIN: open the Delivery/PDI file, the Finance file (if needed) and link the Exchange. */
+/** Where the customer's insurance comes from. Older bookings only have the Yes / No flag: Yes means the showroom arranges it. */
+export function insuranceSourceOf(booking: Row): string {
+  const src = str(booking.insurance_source);
+  if (['Dealer arranged', "Customer's own", 'Not required'].includes(src)) return src;
+  return yes(booking.insurance_required) ? 'Dealer arranged' : 'Not required';
+}
+
+/** The free offers (insurance / accessories / finance) of the scheme written on a booking. Vehicle only; null when the booking has no scheme. */
+async function schemeOffersOf(org: string, ind: string, booking: Row): Promise<{ name: string; insurance: string; accessories: string; finance: string } | null> {
+  let key = has(booking.scheme_name) ? String(booking.scheme_name).trim() : '';
+  if (!key && has(booking.order_id)) { // booking made from an order: take the scheme that discounted its vehicle line
+    const { data: lines } = await supabaseAdmin.from('sale_order_items').select('vehicle_scheme_ref').eq('order_id', String(booking.order_id)).not('vehicle_scheme_ref', 'is', null).limit(5);
+    const ref = ((lines ?? []) as Row[]).map((l) => str(l.vehicle_scheme_ref)).find(Boolean);
+    key = ref ? (ref.split('|').map((x) => x.trim()).find(Boolean) ?? '') : '';
+  }
+  if (!key) return null;
+  const scheme = (await one('vehicle_schemes', org, 'scheme_name', key, ind)) ?? (await one('vehicle_schemes', org, 'scheme_id', key, ind));
+  if (!scheme) return null;
+  return { name: str(scheme.scheme_name), insurance: str(scheme.insurance_offer), accessories: str(scheme.accessories_offer), finance: str(scheme.finance_offer) };
+}
+
+/**
+ * Opens the insurance file of a booking once its vehicle is known (status Requested). The insurance desk then moves it
+ * Requested > Quoted > Customer Accepted > Cover Note Issued > Active, and the delivery file counts a cover note as cover.
+ * Skipped when the booking needs no insurance, or the booking / vehicle already has one. Never throws.
+ */
+export async function ensureBookingInsurance(org: string, ind: string, booking: Row): Promise<void> {
+  await safe('ensureBookingInsurance', async () => {
+    if (!has(booking.vin) || !has(booking.booking_number)) { logger.info({ booking: booking.booking_number }, 'vehicle-insurance: skipped - booking has no VIN yet'); return; }
+    const offers = await schemeOffersOf(org, ind, booking); // a scheme with an insurance offer shows it on the policy
+    let source = insuranceSourceOf(booking);
+    // no insurance choice was made on the booking (e.g. booking made from an order) and the scheme gives free insurance: the showroom arranges it
+    if (source === 'Not required' && offers?.insurance && !has(booking.insurance_source) && !has(booking.insurance_required)) source = 'Dealer arranged';
+    if (source === 'Not required') { logger.info({ booking: booking.booking_number, insurance_required: booking.insurance_required ?? null, insurance_source: booking.insurance_source ?? null, schemeFound: Boolean(offers), schemeInsuranceOffer: offers?.insurance ?? null }, 'vehicle-insurance: skipped - booking says insurance Not required (or no scheme with a free insurance offer was found)'); return; }
+    const vin = String(booking.vin), bookingNo = String(booking.booking_number);
+    const byBooking = await supabaseAdmin.from('vehicle_insurance_policies').select('id').eq('organization_id', org).eq('industry_type_id', ind).eq('booking_number', bookingNo).neq('status', 'Cancelled').limit(1);
+    if (!byBooking.error && (byBooking.data ?? []).length) return; // already opened for this booking (logged only when it fails below)
+    const { data: covered } = await supabaseAdmin.from('vehicle_insurance_policies').select('id').eq('organization_id', org).eq('industry_type_id', ind).eq('vin', vin).in('status', ['Cover Note Issued', 'Active', 'Expiring Soon']).limit(1);
+    if ((covered ?? []).length) return; // the vehicle is already covered (a policy added by hand)
+    const start = todayLocal();
+    const end = new Date(`${start}T00:00:00Z`); end.setUTCFullYear(end.getUTCFullYear() + 1); end.setUTCDate(end.getUTCDate() - 1);
+    const row: Row = {
+      client_name: booking.client_name, client_id: booking.client_id ?? null, vin, booking_number: bookingNo, insurance_source: source,
+      policy_type: 'Comprehensive', coverage: offers?.insurance ? `${offers.insurance} (scheme: ${offers.name}) - Comprehensive cover for ${vin}` : `Comprehensive cover for ${vin}`, start_date: start, expiry_date: end.toISOString().slice(0, 10), status: 'Requested',
+      organization_id: org, industry_type_id: ind,
+    };
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const number = await nextVehicleCode('vehicle_insurance_policies', 'INS', org, attempt);
+      const { error } = await supabaseAdmin.from('vehicle_insurance_policies').insert({ ...row, policy_number: number });
+      if (!error) { logger.info({ booking: bookingNo, policy: number }, 'vehicle-insurance: policy created'); return; }
+      if (/booking_number|insurance_source/.test(String(error.message))) { delete row.booking_number; delete row.insurance_source; continue; } // migration not run yet: open the file without the new columns
+      if (error.code !== '23505') throw error;
+    }
+  }, undefined);
+}
+
 export async function onBookingAllocated(org: string, ind: string, booking: Row): Promise<void> {
   await safe('onBookingAllocated', async () => {
     if (!has(booking.vin)) return;
@@ -231,7 +338,10 @@ export async function onBookingAllocated(org: string, ind: string, booking: Row)
       const ex = existing as Row;
       if (ex.vin !== vin && ex.status !== 'Delivered') await supabaseAdmin.from('vehicle_deliveries').update({ vin, engine_number: unit?.engine_number ?? null }).eq('id', ex.id as string);
     } else {
+      const offers = await schemeOffersOf(org, ind, booking); // free accessories / offers of the scheme go on the handover file
+      const offerText = offers ? [offers.accessories ? `Free accessories: ${offers.accessories}` : '', offers.insurance ? `Insurance: ${offers.insurance}` : '', offers.finance ? `Finance: ${offers.finance}` : ''].filter(Boolean).join(' | ') : '';
       const row: Row = {
+        ...(offers && offerText ? { remarks: `Scheme ${offers.name} - ${offerText}. Hand these over before delivery.` } : {}),
         client_name: booking.client_name, client_id: booking.client_id ?? null, vin, engine_number: unit?.engine_number ?? null,
         sales_order_reference: booking.order_number ?? null, order_id: booking.order_id ?? null, order_number: booking.order_number ?? null, booking_number: bookingNo,
         dealer_id: booking.dealer_id ?? null, dealer_name: booking.dealer_name ?? null, sales_rep: booking.sales_rep ?? null,
@@ -253,11 +363,18 @@ export async function onBookingAllocated(org: string, ind: string, booking: Row)
     // Finance file
     if (yes(booking.finance_required)) {
       const { data: fin } = await supabaseAdmin.from('vehicle_finance_applications').select('id').eq('organization_id', org).eq('industry_type_id', ind).eq('booking_number', bookingNo).limit(1).maybeSingle();
-      if (!fin) {
+         if (!fin) {
+        // prefill from the order: down payment = booking advance, loan = order total - advance (the loan officer can change both)
+        let financePrefill: Row = {};
+        if (has(booking.order_id)) {
+          const { data: o } = await supabaseAdmin.from('sale_orders').select('total_amount, base_total').eq('organization_id', org).eq('id', String(booking.order_id)).maybeSingle();
+          const total = num((o as Row | null)?.total_amount ?? (o as Row | null)?.base_total);
+          if (total > 0) financePrefill = { down_payment: num(booking.booking_amount), loan_amount: Math.max(total - num(booking.booking_amount), 0) };
+        }
         for (let attempt = 0; attempt < 5; attempt += 1) {
           const number = await nextVehicleCode('vehicle_finance_applications', 'FIN', org, attempt);
           const { error } = await supabaseAdmin.from('vehicle_finance_applications').insert({
-            application_number: number, client_name: booking.client_name, client_id: booking.client_id ?? null, vin, order_id: booking.order_id ?? null,
+            ...financePrefill, application_number: number, client_name: booking.client_name, client_id: booking.client_id ?? null, vin, order_id: booking.order_id ?? null,
             booking_number: bookingNo, sales_order_reference: booking.order_number ?? null, application_date: todayLocal(), status: 'Started',
             organization_id: org, industry_type_id: ind,
           });
@@ -270,12 +387,15 @@ export async function onBookingAllocated(org: string, ind: string, booking: Row)
     // Registration file opens now (not after handover); insurance is chased by a follow-up call
     const { data: regExisting } = await supabaseAdmin.from('vehicle_registrations').select('id').eq('organization_id', org).eq('industry_type_id', ind).eq('vin', vin).maybeSingle();
     if (!regExisting) await supabaseAdmin.from('vehicle_registrations').insert({ organization_id: org, industry_type_id: ind, vin, client_name: booking.client_name, client_id: booking.client_id ?? null, engine_number: unit?.engine_number ?? null, invoice_reference: booking.order_number ?? null, status: 'Pending' });
-    if (yes(booking.insurance_required) && has(booking.client_id)) {
+    await ensureBookingInsurance(org, ind, booking);
+    const insuranceSource = insuranceSourceOf(booking);
+    if (insuranceSource !== 'Not required' && has(booking.client_id)) {
       const rep = await representativeFor(org, ind, booking.client_id, booking.lead_id);
-      const title = `Arrange insurance: ${str(booking.client_name) || 'customer'} - ${vin}`;
+      const own = insuranceSource === "Customer's own";
+      const title = `${own ? 'Collect insurance copy' : 'Arrange insurance'}: ${str(booking.client_name) || 'customer'} - ${vin}`;
       if (rep) {
         const { data: dupF } = await supabaseAdmin.from('follow_ups').select('id').eq('organization_id', org).eq('client_id', booking.client_id as string).eq('title', title).limit(1).maybeSingle();
-        if (!dupF) await supabaseAdmin.from('follow_ups').insert({ organization_id: org, representative_id: rep, client_id: booking.client_id, title, due_at: new Date(Date.now() + 86_400_000).toISOString(), priority: 'high', follow_up_type: 'call', notes: `Booking ${bookingNo} needs insurance before handover. Add the policy in Insurance; the delivery file updates by itself.` });
+        if (!dupF) await supabaseAdmin.from('follow_ups').insert({ organization_id: org, representative_id: rep, client_id: booking.client_id, title, due_at: new Date(Date.now() + 86_400_000).toISOString(), priority: 'high', follow_up_type: 'call', notes: own ? `Booking ${bookingNo}: the customer brings their own insurance. Collect the policy or cover note copy and enter it in Insurance before handover; the delivery file updates by itself.` : `Booking ${bookingNo} needs insurance before handover. Get the quote, then move the Insurance record Quoted > Customer Accepted > Cover Note Issued; the delivery file updates by itself.` });
       }
     }
 
@@ -284,8 +404,36 @@ export async function onBookingAllocated(org: string, ind: string, booking: Row)
       await supabaseAdmin.from('vehicle_exchanges').update({ new_vehicle_vin: vin, booking_number: bookingNo, order_id: booking.order_id ?? null, sales_order_reference: booking.order_number ?? null })
         .eq('organization_id', org).eq('industry_type_id', ind).eq('exchange_id', String(booking.exchange_reference));
     }
+      // the Core order may be linked to the booking after the delivery file was opened: copy it over, then raise the tax invoice
+    const { data: dlv } = await supabaseAdmin.from('vehicle_deliveries').select('*').eq('organization_id', org).eq('industry_type_id', ind).eq('booking_number', bookingNo).neq('status', 'Cancelled').limit(1).maybeSingle();
+    if (dlv) {
+      let d = dlv as Row;
+      if (!has(d.order_id) && has(booking.order_id) && d.status !== 'Delivered') {
+        d = { ...d, order_id: booking.order_id, order_number: booking.order_number ?? null, sales_order_reference: booking.order_number ?? null };
+        await supabaseAdmin.from('vehicle_deliveries').update({ order_id: d.order_id, order_number: d.order_number, sales_order_reference: d.sales_order_reference }).eq('id', d.id as string);
+      }
+      await ensureVehicleInvoice(org, ind, d);
+    }
+    await syncDeliveryDocuments(org, ind, vin); // policy / loan / invoice already on file -> checklist ticks now
     await refreshDeliveryPayments(org, ind);
   }, undefined);
+}
+
+/** A booking with no Core order links itself to the client's matching open order (same rule as saving a booking). Returns the updated booking, or null. */
+export async function linkBookingToOrder(org: string, ind: string, booking: Row): Promise<Row | null> {
+  return safe('linkBookingToOrder', async () => {
+    if (has(booking.order_id) || booking.status === 'Cancelled' || !has(booking.client_id) || !has(booking.model_id)) return null;
+    const model = await one('vehicle_models', org, 'id', booking.model_id, ind);
+    if (!model || !has(model.product_id)) return null;
+    const { data: cands } = await supabaseAdmin.from('sale_orders').select('id, order_number, sale_order_items!inner(product_id)').eq('organization_id', org).eq('client_id', String(booking.client_id)).eq('sale_order_items.product_id', String(model.product_id)).not('status', 'in', '(cancelled,pending_approval)').order('created_at', { ascending: false }).limit(10);
+    for (const o of (cands ?? []) as Row[]) {
+      const { count } = await supabaseAdmin.from('vehicle_bookings').select('id', { count: 'exact', head: true }).eq('organization_id', org).eq('order_id', o.id as string).eq('model_id', String(booking.model_id)).neq('status', 'Cancelled');
+      if (count) continue;
+      await supabaseAdmin.from('vehicle_bookings').update({ order_id: o.id, order_number: o.order_number }).eq('id', booking.id as string);
+      return { ...booking, order_id: o.id, order_number: o.order_number };
+    }
+    return null;
+  }, null);
 }
 
 // ---------------------------------------------------------------- model <-> Product (keeps Lead -> Quotation chain working)
@@ -611,7 +759,14 @@ export async function onVehicleOrderCreated(org: string, orderId: string): Promi
       const refs = items.filter((i) => i.product_id === model.product_id).map((i) => str(i.vehicle_scheme_ref)).find(Boolean);
       const firstId = refs ? refs.split('|').map((x) => x.trim()).find(Boolean) : undefined;
       const lineScheme = firstId ? await one('vehicle_schemes', org, 'scheme_id', firstId, ind) : null;
-      for (let n = count ?? 0; n < wanted; n += 1) {
+         for (let n = count ?? 0; n < wanted; n += 1) {
+        // a draft / unlinked booking of the same client and model (e.g. from a test drive) is taken over instead of creating a second one
+        const { data: openB } = await supabaseAdmin.from('vehicle_bookings').select('*').eq('organization_id', org).eq('industry_type_id', ind).eq('model_id', model.id as string).eq('client_id', order.client_id as string).is('order_id', null).neq('status', 'Cancelled').order('created_at', { ascending: true }).limit(1).maybeSingle();
+        if (openB) {
+          const ob = openB as Row;
+          const { data: adopted } = await supabaseAdmin.from('vehicle_bookings').update({ order_id: orderId, order_number: order.order_number, ...(ob.status === 'Requested' ? { status: 'Confirmed' } : {}), ...(!has(ob.scheme_name) && lineScheme ? { scheme_name: lineScheme.scheme_name } : {}) }).eq('id', ob.id as string).is('order_id', null).select().maybeSingle();
+          if (adopted) { if (has((adopted as Row).vin)) await onBookingAllocated(org, ind, adopted as Row); else await tryAllocate(org, ind, adopted as Row); continue; }
+        }
         let booking: Row | null = null;
         for (let attempt = 0; attempt < 5 && !booking; attempt += 1) {
           const { data, error } = await supabaseAdmin.from('vehicle_bookings').insert({
@@ -625,6 +780,7 @@ export async function onVehicleOrderCreated(org: string, orderId: string): Promi
         if (booking) await tryAllocate(org, ind, booking);
       }
     }
+    await postPendingBookingAdvances(org, ind); // an advance taken before the order existed now reaches Collections
   }, undefined);
 }
 
@@ -646,6 +802,7 @@ export async function onVehicleOrderCancelled(org: string, orderId: string): Pro
       await supabaseAdmin.from('vehicle_deliveries').update({ status: 'Cancelled' }).eq('id', d.id as string);
       if (has(d.vin)) await setUnitStatus(org, ind, d.vin, 'Available', HELD);
     }
+    await cancelVehicleInvoices(org, ind, { orderId });
     // money already received on the order (not loan / exchange credit) -> a refund request for staff to approve; nothing is paid out automatically
     const { data: seen } = await supabaseAdmin.from('vehicle_returns').select('id').eq('organization_id', org).eq('industry_type_id', ind).eq('order_id', orderId).limit(1).maybeSingle();
     if (!seen) {

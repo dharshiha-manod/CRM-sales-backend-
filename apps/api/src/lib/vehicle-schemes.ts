@@ -115,9 +115,8 @@ export async function loadVehicleSchemeEngine(org: string, industryTypeId: strin
     if (schemeError) throw schemeError;
     const dated = ((schemeRows ?? []) as Row[]).filter((s) =>
       (!has(s.start_date) || String(s.start_date).slice(0, 10) <= today)
-      && (!has(s.end_date) || String(s.end_date).slice(0, 10) >= today)
-      && str(s.approval_required) !== 'Yes'); // a scheme that needs manager sign-off is never given automatically (a manager applies it on the booking)
-    if (!dated.length) return why(`no Active scheme is valid today with approval not required (${(schemeRows ?? []).length} Active scheme(s) found)`);
+      && (!has(s.end_date) || String(s.end_date).slice(0, 10) >= today)); // every Active, in-date scheme applies on a quotation / order; "Approval required" only limits who may pick it on a booking
+    if (!dated.length) return why(`no Active scheme is valid today (${(schemeRows ?? []).length} Active scheme(s) found)`);
 
     // customer type: who is buying decides which customer-specific schemes fit
     const needsCustomer = dated.some((s) => has(s.customer_type) && str(s.customer_type) !== 'All customers');

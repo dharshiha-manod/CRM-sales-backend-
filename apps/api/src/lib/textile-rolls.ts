@@ -1,6 +1,8 @@
 // Textile fabric-roll helpers shared by Fabric Roll, Orders and Delivery.
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from './supabase.js';
+import { logger } from './logger.js';
+import { cutMetresForOrder, cutRelease, cutSell } from './textile-roll-ledger.js';
 
 type Row = Record<string, unknown>;
 const num = (v: unknown) => Number(v ?? 0) || 0;
@@ -25,6 +27,12 @@ export async function reservedMetresFor(orgId: string, productId: string, produc
   const covered = new Map<string, number>();
   for (const r of (rolls ?? []) as { order_id: string; length_meters: number | null }[]) {
     covered.set(r.order_id, (covered.get(r.order_id) ?? 0) + num(r.length_meters));
+  }
+  // Metres cut from rolls for these orders are already taken off the roll, so they cover the order too.
+  const { data: cuts } = await supabaseAdmin.from('textile_roll_allocations').select('order_id, metres')
+    .eq('organization_id', orgId).eq('product_code', productCode).in('status', ['Reserved', 'Sold']).in('order_id', [...ordered.keys()]);
+  for (const c of (cuts ?? []) as { order_id: string; metres: number | null }[]) {
+    covered.set(c.order_id, (covered.get(c.order_id) ?? 0) + num(c.metres));
   }
   let reserved = 0;
   for (const [orderId, qty] of ordered) reserved += Math.max(0, qty - (covered.get(orderId) ?? 0));
@@ -54,7 +62,7 @@ export async function syncProductStockFromRolls(orgId: string, productCode: unkn
     const reserved = await reservedMetresFor(orgId, (product as { id: string }).id, productCode);
     await supabaseAdmin.from('products').update({ stock_quantity: Math.max(0, total - reserved), textile_details: { ...details, colors } })
       .eq('organization_id', orgId).eq('id', (product as { id: string }).id);
-  } catch { /* keep the caller working even if the product sync fails */ }
+  } catch (e) { logger.error({ err: e, productCode }, 'textile: product stock sync from rolls failed'); }
 }
 
 async function resyncProducts(orgId: string, codes: unknown[]) {
@@ -64,6 +72,12 @@ async function resyncProducts(orgId: string, codes: unknown[]) {
 /** Order cancelled: every roll still Issued to it goes back to In stock. Best effort. */
 export async function releaseRollsForOrder(orgId: string, orderId: string) {
   try {
+    // Cut metres still Reserved for this order go back onto their rolls (the ledger records it).
+    const { data: cuts } = await supabaseAdmin.from('textile_roll_allocations').select('id, product_code')
+      .eq('organization_id', orgId).eq('order_id', orderId).eq('status', 'Reserved');
+    const cutList = (cuts ?? []) as { id: string; product_code: string | null }[];
+    for (const c of cutList) await cutRelease(orgId, null, c.id, 'Order cancelled');
+    if (cutList.length) await resyncProducts(orgId, cutList.map((c) => c.product_code));
     const { data: rolls } = await supabaseAdmin.from('textile_fabric_rolls').select('id, product_code')
       .eq('organization_id', orgId).eq('order_id', orderId).eq('status', 'Issued');
     const list = (rolls ?? []) as { id: string; product_code: string | null }[];
@@ -72,12 +86,18 @@ export async function releaseRollsForOrder(orgId: string, orderId: string) {
       .update({ status: 'In stock', order_id: null, order_number: null, issued_date: null, sold_date: null })
       .eq('organization_id', orgId).in('id', list.map((r) => r.id));
     await resyncProducts(orgId, list.map((r) => r.product_code));
-  } catch { /* best effort */ }
+  } catch (e) { logger.error({ err: e, orderId }, 'textile: releasing rolls for cancelled order failed'); }
 }
 
 /** Order dispatched: every roll Issued to it becomes Sold right away. Best effort. */
 export async function markRollsSoldForOrder(orgId: string, orderId: string) {
   try {
+    // Reserved cuts become sold (ledger: cut_sold).
+    const { data: cuts } = await supabaseAdmin.from('textile_roll_allocations').select('id, product_code')
+      .eq('organization_id', orgId).eq('order_id', orderId).eq('status', 'Reserved');
+    const cutList = (cuts ?? []) as { id: string; product_code: string | null }[];
+    for (const c of cutList) await cutSell(orgId, null, c.id);
+    if (cutList.length) await resyncProducts(orgId, cutList.map((c) => c.product_code));
     const { data: rolls } = await supabaseAdmin.from('textile_fabric_rolls').select('id, product_code')
       .eq('organization_id', orgId).eq('order_id', orderId).eq('status', 'Issued');
     const list = (rolls ?? []) as { id: string; product_code: string | null }[];
@@ -85,7 +105,7 @@ export async function markRollsSoldForOrder(orgId: string, orderId: string) {
     await supabaseAdmin.from('textile_fabric_rolls').update({ status: 'Sold', sold_date: today() })
       .eq('organization_id', orgId).in('id', list.map((r) => r.id));
     await resyncProducts(orgId, list.map((r) => r.product_code));
-  } catch { /* best effort */ }
+  } catch (e) { logger.error({ err: e, orderId }, 'textile: marking rolls sold for dispatched order failed'); }
 }
 
 /** Dispatch gate: for every product on the order that is tracked by fabric rolls, allocated rolls must cover the ordered metres. */
@@ -108,7 +128,8 @@ export async function assertRollsCoverOrder(orgId: string, orderId: string) {
     if (!count) continue; // this product is not tracked by rolls: nothing to check
     const { data: alloc } = await supabaseAdmin.from('textile_fabric_rolls').select('length_meters')
       .eq('organization_id', orgId).eq('order_id', orderId).eq('product_code', code).in('status', ['Issued', 'Sold']);
-    const have = ((alloc ?? []) as { length_meters: number | null }[]).reduce((s, r) => s + num(r.length_meters), 0);
+    const have = ((alloc ?? []) as { length_meters: number | null }[]).reduce((s, r) => s + num(r.length_meters), 0)
+      + (await cutMetresForOrder(orgId, orderId, code));
     if (have + 1e-9 < qty) short.push(`${name}: ${have} m allocated of ${qty} m ordered`);
   }
   if (short.length) throw new AppError(422, 'ROLLS_NOT_ALLOCATED', `Allocate fabric rolls to this order before dispatch (Fabric Roll page). ${short.join('; ')}.`);

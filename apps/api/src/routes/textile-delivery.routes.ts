@@ -9,6 +9,7 @@ import { requireRoles } from '../middleware/authorize.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import { industryCodeOf } from '../lib/fmcg-market.js';
 import { assertRollsCoverOrder, markRollsSoldForOrder } from '../lib/textile-rolls.js';
+import { autoInvoiceOnDispatch } from '../lib/textile-invoicing.js';
 
 export const textileDeliveryRouter = Router();
 const manager = requireRoles('super_admin', 'admin', 'sales_manager');
@@ -74,5 +75,9 @@ textileDeliveryRouter.patch('/textile/orders/:id/delivery', authenticate, manage
   if (saveError) throw saveError;
   if (!saved || saved.length === 0) throw new AppError(409, 'DELIVERY_CHANGED', 'This order was just updated by someone else. Refresh and try again.');
   await markRollsSoldForOrder(orgId, order.id as string);
-  res.json({ data: saved[0] });
+  // Automation: dispatching the fabric raises its GST sales invoice (when Company & GST details are saved). Never blocks the dispatch.
+  const auto = target === 'dispatched'
+    ? await autoInvoiceOnDispatch(orgId, industryTypeId, order.id as string, ((req as unknown as { auth?: { sub?: string } }).auth?.sub as string | undefined) ?? null)
+    : { invoice: null, note: null };
+  res.json({ data: saved[0], invoice: auto.invoice, invoiceNote: auto.note });
 });

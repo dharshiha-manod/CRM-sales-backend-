@@ -15,7 +15,7 @@ export const TEXTILE_RESOURCES: TextileResource[] = [
     requiredFields: ['sku', 'design_code', 'colour_name'],
     columns: ['sku', 'design_code', 'colour_name', 'size', 'colour_hex', 'stock_quantity', 'industry_type_id'] },
   { path: 'fabric-rolls', table: 'textile_fabric_rolls', codeField: 'roll_number',
-    statuses: ['In stock', 'Issued', 'Damaged', 'Sold'], nonNegative: ['length_meters', 'gsm', 'width_inches'],
+    statuses: ['In stock', 'Quarantine', 'Issued', 'Damaged', 'Sold'], nonNegative: ['length_meters', 'gsm', 'width_inches'],
     requiredFields: ['roll_number', 'fabric_type'],
     columns: ['roll_number', 'product_code', 'fabric_type', 'colour', 'length_meters', 'gsm', 'width_inches', 'lot_number', 'quality_grade', 'supplier_name', 'received_date', 'warehouse_location', 'order_id', 'industry_type_id'] },
   { path: 'samples', table: 'textile_samples', codeField: 'sample_code',

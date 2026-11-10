@@ -8,7 +8,7 @@
 import { logger } from '../lib/logger.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { todayLocal } from '../lib/ist-date.js';
-import { nextVehicleCode, ownerOfVin, representativeFor } from '../lib/vehicle-links.js';
+import { nextVehicleCode, ownerOfVin, postPendingBookingAdvances, refreshDeliveryPayments, representativeFor } from '../lib/vehicle-links.js';
 import { enqueueCustomerMessage, processCustomerMessages } from '../lib/vehicle-notify.js';
 
 type Row = Record<string, unknown>;
@@ -263,6 +263,8 @@ async function remindRegistrations(org: string, ind: string, tally: AftersalesRe
 export async function runVehicleAftersales(org: string, ind: string): Promise<AftersalesResult> {
   const out: AftersalesResult = { firstServicesScheduled: 0, nextServicesScheduled: 0, followUps: 0, skippedNoRepresentative: 0, statusesRefreshed: false };
   const step = async (name: string, fn: () => Promise<void>) => { try { await fn(); } catch (err) { logger.error({ err, org, ind }, `vehicle after-sales: ${name} failed`); } };
+  await step('booking advances', async () => { await postPendingBookingAdvances(org, ind); }); // advance posted -> order balance is right
+  await step('delivery payments', () => refreshDeliveryPayments(org, ind)); // Collections recorded elsewhere still complete the delivery payment
   await step('statuses', async () => { await refreshVehicleDateStatuses(org, ind); out.statusesRefreshed = true; });
   await step('first services', async () => { out.firstServicesScheduled = await scheduleFirstServices(org, ind); });
   await step('next services', async () => { out.nextServicesScheduled = await scheduleMissingNextServices(org, ind); });

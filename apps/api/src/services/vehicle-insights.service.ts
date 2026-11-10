@@ -3,7 +3,7 @@
 // for whatever was missed (older records, an API that was down). Vehicle only; read-mostly; every repair is idempotent.
 import { supabaseAdmin } from '../lib/supabase.js';
 import { todayLocal } from '../lib/ist-date.js';
-import { allocatePendingBookings, onBookingAllocated, onVehicleOrderCreated, syncModelProduct } from '../lib/vehicle-links.js';
+import { allocatePendingBookings, linkBookingToOrder, onBookingAllocated, onVehicleOrderCreated, syncModelProduct } from '../lib/vehicle-links.js';
 import { runVehicleAftersales, type AftersalesResult } from './vehicle-aftersales.service.js';
 import { parseLabourAmount, parsePartsUsed } from '../lib/vehicle-calc.js';
 import { vehicleSchemeUsage } from '../lib/vehicle-schemes.js';
@@ -127,7 +127,7 @@ const check = (key: string, label: string, list: string[], fixable: boolean): He
 
 interface Gaps {
   modelsNoProduct: Row[]; ordersNoBooking: Row[]; allocatedNoDelivery: Row[]; waitingWithStock: Row[]; orphanHolds: Row[]; bookingUnitMismatch: { vin: string; want: string; booking: string }[];
-  deliveredNoRegistration: Row[]; deliveredNoWarranty: Row[]; deliveredUnitNotDelivered: Row[]; noClient: string[]; deliveredNoInsurance: Row[];
+  deliveredNoRegistration: Row[]; deliveredNoWarranty: Row[]; deliveredUnitNotDelivered: Row[]; noClient: string[]; deliveredNoInsurance: Row[]; deliveriesNoOrder: Row[];
 }
 
 async function findGaps(org: string, ind: string): Promise<Gaps> {
@@ -177,18 +177,19 @@ async function findGaps(org: string, ind: string): Promise<Gaps> {
   const deliveredList = deliveries.filter((d) => d.status === 'Delivered' && has(d.vin));
   const regVins = new Set(registrations.map((r) => str(r.vin)));
   const warVins = new Set(warranties.map((w) => str(w.vin)));
-  const insVins = new Set(policies.filter((p) => ['Active', 'Expiring Soon'].includes(str(p.status))).map((p) => str(p.vin)));
+  const insVins = new Set(policies.filter((p) => ['Cover Note Issued', 'Active', 'Expiring Soon'].includes(str(p.status))).map((p) => str(p.vin)));
   const deliveredNoRegistration = deliveredList.filter((d) => !regVins.has(str(d.vin)));
   const deliveredNoWarranty = deliveredList.filter((d) => !warVins.has(str(d.vin)));
   const deliveredUnitNotDelivered = deliveredList.filter((d) => { const u = unitByVin.get(str(d.vin)); return u && !['Delivered', 'Under Service', 'Returned', 'Sold'].includes(str(u.status)); });
   const deliveredNoInsurance = deliveredList.filter((d) => d.insurance_status !== 'Not Applicable' && !insVins.has(str(d.vin)));
 
+  const deliveriesNoOrder = liveDeliveries.filter((d) => !has(d.order_id) && d.status !== 'Delivered'); // no Core order: no invoice, no automatic payment
   const noClient = [
     ...bookings.filter((b) => !has(b.client_id) && b.status !== 'Cancelled').map((b) => `Booking ${str(b.booking_number)}`),
     ...deliveries.filter((d) => !has(d.client_id) && d.status !== 'Cancelled').map((d) => `Delivery ${str(d.delivery_number)}`),
     ...drives.filter((d) => !has(d.client_id)).map((d) => `Test drive ${str(d.test_drive_number)}`),
   ];
-  return { modelsNoProduct, ordersNoBooking, allocatedNoDelivery, waitingWithStock, orphanHolds, bookingUnitMismatch, deliveredNoRegistration, deliveredNoWarranty, deliveredUnitNotDelivered, noClient, deliveredNoInsurance };
+  return { modelsNoProduct, ordersNoBooking, allocatedNoDelivery, waitingWithStock, orphanHolds, bookingUnitMismatch, deliveredNoRegistration, deliveredNoWarranty, deliveredUnitNotDelivered, noClient, deliveredNoInsurance, deliveriesNoOrder };
 }
 
 export async function vehicleHealth(org: string, ind: string): Promise<{ checkedAt: string; ok: boolean; checks: HealthCheck[] }> {
@@ -205,6 +206,7 @@ export async function vehicleHealth(org: string, ind: string): Promise<{ checked
     check('delivered_unit_not_delivered', 'Delivered vehicles still shown as in stock', g.deliveredUnitNotDelivered.map((d) => str(d.vin)), true),
     check('records_without_client', 'Bookings / deliveries / test drives not linked to a Client', g.noClient, false),
     check('delivered_no_insurance', 'Delivered vehicles with no active insurance policy', g.deliveredNoInsurance.map((d) => str(d.vin)), false),
+    check('deliveries_no_order', 'Open deliveries with no Core order (no invoice / automatic payment)', g.deliveriesNoOrder.map((d) => str(d.delivery_number)), true),
   ];
   try { // spare parts at or below their reorder level (needs the step-5 SQL; skipped quietly without it)
     const { data: parts } = await supabaseAdmin.from('vehicle_parts').select('part_code, stock_quantity, reorder_level').eq('organization_id', org).eq('industry_type_id', ind).eq('status', 'Active').not('reorder_level', 'is', null).limit(LIMIT);
@@ -232,6 +234,12 @@ export async function vehicleRepair(org: string, ind: string, onDelivered: (org:
   const models = new Set(g.waitingWithStock.map((b) => str(b.model_id)));
   for (const id of models) { await allocatePendingBookings(org, ind, id); bump('waiting_models_allocated'); }
   for (const b of g.allocatedNoDelivery) { await onBookingAllocated(org, ind, b); bump('delivery_files_opened'); }
+  for (const d of g.deliveriesNoOrder) { // link the booking to the client's matching open order, then copy it onto the delivery and raise the invoice
+    const { data: bk } = await supabaseAdmin.from('vehicle_bookings').select('*').eq('organization_id', org).eq('industry_type_id', ind).eq('booking_number', str(d.booking_number)).maybeSingle();
+    if (!bk) continue;
+    const booking = has((bk as Row).order_id) ? (bk as Row) : await linkBookingToOrder(org, ind, bk as Row);
+    if (booking) { await onBookingAllocated(org, ind, booking); bump('deliveries_linked_to_order'); }
+  }
   const seen = new Set<string>();
   for (const d of [...g.deliveredNoRegistration, ...g.deliveredNoWarranty]) {
     if (seen.has(str(d.vin))) continue;
@@ -247,19 +255,22 @@ const IN_STOCK = ['In Transit', 'Received', 'PDI Pending', 'Available', 'Reserve
 export async function vehicleReports(org: string, ind: string, days = 90) {
   const windowDays = Math.min(Math.max(Math.round(days) || 90, 7), 730);
   const sinceDate = new Date(Date.now() - windowDays * DAY).toISOString().slice(0, 10);
-  const [units, models, deliveries, services] = await Promise.all([
+  const [units, models, deliveries, services, invoices] = await Promise.all([
     rows('vehicle_units', org, ind, 'vin, model_id, model_name, status, selling_price, purchase_cost, dealer_name, created_at'),
     rows('vehicle_models', org, ind, 'id, model_name, variant, product_id'),
     rows('vehicle_deliveries', org, ind, 'vin, dealer_name, delivery_date, status', (q: any) => q.eq('status', 'Delivered').gte('delivery_date', sinceDate)),
     rows('vehicle_service_records', org, ind, 'service_type, service_date, service_cost, status', (q: any) => q.eq('status', 'Completed').gte('service_date', sinceDate)),
+    rows('vehicle_invoices', org, ind, 'vin, total_amount, status', (q: any) => q.neq('status', 'Cancelled')),
   ]);
   const unitByVin = new Map(units.map((u) => [str(u.vin), u]));
+  const invoiceByVin = new Map<string, number>(); // the real sale value of a vehicle is its tax invoice (unit selling price is often blank)
+  for (const iv of invoices) invoiceByVin.set(str(iv.vin), (invoiceByVin.get(str(iv.vin)) ?? 0) + num(iv.total_amount));
 
   const byModel = new Map<string, { model: string; delivered: number; revenue: number }>();
   const byDealer = new Map<string, { dealer: string; delivered: number; revenue: number }>();
   for (const d of deliveries) {
     const u = unitByVin.get(str(d.vin));
-    const price = u ? num(u.selling_price) : 0;
+    const price = invoiceByVin.get(str(d.vin)) ?? (u ? num(u.selling_price) : 0);
     const m = str(u?.model_name) || 'Unknown'; const dl = str(d.dealer_name) || str(u?.dealer_name) || 'No dealer';
     const a = byModel.get(m) ?? { model: m, delivered: 0, revenue: 0 }; a.delivered += 1; a.revenue += price; byModel.set(m, a);
     const b = byDealer.get(dl) ?? { dealer: dl, delivered: 0, revenue: 0 }; b.delivered += 1; b.revenue += price; byDealer.set(dl, b);

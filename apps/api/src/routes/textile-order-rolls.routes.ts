@@ -8,6 +8,7 @@ import { requireRoles } from '../middleware/authorize.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import { industryCodeOf, toBase } from '../lib/fmcg-market.js';
 import { syncProductStockFromRolls } from '../lib/textile-rolls.js';
+import { rpcError } from '../lib/textile-grn.js';
 
 export const textileOrderRollsRouter = Router();
 const manager = requireRoles('super_admin', 'admin', 'sales_manager');
@@ -91,24 +92,17 @@ textileOrderRollsRouter.post('/textile/orders/:id/return-roll', authenticate, ma
   const credit = creditClient && paidQty > 0 ? round2(Math.max(0, Math.min((paidTotal / paidQty) * metres, paidTotal - alreadyCredited))) : 0;
   const rate = num(order.exchange_rate) || 1;
 
-  const { data: ret, error: ie } = await supabaseAdmin.from('sales_returns').insert({
-    organization_id: orgId, order_id: order.id, client_id: order.client_id, product_id: productId, quantity: metres,
-    kind: input.condition === 'damaged' ? 'damage' : 'return',
-    reason: [`Roll ${String(roll.roll_number)}`, input.reason?.trim()].filter(Boolean).join(' - '),
-    restock: input.condition === 'good', credit_client: creditClient, status: 'approved',
-    currency_code: String(order.currency_code ?? 'INR'), exchange_rate: rate, credit_amount: credit, base_credit: toBase(credit, rate),
-    created_by: req.auth!.sub as string, decided_by: req.auth!.sub as string, decided_at: new Date().toISOString(),
-  }).select('id').single();
-  if (ie) throw ie;
-
-  const { data: moved, error: ue } = await supabaseAdmin.from('textile_fabric_rolls')
-    .update({ status: input.condition === 'good' ? 'In stock' : 'Damaged', order_id: null, order_number: null, issued_date: null, sold_date: null })
-    .eq('organization_id', orgId).eq('id', input.rollId).eq('status', 'Sold').select('id');
-  if (ue || !moved || moved.length === 0) {
-    await supabaseAdmin.from('sales_returns').delete().eq('id', (ret as { id: string }).id); // nothing half-saved
-    if (ue) throw ue;
-    throw new AppError(409, 'ROLL_CHANGED', 'This roll was just changed by someone else. Refresh and try again.');
-  }
+  // Roll status + credit note + ledger row are saved together in one database transaction (the roll is locked).
+  const { error: ie } = await supabaseAdmin.rpc('textile_roll_return', {
+    p_org: orgId, p_roll: input.rollId, p_order: order.id, p_condition: input.condition,
+    p_return: {
+      client_id: order.client_id, product_id: productId, quantity: metres, kind: input.condition === 'damaged' ? 'damage' : 'return',
+      reason: [`Roll ${String(roll.roll_number)}`, input.reason?.trim()].filter(Boolean).join(' - '),
+      restock: input.condition === 'good', credit_client: creditClient, currency_code: String(order.currency_code ?? 'INR'),
+      exchange_rate: rate, credit_amount: credit, base_credit: toBase(credit, rate), user_id: req.auth!.sub as string,
+    },
+  });
+  if (ie) throw rpcError(ie);
   await syncProductStockFromRolls(orgId, roll.product_code);
 
   const { data: all } = await supabaseAdmin.from('sales_returns').select('credit_amount')

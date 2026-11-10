@@ -10,8 +10,8 @@ import { assertRecordInScope, resolveIndustryTypeId } from '../lib/industry-scop
 import { todayLocal } from '../lib/ist-date.js';
 import { VEHICLE_RESOURCES, type VehicleResource } from '../lib/vehicle-resources.js';
 import {
-  allocatePendingBookings, deliveryStageFor, followUpAfterTestDrive, nextVehicleCode, onBookingAllocated, ownerOfVin,
-  refreshDeliveryPayments, resolveParty, retireModelProduct, syncModelProduct, tryAllocate,
+  allocatePendingBookings, deliveryStageFor, followUpAfterTestDrive, insuranceSourceOf, nextVehicleCode, onBookingAllocated, ownerOfVin,
+  refreshDeliveryPayments, releaseBookingFiles, representativeFor, resolveParty, retireModelProduct, syncModelProduct, syncProductModel, isVehicleIndustry, ensureBookingInsurance, tryAllocate,
 } from '../lib/vehicle-links.js';
 import { collectionsService } from '../services/collections.service.js';
 import { cancelOrder } from '../repositories/orders.repository.js';
@@ -19,6 +19,8 @@ import type { IndustryScope } from '../lib/industry-scope.js';
 import { runVehicleAftersales, scheduleNextService } from '../services/vehicle-aftersales.service.js';
 import { parseLabourAmount, parsePartsUsed } from '../lib/vehicle-calc.js';
 import { enqueueCustomerMessage, processCustomerMessages } from '../lib/vehicle-notify.js';
+import { syncDeliveryDocuments } from '../lib/vehicle-doc-sync.js';
+import { backfillVehicleInvoices, cancelVehicleInvoices, ensureVehicleInvoice, markVehicleInvoicePaid } from '../lib/vehicle-invoice.js';
 import { customerFacts, schemeFitsCustomer, schemeRefsToIds, vehicleSchemeUsage } from '../lib/vehicle-schemes.js';
 import { ALLOWED_DOCUMENT_TYPES, DOCUMENT_BUCKET, MAX_DOCUMENT_BYTES, defaultChecklistFor, documentsComplete, ensureDocumentBucket, normalizeChecklist, pendingDocumentNames, type DeliveryDoc } from '../lib/vehicle-documents.js';
 import { vehicleHandover, vehicleHealth, vehicleOverview, vehicleReports, vehicleRepair, vehicleServiceBill } from '../services/vehicle-insights.service.js';
@@ -33,6 +35,10 @@ type Row = Record<string, unknown>;
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 const num = (v: unknown) => (v === null || v === undefined || v === '' ? 0 : Number(v) || 0);
 const has = (v: unknown) => v !== null && v !== undefined && v !== '';
+// Insurance workflow: a policy starts as a request, is quoted, accepted and covered by a cover note, then becomes the Active policy.
+const INSURANCE_SOURCES = ['Dealer arranged', "Customer's own", 'Not required'];
+const INSURANCE_PRE_POLICY = ['Requested', 'Quoted', 'Customer Accepted', 'Cover Note Issued'];
+const INSURANCE_COVERED = ['Cover Note Issued', 'Active', 'Expiring Soon'];
 
 const org = (req: Req) => {
   const v = req.header('x-organization-id');
@@ -85,6 +91,12 @@ async function setUnitStatus(orgId: string, industryTypeId: string, vin: unknown
 // Runs on every create / update. `m` = existing row merged with the incoming change.
 async function normalise(r: VehicleResource, orgId: string, industryTypeId: string, payload: Row, existing: Row | null, role?: string) {
   const m: Row = { ...(existing ?? {}), ...payload };
+  // A trade-in valuation is money: only a manager / admin may approve, reject, convert or change the approved value.
+  if (r.table === 'vehicle_exchanges' && !['super_admin', 'admin', 'sales_manager'].includes(String(role ?? ''))) {
+    const moving = payload.status !== undefined && payload.status !== null && ['Approved', 'Rejected', 'Converted'].includes(String(payload.status)) && payload.status !== existing?.status;
+    const valued = payload.approved_value !== undefined && num(payload.approved_value) !== num(existing?.approved_value);
+    if (moving || valued) throw new AppError(403, 'EXCHANGE_APPROVAL_MANAGER_ONLY', 'Only a manager can approve, reject or value a trade-in. Ask a manager to complete this step.');
+  }
   for (const k of ['vin', 'new_vehicle_vin']) {
     if (typeof payload[k] === 'string') payload[k] = (payload[k] as string).trim().toUpperCase();
   }
@@ -120,9 +132,46 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
     const { data: branches } = await supabaseAdmin.from('vehicle_dealers').select('id, dealer_name').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('dealer_type', 'Branch').limit(2);
     if (branches && branches.length === 1) { payload.dealer_id = (branches[0] as Row).id; payload.dealer_name = (branches[0] as Row).dealer_name; }
   }
+  // Insurance on a booking is chosen as a source; the older Yes / No flag always follows it (other code still reads the flag).
+  if (r.table === 'vehicle_bookings') {
+    const isYes = (v: unknown) => ['yes', 'true', 'y'].includes(String(v ?? '').trim().toLowerCase());
+    if (has(payload.insurance_required) && !has(payload.insurance_source)) {
+      const src = isYes(payload.insurance_required) ? (has(existing?.insurance_source) && existing?.insurance_source !== 'Not required' ? String(existing?.insurance_source) : 'Dealer arranged') : 'Not required';
+      payload.insurance_source = src; m.insurance_source = src;
+    } else if (INSURANCE_SOURCES.includes(String(m.insurance_source ?? ''))) {
+      const need = m.insurance_source === 'Not required' ? 'No' : 'Yes';
+      payload.insurance_required = need; m.insurance_required = need;
+    } else if (isYes(m.insurance_required) && !has(m.insurance_source)) {
+      payload.insurance_source = 'Dealer arranged'; m.insurance_source = 'Dealer arranged';
+    }
+  }
   if (r.table === 'vehicle_deliveries' && has(payload.vin)) {
     const unit = await findOne('vehicle_units', orgId, industryTypeId, 'vin', payload.vin);
     if (unit && !has(m.engine_number) && unit.engine_number) payload.engine_number = unit.engine_number;
+  }
+  // Picking the Core order fills the rest: its client, and (when the order has exactly one booked vehicle) the VIN / booking number / amount paid.
+  if (['vehicle_returns', 'vehicle_finance_applications', 'vehicle_exchanges', 'vehicle_deliveries'].includes(r.table) && has(m.order_id)) {
+    const { data: ord } = await supabaseAdmin.from('sale_orders').select('id, client_id').eq('organization_id', orgId).eq('id', String(m.order_id)).maybeSingle();
+    if (ord) {
+      if (r.columns.includes('client_id') && !has(m.client_id) && has((ord as Row).client_id)) payload.client_id = (ord as Row).client_id;
+      const vinKey = r.columns.includes('vin') ? 'vin' : r.columns.includes('new_vehicle_vin') ? 'new_vehicle_vin' : null;
+      const refKey = ['booking_number', 'booking_reference'].find((k) => r.columns.includes(k));
+      if ((vinKey && !has(m[vinKey])) || (refKey && !has(m[refKey]))) {
+        const { data: bks } = await supabaseAdmin.from('vehicle_bookings').select('booking_number, vin').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('order_id', String(m.order_id)).neq('status', 'Cancelled').limit(5);
+        const live = (bks ?? []) as Row[];
+        const withVin = live.filter((b) => has(b.vin));
+        const one = withVin.length === 1 ? withVin[0]! : live.length === 1 ? live[0]! : null;
+        if (one) {
+          if (vinKey && !has(m[vinKey]) && has(one.vin)) payload[vinKey] = one.vin;
+          if (refKey && !has(m[refKey])) payload[refKey] = one.booking_number;
+        }
+      }
+      if (r.table === 'vehicle_returns' && !has(m.amount)) { // what the customer has paid on the order
+        const { data: coll } = await supabaseAdmin.from('sales_collections').select('amount').eq('organization_id', orgId).eq('sale_order_id', String(m.order_id));
+        const paid = ((coll ?? []) as Row[]).reduce((t, c) => t + num(c.amount), 0);
+        if (paid > 0) payload.amount = paid;
+      }
+    }
   }
   // Link the record to the real Client (and Lead): a typed name is matched, a picked lead/client fills the name.
   if (r.columns.includes('client_id')) {
@@ -145,6 +194,12 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
     const { data: ord } = await supabaseAdmin.from('sale_orders').select('order_number, clients(industry_type_id)').eq('organization_id', orgId).eq('id', payload.order_id as string).maybeSingle();
     if (!ord) throw bad('The selected order does not exist.', 'INVALID_REFERENCE');
     payload.order_number = (ord as Row).order_number;
+  }
+  // Finance / Exchange / Returns keep the order number in sales_order_reference: picking the Core order fills it.
+  if (!r.columns.includes('order_number') && r.columns.includes('sales_order_reference') && r.columns.includes('order_id') && has(payload.order_id)) {
+    const { data: ord } = await supabaseAdmin.from('sale_orders').select('order_number').eq('organization_id', orgId).eq('id', payload.order_id as string).maybeSingle();
+    if (!ord) throw bad('The selected order does not exist.', 'INVALID_REFERENCE');
+    payload.sales_order_reference = (ord as Row).order_number;
   }
   // Booking -> Core Order: a booking turned into an order links to the client's matching open order (no second order ledger).
   // Automation: any live booking (not only 'Converted to Order') links itself to the client's matching open Core order, so nobody picks it by hand.
@@ -225,6 +280,42 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
     payload.net_exchange_value = num(m.approved_value) - num(m.outstanding_loan);
   }
   if (r.table === 'vehicle_registrations' && m.status === 'Completed' && !has(m.completion_date)) payload.completion_date = todayLocal();
+  if (r.table === 'vehicle_invoices') { // the total is always calculated here, never trusted from the browser
+    if (!has(m.invoice_date)) payload.invoice_date = todayLocal();
+     if (!has(m.due_date)) payload.due_date = String(payload.invoice_date ?? m.invoice_date).slice(0, 10);
+    if (!has(m.status)) payload.status = 'Issued';
+    const total = Math.round((num(m.subtotal) - num(m.discount_amount) + num(m.tax_amount)) * 100) / 100;
+    payload.total_amount = total;
+    if ((payload.status ?? m.status) === 'Paid') payload.paid_amount = total;
+  }
+  if (r.table === 'vehicle_insurance_policies') {
+    // Who arranges the cover: a policy opened from a booking keeps that booking's choice; one typed in by hand is dealer arranged.
+    if (!['Dealer arranged', "Customer's own"].includes(String(m.insurance_source ?? ''))) {
+      let source = 'Dealer arranged';
+      if (has(m.booking_number)) {
+        const booking = await findOne('vehicle_bookings', orgId, industryTypeId, 'booking_number', m.booking_number);
+        if (booking && insuranceSourceOf(booking) === "Customer's own") source = "Customer's own";
+      }
+      payload.insurance_source = source; m.insurance_source = source;
+    }
+    if (!has(m.policy_type)) { payload.policy_type = 'Comprehensive'; m.policy_type = 'Comprehensive'; }
+    if (!has(m.coverage)) { payload.coverage = `${String(m.policy_type)} cover${has(m.vin) ? ` for ${String(m.vin)}` : ''}`; m.coverage = payload.coverage; }
+    // Less typing: dates and status follow by themselves (Cancelled is the only status chosen by hand).
+    const isDay = (v: unknown) => /^\d{4}-\d{2}-\d{2}/.test(String(v ?? ''));
+    const today = todayLocal();
+    if (!isDay(m.start_date)) { payload.start_date = today; m.start_date = today; }
+    if (!isDay(m.expiry_date)) {
+      const d = new Date(`${String(m.start_date).slice(0, 10)}T00:00:00Z`);
+      d.setUTCFullYear(d.getUTCFullYear() + 1); d.setUTCDate(d.getUTCDate() - 1);
+      const exp = d.toISOString().slice(0, 10); payload.expiry_date = exp; m.expiry_date = exp;
+    }
+    if (m.status !== 'Cancelled' && !INSURANCE_PRE_POLICY.includes(String(m.status ?? ''))) { // Requested / Quoted / Customer Accepted / Cover Note Issued are chosen by hand
+      const exp = String(m.expiry_date).slice(0, 10);
+      const soon = new Date(`${today}T00:00:00Z`); soon.setUTCDate(soon.getUTCDate() + 30);
+      const st = exp < today ? 'Expired' : exp <= soon.toISOString().slice(0, 10) ? 'Expiring Soon' : 'Active';
+      payload.status = st; m.status = st;
+    }
+  }
   if (r.table === 'vehicle_deliveries') {
     // Document checklist (Vehicle only): when a delivery has one, Documentation follows it by itself - it cannot be set by hand.
     const checklist = Array.isArray(m.document_checklist) ? (m.document_checklist as DeliveryDoc[]) : [];
@@ -233,7 +324,10 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
     if (['Preparation', 'PDI Pending', 'Documentation Pending', 'Payment Pending', 'Ready for Delivery'].includes(status)) {
       payload.status = deliveryStageFor(m);
     }
-    if ((payload.status ?? m.status) === 'Delivered' && !has(m.delivery_date)) payload.delivery_date = todayLocal();
+    // handing over now: a blank date, or a planned (future) date, becomes today's date
+    if ((payload.status ?? m.status) === 'Delivered' && existing?.status !== 'Delivered' && (!has(m.delivery_date) || String(m.delivery_date) > todayLocal())) {
+      payload.delivery_date = todayLocal(); m.delivery_date = payload.delivery_date;
+    }
   }
   return { ...m, ...payload } as Row;
 }
@@ -268,6 +362,15 @@ async function assertRules(r: VehicleResource, orgId: string, ind: string, m: Ro
   }
   if (r.columns.includes('start_date') && r.columns.includes('end_date') && has(m.start_date) && has(m.end_date) && String(m.end_date) < String(m.start_date)) throw bad('End date cannot be before the start date.');
   if (r.table === 'vehicle_insurance_policies' && has(m.start_date) && has(m.expiry_date) && String(m.expiry_date) < String(m.start_date)) throw bad('Expiry date cannot be before the start date.');
+  if (r.table === 'vehicle_insurance_policies' && status !== 'Cancelled') {
+    // Real-world insurance flow. Dealer arranged: the showroom gets the quote, the customer accepts, the insurer issues a cover note, then the policy.
+    // Customer's own: the customer already bought cover elsewhere, so there is no quote / acceptance / cover note: the showroom only collects and checks the policy copy.
+    const own = m.insurance_source === "Customer's own";
+    if (own && ['Quoted', 'Customer Accepted', 'Cover Note Issued'].includes(status)) throw bad('The customer arranged this insurance, so there is no quote or cover note to track. Collect the policy copy, then set the status to Active.');
+    if (['Quoted', 'Customer Accepted', 'Cover Note Issued', 'Active'].includes(status) && !has(m.provider)) throw bad(own ? 'Enter the insurance company named on the customer\u2019s policy.' : 'Enter the insurance provider that gave the quote.');
+    if (!own && ['Quoted', 'Customer Accepted', 'Cover Note Issued', 'Active'].includes(status) && !has(m.premium)) throw bad('Enter the premium from the insurer\u2019s quote.');
+    if (['Cover Note Issued', 'Active'].includes(status) && !has(m.policy_document_reference)) throw bad(own ? 'Enter the policy number from the customer\u2019s policy copy.' : 'Enter the insurer\u2019s cover note / policy number.');
+  }
 
   if (r.table === 'vehicle_schemes') {
     if (m.discount_type === 'Percentage' && num(m.discount_value) > 100) throw bad('A percentage discount cannot be more than 100.');
@@ -308,23 +411,40 @@ async function assertRules(r: VehicleResource, orgId: string, ind: string, m: Ro
       if (existing?.id) q = q.neq('id', existing.id as string);
       const { data: others, error } = await q;
       if (error) throw error;
-      if ((others ?? []).length) throw new AppError(409, 'VIN_ALREADY_BOOKED', `Vehicle ${String(m.vin)} is already held by booking ${String((others as Row[])[0]!.booking_number)}. Open that booking and edit it instead of adding a new one, or pick a different Available VIN.`);
+           // a booking whose vehicle was already handed over no longer holds it (matters when a returned vehicle is sold again)
+      const handedOver = (others ?? []).length ? new Set(((((await supabaseAdmin.from('vehicle_deliveries').select('booking_number').eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', m.vin as string).eq('status', 'Delivered')).data) ?? []) as Row[]).map((x) => str(x.booking_number))) : new Set<string>();
+      const liveOthers = ((others ?? []) as Row[]).filter((o) => !handedOver.has(str(o.booking_number)));
+      if (liveOthers.length) throw new AppError(409, 'VIN_ALREADY_BOOKED',`Vehicle ${String(m.vin)} is already held by booking ${String(liveOthers[0]!.booking_number)}. Open that booking and edit it instead of adding a new one, or pick a different Available VIN.`);
       if (BLOCKED_UNIT.includes(String(unit.status))) throw bad(`Vehicle ${String(m.vin)} is ${String(unit.status)} and cannot be booked.`);
+    }
+  }
+  if (r.table === 'vehicle_deliveries') {
+    // a failed PDI / a cancelled delivery must say why
+    if (m.pdi_status === 'Failed' && !has(m.remarks)) throw bad('Enter the reason in Remarks when PDI is marked Failed.');
+    if (status === 'Cancelled' && !has(m.remarks)) throw bad('Enter the cancellation reason in Remarks.');
+    if (existing?.status === 'Cancelled' && status !== 'Cancelled') throw bad('A cancelled delivery cannot be reopened. Create a new delivery instead.');
+    // a vehicle can be on one open delivery only, and only a vehicle that can still be sold
+    if (has(m.vin) && status !== 'Cancelled' && (!existing || existing.vin !== m.vin)) {
+      const unit = await findOne('vehicle_units', orgId, ind, 'vin', m.vin);
+      if (unit && BLOCKED_UNIT.includes(String(unit.status))) throw bad(`Vehicle ${String(m.vin)} is ${String(unit.status)} and cannot be put on a delivery.`);
+      let dq = supabaseAdmin.from('vehicle_deliveries').select('delivery_number').eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', String(m.vin)).not('status', 'in', '(Delivered,Cancelled)');
+      if (existing?.id) dq = dq.neq('id', existing.id as string);
+      const { data: openOnes, error: dErr } = await dq.limit(1);
+      if (dErr) throw dErr;
+      if ((openOnes ?? []).length) throw new AppError(409, 'VIN_ALREADY_IN_DELIVERY', `Vehicle ${String(m.vin)} is already on open delivery ${String((openOnes as Row[])[0]!.delivery_number)}. Open that delivery instead, or pick a different vehicle.`);
     }
   }
   if (r.table === 'vehicle_deliveries' && status === 'Delivered') {
     if (!has(m.vin)) throw bad('Select the vehicle (VIN) before marking the delivery as Delivered.');
     const gaps: string[] = [];
+    if (!['Fitted', 'Not Applicable'].includes(String(m.accessories_status))) gaps.push('accessories must be Fitted (or Not Applicable)');
     if (m.pdi_status !== 'Passed') gaps.push('PDI must be Passed');
     const checklist = Array.isArray(m.document_checklist) ? (m.document_checklist as DeliveryDoc[]) : [];
     if (checklist.length && !documentsComplete(checklist)) gaps.push(`documents still pending: ${pendingDocumentNames(checklist).join(', ')}`);
     else if (m.documentation_status !== 'Complete') gaps.push('documentation must be Complete');
     if (m.payment_status !== 'Complete') gaps.push('payment must be Complete');
-    // insurance blocks handover only when the booking asked for it (older deliveries with a default Pending are not stopped)
-    if (!['Complete', 'Not Applicable'].includes(String(m.insurance_status)) && has(m.booking_number)) {
-      const bk = await findOne('vehicle_bookings', orgId, ind, 'booking_number', m.booking_number);
-      if (bk && ['yes', 'true', 'y'].includes(String(bk.insurance_required ?? '').trim().toLowerCase())) gaps.push('insurance must be Complete (the booking requires it) or set to Not Applicable');
-    }
+    // insurance is always settled before handover: a policy is added (Complete) or the customer does not need one (Not Applicable)
+    if (!['Complete', 'Not Applicable'].includes(String(m.insurance_status))) gaps.push('insurance must be Complete (add the policy in Insurance) or set to Not Applicable');
     // optional: VEHICLE_REQUIRE_REGISTRATION_BEFORE_DELIVERY=yes makes registration a handover requirement too
     if (process.env.VEHICLE_REQUIRE_REGISTRATION_BEFORE_DELIVERY === 'yes' && !['Complete', 'Not Applicable'].includes(String(m.registration_status))) gaps.push('registration must be Complete (or Not Applicable)');
     if (m.customer_acknowledgement !== 'Yes') gaps.push('customer acknowledgement must be Yes');
@@ -407,9 +527,9 @@ async function afterSave(r: VehicleResource, orgId: string, ind: string, row: Ro
     if (before && has(before.vin) && before.vin !== row.vin) await setUnitStatus(orgId, ind, before.vin, 'Available', HELD); // VIN swapped: free the old one
     if (has(row.vin)) {
       if (want) await setUnitStatus(orgId, ind, row.vin, want, ['Available', 'Received', 'PDI Pending', ...HELD]);
-      else if (status === 'Cancelled') await setUnitStatus(orgId, ind, row.vin, 'Available', HELD);
+      else if (status === 'Cancelled' && changed('status')) await setUnitStatus(orgId, ind, row.vin, 'Available', HELD);
     }
-    if (status === 'Cancelled') await allocatePendingBookings(orgId, ind, before?.model_id ?? row.model_id); // the released unit goes to the next waiting booking
+    if (status === 'Cancelled') { if (changed('status')) await releaseBookingFiles(orgId, ind, { ...row, model_id: row.model_id ?? before?.model_id }); } // open delivery + invoice cancelled, VIN released to the next waiting booking
     else if (!has(row.vin)) await tryAllocate(orgId, ind, row); // Confirmed / pending with no VIN: take the oldest available unit of that model
     else if (['Vehicle Allocated', 'Converted to Order'].includes(status)) await onBookingAllocated(orgId, ind, row); // opens delivery (+ finance) file
   }
@@ -424,21 +544,31 @@ async function afterSave(r: VehicleResource, orgId: string, ind: string, row: Ro
         body: ready ? `Dear ${str(row.client_name) || 'Customer'}, your vehicle ${str(row.vin)} is ready for delivery. Please contact us to confirm the handover time.` : `Dear ${str(row.client_name) || 'Customer'}, congratulations on your new vehicle ${str(row.vin)}. Your first service will be scheduled for you. Drive safe!` });
       void processCustomerMessages(orgId);
     }
+    if (row.status === 'Cancelled') { if (changed('status')) await cancelVehicleInvoices(orgId, ind, { vin: row.vin, orderId: row.order_id }); }
+    else {
+      await ensureVehicleInvoice(orgId, ind, row); // one tax invoice per vehicle on the order, raised by itself
+      if (row.payment_status === 'Complete') await markVehicleInvoicePaid(orgId, ind, row.vin, row.order_id);
+      await syncDeliveryDocuments(orgId, ind, row.vin); // the Tax invoice paper ticks itself
+    }
     if (row.status === 'Delivered' && changed('status')) await onDelivered(orgId, ind, row);
     else if (!['Delivered', 'Cancelled'].includes(String(row.status))) await refreshDeliveryPayments(orgId, ind);
   }
 
   if (r.table === 'vehicle_registrations') {
-    if (row.status === 'Completed' && has(row.registration_number)) {
+       if (row.status === 'Completed' && has(row.registration_number)) {
+      await supabaseAdmin.from('vehicle_service_records').update({ registration_number: row.registration_number }).eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', row.vin as string).is('registration_number', null); // service files show the plate once it is issued
       await supabaseAdmin.from('vehicle_units').update({ registration_number: row.registration_number }).eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', row.vin as string);
       await supabaseAdmin.from('vehicle_deliveries').update({ registration_status: 'Complete' }).eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', row.vin as string).neq('status', 'Cancelled');
     }
   }
 
   if (r.table === 'vehicle_insurance_policies') {
-    if (['Active', 'Expiring Soon'].includes(String(row.status)) && has(row.vin)) {
+    if (INSURANCE_COVERED.includes(String(row.status)) && has(row.vin)) { // a cover note is valid cover, so the delivery file counts it
       await supabaseAdmin.from('vehicle_deliveries').update({ insurance_status: 'Complete' }).eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', row.vin as string).neq('status', 'Cancelled');
       await supabaseAdmin.from('vehicle_registrations').update({ insurance_reference: row.policy_number }).eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', row.vin as string).is('insurance_reference', null);
+    } else if (['Cancelled', 'Expired'].includes(String(row.status)) && has(row.vin)) { // the only cover is gone: the delivery is no longer insured
+      const { data: live } = await supabaseAdmin.from('vehicle_insurance_policies').select('id').eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', row.vin as string).in('status', INSURANCE_COVERED).limit(1);
+      if (!(live ?? []).length) await supabaseAdmin.from('vehicle_deliveries').update({ insurance_status: 'Pending' }).eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', row.vin as string).eq('insurance_status', 'Complete').in('status', DELIVERY_OPEN);
     }
   }
 
@@ -449,7 +579,18 @@ async function afterSave(r: VehicleResource, orgId: string, ind: string, row: Ro
       await postOrderPayment(orgId, scope, row.order_id, has(row.net_exchange_value) ? num(row.net_exchange_value) : num(row.approved_value), String(row.exchange_id), `Exchange value ${String(row.exchange_id)}`);
     }
   }
+  if (r.table === 'vehicle_finance_applications' && row.status === 'Rejected' && changed('status') && has(row.client_id)) { // a rejected loan must not sit unnoticed: the rep calls the customer
+    try {
+      const rep = await representativeFor(orgId, ind, row.client_id, null);
+      const title = `Loan rejected: ${str(row.client_name) || 'customer'}${has(row.vin) ? ` - ${str(row.vin)}` : ''} (${str(row.application_number)})`;
+      if (rep) {
+        const { data: dupF } = await supabaseAdmin.from('follow_ups').select('id').eq('organization_id', orgId).eq('client_id', row.client_id as string).eq('title', title).limit(1).maybeSingle();
+        if (!dupF) await supabaseAdmin.from('follow_ups').insert({ organization_id: orgId, representative_id: rep, client_id: row.client_id, title, due_at: new Date(Date.now() + 3_600_000).toISOString(), priority: 'high', follow_up_type: 'call', notes: `Finance application ${str(row.application_number)} was rejected${has(row.finance_provider) ? ` by ${str(row.finance_provider)}` : ''}. Offer another lender or a higher down payment; the delivery cannot be paid in full until this is settled.` });
+      }
+    } catch (e) { logger.warn({ err: e, application: row.application_number }, 'vehicle: loan-rejected follow-up could not be created'); }
+  }
   if (r.table === 'vehicle_finance_applications' || r.table === 'vehicle_exchanges') await refreshDeliveryPayments(orgId, ind);
+  if (r.table === 'vehicle_finance_applications' || r.table === 'vehicle_insurance_policies') await syncDeliveryDocuments(orgId, ind, row.vin);
 
   if (r.table === 'vehicle_service_records' && row.status === 'Completed' && has(row.vin)) {
     if (has(row.odometer)) {
@@ -466,6 +607,10 @@ async function afterSave(r: VehicleResource, orgId: string, ind: string, row: Ro
     }
     await consumeServiceParts(orgId, ind, row); // parts used leave the parts stock once, and the bill amount is filled in
     await scheduleNextService(orgId, ind, row); // the next periodic service is booked by itself
+    if (changed('status')) { // the customer hears that the vehicle is ready
+      await enqueueCustomerMessage(orgId, ind, { key: `srv-done:${String(row.id)}`, kind: 'service_done', clientId: row.client_id, subject: 'Your vehicle service is complete', body: `Dear ${str(row.client_name) || 'Customer'}, the service of your vehicle ${str(row.vin)} (${str(row.service_number)}) is complete. Thank you for choosing us.` });
+      void processCustomerMessages(orgId);
+    }
   }
 
   if (r.table === 'vehicle_returns') {
@@ -474,11 +619,16 @@ async function afterSave(r: VehicleResource, orgId: string, ind: string, row: Ro
       const booking = await findOne('vehicle_bookings', orgId, ind, 'booking_number', row.booking_reference);
       if (booking && booking.status !== 'Cancelled') {
         await supabaseAdmin.from('vehicle_bookings').update({ status: 'Cancelled', cancellation_reason: str(row.reason) || `Return ${String(row.return_number)}` }).eq('id', booking.id as string);
-        if (has(booking.vin)) await setUnitStatus(orgId, ind, booking.vin, 'Available', HELD);
+        await releaseBookingFiles(orgId, ind, booking); // its open delivery + invoice are cancelled and the VIN goes to the next waiting booking
       }
     }
     if (['Vehicle Return', 'Sales Cancellation'].includes(String(row.return_type)) && status === 'Vehicle Received' && has(row.vin)) {
       await setUnitStatus(orgId, ind, row.vin, 'Returned');
+    }
+    // Exchange cancellation approved: the trade-in on that order is withdrawn (any money already credited is refunded through this return's refund amount).
+    if (row.return_type === 'Exchange Cancellation' && status === 'Approved' && changed('status') && has(row.order_id)) {
+      await supabaseAdmin.from('vehicle_exchanges').update({ status: 'Rejected' }).eq('organization_id', orgId).eq('industry_type_id', ind).eq('order_id', String(row.order_id)).in('status', ['Approved', 'Converted']);
+      await refreshDeliveryPayments(orgId, ind);
     }
     // Sales cancellation approved: cancel the Core order (this also cancels its bookings and releases the VINs).
     if (row.return_type === 'Sales Cancellation' && status === 'Approved' && changed('status') && has(row.order_id) && scope) {
@@ -540,17 +690,25 @@ async function onDelivered(orgId: string, ind: string, d: Row) {
   const vin = d.vin as string;
   if (!has(vin) || (has(d.industry_type_id) && d.industry_type_id !== ind)) return; // only this industry's own delivery
   await setUnitStatus(orgId, ind, vin, 'Delivered');
+  if (has(d.booking_number) && has(d.order_id)) { // the booking has done its job: it is now an order that was delivered
+    await supabaseAdmin.from('vehicle_bookings').update({ status: 'Converted to Order' }).eq('organization_id', orgId).eq('industry_type_id', ind).eq('booking_number', String(d.booking_number)).in('status', ['Reserved', 'Confirmed', 'Allocation Pending', 'Vehicle Allocated']);
+  }
   if (has(d.order_id)) { // handed over and fully paid (the Delivered gate checks payment): the Core order is done
     const left = await countWhere('vehicle_deliveries', orgId, 'order_id', d.order_id, (q) => q.neq('status', 'Delivered').neq('status', 'Cancelled'));
     if (left === 0) await supabaseAdmin.from('sale_orders').update({ status: 'completed' }).eq('organization_id', orgId).eq('id', d.order_id as string).eq('status', 'confirmed');
   }
-  const base = { organization_id: orgId, industry_type_id: ind, vin, client_name: d.client_name };
+  const base = { organization_id: orgId, industry_type_id: ind, vin, client_name: d.client_name, client_id: d.client_id ?? null };
   const regR = resOf('registrations'), warR = resOf('warranties');
-  const { data: reg } = await supabaseAdmin.from('vehicle_registrations').select('id').eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', vin).maybeSingle();
+  const { data: reg } = await supabaseAdmin.from('vehicle_registrations').select('id, client_id, client_name').eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', vin).maybeSingle();
+  const sameOwner = (o: Row | null) => !o || (has(o.client_id) && has(d.client_id) ? o.client_id === d.client_id : str(o.client_name) === str(d.client_name));
+  if (reg && !sameOwner(reg as Row)) { // a returned vehicle sold again: the new owner needs a fresh registration (ownership transfer)
+    await supabaseAdmin.from('vehicle_registrations').update({ client_name: d.client_name, client_id: d.client_id ?? null, delivery_reference: d.delivery_number, invoice_reference: d.sales_order_reference ?? null, status: 'Pending', completion_date: null, submitted_date: null, remarks: `Vehicle sold again to ${str(d.client_name)}: transfer of ownership needed.` }).eq('id', (reg as Row).id as string);
+  }
   if (!reg) {
     await supabaseAdmin.from('vehicle_registrations').insert({ ...base, engine_number: d.engine_number ?? null, delivery_reference: d.delivery_number, invoice_reference: d.sales_order_reference ?? null, status: 'Pending' });
   }
-  const { data: war } = await supabaseAdmin.from('vehicle_warranties').select('id').eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', vin).maybeSingle();
+  const { data: war } = await supabaseAdmin.from('vehicle_warranties').select('id, client_id, client_name').eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', vin).maybeSingle();
+  if (war && !sameOwner(war as Row)) await supabaseAdmin.from('vehicle_warranties').update({ client_name: d.client_name, client_id: d.client_id ?? null }).eq('id', (war as Row).id as string); // the warranty stays with the vehicle, the owner changes
   if (!war) {
     const unit = await findOne('vehicle_units', orgId, ind, 'vin', vin);
     const model = unit?.model_id ? await findOne('vehicle_models', orgId, ind, 'id', unit.model_id) : null;
@@ -569,7 +727,7 @@ async function onDelivered(orgId: string, ind: string, d: Row) {
 }
 
 // ---------------------------------------------------------------- delete guards
-const VIN_CHILDREN: [string, string][] = [['vehicle_bookings', 'vin'], ['vehicle_test_drives', 'vin'], ['vehicle_deliveries', 'vin'], ['vehicle_registrations', 'vin'], ['vehicle_finance_applications', 'vin'], ['vehicle_insurance_policies', 'vin'], ['vehicle_warranties', 'vin'], ['vehicle_service_records', 'vin'], ['vehicle_returns', 'vin'], ['vehicle_exchanges', 'new_vehicle_vin']];
+const VIN_CHILDREN: [string, string][] = [['vehicle_bookings', 'vin'], ['vehicle_test_drives', 'vin'], ['vehicle_deliveries', 'vin'], ['vehicle_registrations', 'vin'], ['vehicle_finance_applications', 'vin'], ['vehicle_insurance_policies', 'vin'], ['vehicle_warranties', 'vin'], ['vehicle_service_records', 'vin'], ['vehicle_returns', 'vin'], ['vehicle_invoices', 'vin'], ['vehicle_exchanges', 'new_vehicle_vin']];
 async function assertCanDelete(r: VehicleResource, orgId: string, row: Row) {
   const inUse = (what: string) => new AppError(409, 'RECORD_IN_USE', `This record is used by ${what}. Remove or reassign them first.`);
   if (r.table === 'vehicle_models') {
@@ -595,7 +753,8 @@ async function assertCanDelete(r: VehicleResource, orgId: string, row: Row) {
       if (n) throw inUse(`${n} ${t.replace('vehicle_', '').replace(/_/g, ' ')} record(s)`);
     }
   }
-  if (r.table === 'vehicle_deliveries' && row.status === 'Delivered') throw new AppError(409, 'RECORD_IN_USE', 'A delivered vehicle\u2019s delivery record cannot be deleted.');
+   if (r.table === 'vehicle_deliveries' && row.status === 'Delivered') throw new AppError(409, 'RECORD_IN_USE', 'A delivered vehicle\u2019s delivery record cannot be deleted.');
+  if (r.table === 'vehicle_invoices' && row.status !== 'Cancelled') throw new AppError(409, 'RECORD_IN_USE', 'Cancel this invoice first (set its status to Cancelled). Issued invoices are not deleted.');
   if (r.table === 'vehicle_bookings' && ['Vehicle Allocated', 'Converted to Order'].includes(String(row.status))) throw new AppError(409, 'RECORD_IN_USE', 'Cancel this booking first (it holds a vehicle).');
 }
 
@@ -771,10 +930,32 @@ for (const r of VEHICLE_RESOURCES) {
     const ind = resolveIndustryTypeId(req.industryScope!, typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : null);
     if (datedStatuses) await refreshDateStatuses(r, org(req), ind);
     if (r.table === 'vehicle_deliveries') await refreshDeliveryPayments(org(req), ind);
+    if (r.table === 'vehicle_deliveries' || r.table === 'vehicle_invoices') await backfillVehicleInvoices(org(req), ind); // older deliveries get their invoice
     if (r.table === 'vehicle_models') { // models saved before Step 2 get their product now
       let mq = supabaseAdmin.from('vehicle_models').select('*').eq('organization_id', org(req)).is('product_id', null);
       if (ind) mq = mq.eq('industry_type_id', ind);
       for (const m of ((await mq).data ?? []) as Row[]) await syncModelProduct(org(req), m.industry_type_id as string, m);
+    }
+    if (r.table === 'vehicle_models' && ind && await isVehicleIndustry(org(req), ind)) { // Vehicle products saved without a model row (older saves) get their model now, so every dropdown lists them
+      try {
+        const { data: tags } = await supabaseAdmin.from('product_industry_types').select('product_id').eq('organization_id', org(req)).eq('industry_type_id', ind);
+        const productIds = ((tags ?? []) as Row[]).map((t) => String(t.product_id));
+        if (productIds.length) {
+          const { data: linked } = await supabaseAdmin.from('vehicle_models').select('product_id').eq('organization_id', org(req)).in('product_id', productIds);
+          const haveModel = new Set(((linked ?? []) as Row[]).map((m) => String(m.product_id)));
+          const missing = productIds.filter((id) => !haveModel.has(id));
+          if (missing.length) {
+            const { data: products } = await supabaseAdmin.from('products').select('*').eq('organization_id', org(req)).in('id', missing);
+            for (const p of (products ?? []) as Row[]) await syncProductModel(org(req), p);
+          }
+        }
+      } catch (e) { logger.warn({ err: e }, 'vehicle models: backfill from products failed'); }
+    }
+    if (r.table === 'vehicle_insurance_policies' && ind) { // bookings that already hold a vehicle but have no insurance file yet (e.g. made before the free-insurance scheme was linked) get it now
+      try {
+        const { data: held } = await supabaseAdmin.from('vehicle_bookings').select('*').eq('organization_id', org(req)).eq('industry_type_id', ind).not('vin', 'is', null).neq('status', 'Cancelled').limit(50);
+        for (const b of (held ?? []) as Row[]) await ensureBookingInsurance(org(req), ind, b);
+      } catch (e) { logger.warn({ err: e }, 'vehicle insurance: backfill from bookings failed'); }
     }
     let q = supabaseAdmin.from(r.table).select('*').eq('organization_id', org(req)).order('created_at', { ascending: false });
     if (ind) q = q.eq('industry_type_id', ind);

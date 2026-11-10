@@ -9,6 +9,7 @@ import { assertRecordInScope, resolveIndustryTypeId } from '../lib/industry-scop
 import { TEXTILE_RESOURCES, type TextileResource } from '../lib/textile-resources.js';
 import { createMovement } from '../repositories/inventory.repository.js';
 import { syncProductStockFromRolls } from '../lib/textile-rolls.js';
+import { logger } from '../lib/logger.js';
 
 export const textileRouter = Router();
 const manager = requireRoles('super_admin', 'admin', 'sales_manager');
@@ -114,12 +115,17 @@ async function syncRollFromInspection(orgId: string, insp: Row) {
     if (update.status) q = q.neq('status', 'Sold'); // never reopen a sold roll
     await q; // best effort: the inspection itself is already saved
   }
+  // A Pass releases a roll that was held back (Quarantine = waiting for inspection, or Damaged by an earlier Fail).
   if (insp.status === 'Pass') {
     let q = supabaseAdmin.from('textile_fabric_rolls').update({ status: 'In stock' })
-      .eq('organization_id', orgId).eq('roll_number', rollNumber).eq('status', 'Damaged');
+      .eq('organization_id', orgId).eq('roll_number', rollNumber).in('status', ['Quarantine', 'Damaged']);
     if (typeof insp.industry_type_id === 'string') q = q.eq('industry_type_id', insp.industry_type_id);
     await q;
   }
+  // Roll status changed (released or held back), so the product's sellable stock must be recalculated.
+  const { data: rollRow } = await supabaseAdmin.from('textile_fabric_rolls').select('product_code')
+    .eq('organization_id', orgId).eq('roll_number', rollNumber).maybeSingle();
+  await syncProductStockFromRolls(orgId, (rollRow as { product_code?: string | null } | null)?.product_code);
 }
 
 // Sample approved -> its Design moves from Draft to Active.
@@ -157,6 +163,7 @@ async function syncVariantStockToInventory(req: Req, variant: Row, delta: number
 async function afterSave(table: string, orgId: string, row: Row) {
   if (table === 'textile_fabric_rolls') await syncProductStockFromRolls(orgId, row.product_code);
   if (table === 'textile_quality_inspections') await syncRollFromInspection(orgId, row);
+  if (table === 'textile_samples') await syncDesignFromSample(orgId, row);
   
 }
 
@@ -306,7 +313,7 @@ async function syncRollsFromOrders(orgId: string, industryTypeId: string | null)
           .eq('organization_id', orgId).eq('id', roll.id);
       }
     }
-  } catch { /* keep the list working even if the order sync fails */ }
+  } catch (e) { logger.error({ err: e, orgId }, 'textile: syncing roll status from orders failed'); }
 }
 
 // Marks each variant as 'Linked' (a Textile product with the same code exists, so stock posts to Inventory) or 'Not linked'.

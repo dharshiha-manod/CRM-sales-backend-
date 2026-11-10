@@ -3,6 +3,7 @@ import { supabaseAdmin } from './supabase.js';
 import { collectionBase, orderBase } from './fmcg-market.js';
 import { fmcgInvoicedByOrder } from './fmcg-paperwork.js';
 import { pharmaInvoicedByOrder } from './pharma-billing.js';
+import { textileInvoicedByOrder } from './textile-billing.js';
 
 export type ClientCredit = {
   clientName: string;
@@ -46,6 +47,8 @@ export async function getClientCredit(organizationId: string, clientId: string):
   const invoicedByOrder = await fmcgInvoicedByOrder(organizationId, orderIds);
   // Pharma: the GST invoice (tax included) is what the customer owes, same figure as Customer Outstanding and Collections.
   for (const [orderId, amount] of await pharmaInvoicedByOrder(organizationId, orderIds)) invoicedByOrder.set(orderId, amount);
+  // Textile: same rule, the GST sales invoice is what the customer owes.
+  for (const [orderId, amount] of await textileInvoicedByOrder(organizationId, orderIds)) invoicedByOrder.set(orderId, amount);
   const valueOf = (row: unknown): number => {
     const r = row as { id: string; total_amount?: unknown; exchange_rate?: unknown };
     const extra = Math.max(0, (invoicedByOrder.get(r.id) ?? 0) - Number(r.total_amount ?? 0));

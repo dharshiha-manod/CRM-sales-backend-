@@ -3,6 +3,7 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import type { TradingResource } from '../lib/trading-resources.js';
 import { TRADING_RESOURCES } from '../lib/trading-resources.js';
 import { pharmaInvoicedByOrder } from '../lib/pharma-billing.js';
+import { textileInvoicedByOrder } from '../lib/textile-billing.js';
 import {
   MOVING_LOGISTICS_STATUSES, MOVING_SHIPMENT_STATUSES, STARTED_LOGISTICS_STATUSES, STARTED_SHIPMENT_STATUSES,
   assertPlanReady, ensureLogisticsPlan, nextShipmentStatus, syncLogisticsFromShipment,
@@ -676,6 +677,15 @@ export async function billedTotalsForCoreOrders(org: string, orderIds: string[])
       for (const o of (pRates ?? []) as Row[]) {
         const rate = Number(o.exchange_rate) > 0 ? Number(o.exchange_rate) : 1;
         result.set(String(o.id), round2((pharmaInvoiced.get(String(o.id)) ?? 0) * rate));
+      }
+    }
+    // Textile: the GST sales invoice (tax included) is what the customer owes.
+    const textileInvoiced = await textileInvoicedByOrder(org, orderIds);
+    if (textileInvoiced.size) {
+      const { data: tRates } = await supabaseAdmin.from('sale_orders').select('id, exchange_rate').eq('organization_id', org).in('id', [...textileInvoiced.keys()]);
+      for (const o of (tRates ?? []) as Row[]) {
+        const rate = Number(o.exchange_rate) > 0 ? Number(o.exchange_rate) : 1;
+        result.set(String(o.id), round2((textileInvoiced.get(String(o.id)) ?? 0) * rate));
       }
     }
     const deals: Row[] = [];
