@@ -1,6 +1,6 @@
 // One-shot hand-over of a draft from a Lead to a Vehicle form (Test drive / Booking), same sessionStorage pattern as
 // tradeDocumentHandoff.ts. The target page's `consumePendingDraft` reads it once and opens its "new" form pre-filled.
-export type VehicleDraftKind = 'test-drive' | 'booking';
+export type VehicleDraftKind = 'test-drive' | 'booking' | 'insurance';
 const key = (kind: VehicleDraftKind) => `vehicle-draft-${kind}`;
 
 export function queueVehicleDraft(kind: VehicleDraftKind, values: Record<string, string>): void {

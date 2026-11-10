@@ -77,9 +77,9 @@ export function saveNameList(key: string, list: string[]) {
 type ListKind = 'brand' | 'category' | 'unit';
 
 const TABS: { kind: ListKind; title: string; singular: string; description: string }[] = [
-  { kind: 'brand', title: 'Brands', singular: 'brand' },
-  { kind: 'category', title: 'Categories', singular: 'category' },
-  { kind: 'unit', title: 'Units', singular: 'unit' },
+  { kind: 'brand', title: 'Brands', singular: 'brand', description: 'Brands you can assign to products.' },
+  { kind: 'category', title: 'Categories', singular: 'category', description: 'Categories used to group products.' },
+  { kind: 'unit', title: 'Units', singular: 'unit', description: 'Units of measure (for example metre, piece, box).' },
 ];
 
 function keyFor(kind: ListKind, industry: string): string {

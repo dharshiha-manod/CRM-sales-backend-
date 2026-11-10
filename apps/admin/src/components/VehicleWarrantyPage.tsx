@@ -15,7 +15,7 @@ const config: VehicleModuleConfig = {
   searchableKeys: ['warranty_number', 'client_name', 'vin'],
   fields: [
     { key: 'warranty_number', label: 'Warranty number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'WAR' },
-    { key: 'vin', label: 'VIN', type: 'lookup', listColumn: true, group: 'Vehicle', lookupResource: '/vehicle/units', lookupLabelKey: 'model_name' },
+    { key: 'vin', label: 'VIN', type: 'lookup', listColumn: true, group: 'Vehicle', lookupResource: '/vehicle/units', lookupLabelKey: 'vin', lookupSecondaryLabelKey: 'model_name', lookupValueKey: 'vin' },
     { key: 'client_name', label: 'Client', type: 'text', required: true, listColumn: true, group: 'Vehicle' },
     { key: 'start_date', label: 'Start date', type: 'date', group: 'Coverage' },
     { key: 'end_date', label: 'End date', type: 'date', listColumn: true, group: 'Coverage' },

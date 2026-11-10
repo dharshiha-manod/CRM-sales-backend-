@@ -4,48 +4,55 @@ import { api } from '../lib/api';
 import { supabase } from '../lib/supabase';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { HandoverData, openHandoverNote } from '../lib/vehicleHandover';
+import { orderPicker } from '../lib/vehicleOrderFill';
+import { queueVehicleDraft } from '../lib/vehicleDraftHandoff';
 
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const UNAVAILABLE_UNIT = ['Delivered', 'Sold', 'Damaged', 'Returned', 'Under Service', 'In Transit'];
+const isClosed = (r: { status?: unknown }) => r.status === 'Delivered' || r.status === 'Cancelled';
 const STATUSES = ['Preparation', 'PDI Pending', 'Documentation Pending', 'Payment Pending', 'Ready for Delivery', 'Delivered', 'Cancelled'];
 
 const config: VehicleModuleConfig = {
   resource: '/vehicle/deliveries',
   eyebrowModule: 'VEHICLE DELIVERY / PDI',
   title: 'Vehicle delivery / PDI',
-  description: 'Pre-delivery inspection and handover. A vehicle only becomes Ready for Delivery once PDI, documentation, registration/insurance (where applicable) and required payment are all complete. Delivery marks the VIN as Delivered, completes the Core order, opens the registration file and starts the warranty. Insurance must be Complete (or Not Applicable). The customer is messaged when the vehicle is ready and when it is delivered.',
+  description: 'Pre-delivery inspection and handover. A vehicle only becomes Ready for Delivery once PDI, documentation, registration/insurance (where applicable) and required payment are all complete. Delivery marks the VIN as Delivered, completes the Core order, opens the registration file and starts the warranty. Insurance must be Complete (or Not Applicable) and accessories Fitted (or Not Applicable). A failed PDI or a cancelled delivery needs its reason in Remarks. The customer is messaged when the vehicle is ready and when it is delivered.',
   icon: '▣',
   emptyIcon: '▣',
   codeField: 'delivery_number',
   nameField: 'client_name',
   statusOptions: STATUSES,
-  searchableKeys: ['delivery_number', 'client_name', 'vin', 'dealer_name', 'sales_rep'],
+  searchableKeys: ['delivery_number', 'client_name', 'vin', 'engine_number', 'order_number', 'booking_number', 'dealer_name', 'sales_rep'],
   fields: [
     { key: 'delivery_number', label: 'Delivery number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'DLV' },
     { key: 'client_name', label: 'Client', type: 'text', required: true, listColumn: true },
     { key: 'client_id', label: 'Client (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/clients', lookupLabelKey: 'client_name', autoFillMap: { client_name: 'client_name' } },
-    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', lookupResource: '/orders', lookupLabelKey: 'order_number', autoFillMap: { order_number: 'order_number' } },
+    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', ...orderPicker({ vin: 'vin' }), autoFillMap: { order_number: 'order_number' } },
     { key: 'order_number', label: 'Order number (auto-filled)', type: 'text', readOnly: true, group: 'Link' },
     { key: 'booking_number', label: 'Booking number (auto-linked)', type: 'text', readOnly: true, group: 'Link' },
-    { key: 'vin', label: 'VIN', type: 'lookup', listColumn: true, group: 'Vehicle', lookupResource: '/vehicle/units', lookupLabelKey: 'model_name' },
+    {
+      key: 'vin', label: 'VIN', type: 'lookup', listColumn: true, group: 'Vehicle', lookupResource: '/vehicle/units', lookupLabelKey: 'vin', lookupSecondaryLabelKey: 'model_name', lookupValueKey: 'vin',
+      lookupFilter: (o) => !UNAVAILABLE_UNIT.includes(String(o.status ?? '')),
+      autoFillMap: { engine_number: 'engine_number' },
+      helpText: 'Only vehicles that can still be delivered are listed (not Delivered, Sold, Damaged, Returned, Under Service or In Transit). One vehicle can be on one open delivery only.',
+    },
     { key: 'engine_number', label: 'Engine number', type: 'text', group: 'Vehicle' },
     { key: 'sales_order_reference', label: 'Sales order reference (Core Orders)', type: 'text', group: 'Vehicle' },
-    {
-      key: 'dealer_id', label: 'Dealer', type: 'lookup', group: 'Vehicle',
-      lookupResource: '/vehicle/dealers', lookupLabelKey: 'dealer_name', autoFillMap: { dealer_name: 'dealer_name' },
-    },
-    { key: 'dealer_name', label: 'Dealer (auto-filled)', type: 'text', readOnly: true, group: 'Vehicle' },
+    // no Dealer picker: the buyer is the client. A dealer saved earlier is only shown, never asked for.
+    { key: 'dealer_name', label: 'Dealer', type: 'text', readOnly: true, group: 'Vehicle', visibleIf: (f) => Boolean(f.dealer_name) },
     { key: 'sales_rep', label: 'Sales representative', type: 'text', group: 'Schedule' },
-    { key: 'delivery_date', label: 'Delivery date', type: 'date', listColumn: true, group: 'Schedule' },
+    { key: 'delivery_date', label: 'Delivery date', type: 'date', listColumn: true, group: 'Schedule', helpText: 'Planned handover date. It becomes today\u2019s date automatically when the vehicle is marked Delivered early.' },
     { key: 'delivery_location', label: 'Delivery location', type: 'text', group: 'Schedule' },
     { key: 'odometer', label: 'Odometer', type: 'number', group: 'Handover' },
     { key: 'fuel_level', label: 'Fuel / battery level', type: 'text', group: 'Handover' },
-    { key: 'pdi_status', label: 'PDI status', type: 'select', options: ['Not Started', 'In Progress', 'Passed', 'Failed'], listColumn: true, group: 'Readiness' },
+    { key: 'pdi_status', label: 'PDI status', type: 'select', options: ['Not Started', 'In Progress', 'Passed', 'Failed'], listColumn: true, group: 'Readiness', helpText: 'Failed needs the reason in Remarks.' },
     { key: 'documentation_status', label: 'Documentation status', type: 'select', options: ['Pending', 'Complete'], group: 'Readiness', helpText: 'Follows the Documents checklist by itself once a checklist exists (use the Documents button on the row).' },
     { key: 'payment_status', label: 'Payment status', type: 'select', options: ['Pending', 'Complete'], group: 'Readiness' },
     { key: 'registration_status', label: 'Registration status', type: 'select', options: ['Pending', 'Complete', 'Not Applicable'], group: 'Readiness' },
     { key: 'insurance_status', label: 'Insurance status', type: 'select', options: ['Pending', 'Complete', 'Not Applicable'], group: 'Readiness' },
-    { key: 'accessories_status', label: 'Accessories status', type: 'select', options: ['Pending', 'Fitted', 'Not Applicable'], group: 'Readiness' },
-    { key: 'customer_acknowledgement', label: 'Customer acknowledgement', type: 'select', options: ['Yes', 'No'], group: 'Readiness' },
-    { key: 'remarks', label: 'Remarks', type: 'textarea', group: 'Readiness' },
+    { key: 'accessories_status', label: 'Accessories status', type: 'select', options: ['Pending', 'Fitted', 'Not Applicable'], group: 'Readiness', helpText: 'Must be Fitted or Not Applicable before the vehicle can be Delivered.' },
+    { key: 'customer_acknowledgement', label: 'Customer acknowledgement', type: 'select', options: ['Yes', 'No'], group: 'Readiness', helpText: 'The customer must acknowledge the handover before Delivered.' },
+    { key: 'remarks', label: 'Remarks (reason if PDI Failed / Cancelled)', type: 'textarea', group: 'Readiness' },
     { key: 'status', label: 'Delivery status', type: 'select', options: STATUSES, listColumn: true, group: 'Readiness' },
   ],
   kpis: [
@@ -53,6 +60,9 @@ const config: VehicleModuleConfig = {
     { icon: '◷', iconClass: 'kpi-icon-amber', label: 'PDI / docs pending', value: (r) => String(r.filter((x) => x.status === 'PDI Pending' || x.status === 'Documentation Pending').length) },
     { icon: '✔', iconClass: 'kpi-icon-green', label: 'Ready for delivery', value: (r) => String(r.filter((x) => x.status === 'Ready for Delivery').length) },
      { icon: '↗', iconClass: 'kpi-icon-school', label: 'Delivered', value: (r) => String(r.filter((x) => x.status === 'Delivered').length) },
+    { icon: '₹', iconClass: 'kpi-icon-amber', label: 'Payment pending', value: (r) => String(r.filter((x) => !isClosed(x) && x.payment_status !== 'Complete').length) },
+    { icon: '!', iconClass: 'kpi-icon-ink', label: 'PDI failed', value: (r) => String(r.filter((x) => !isClosed(x) && x.pdi_status === 'Failed').length) },
+    { icon: '⏰', iconClass: 'kpi-icon-amber', label: 'Overdue', value: (r) => String(r.filter((x) => !isClosed(x) && typeof x.delivery_date === 'string' && x.delivery_date.slice(0, 10) < today()).length) },
   ],
   sampleRecords: [],
 };
@@ -73,11 +83,66 @@ function HandoverButton({ id }: { id: string }) {
   );
 }
 
+function PdiButtons({ r }: { r: Record<string, unknown> }) {
+  const { activeIndustryTypeId } = useIndustryScope();
+  const [busy, setBusy] = useState(false);
+  if (isClosed(r) || typeof r.id !== 'string') return null;
+  const id = r.id;
+  const send = async (body: Record<string, unknown>) => {
+    setBusy(true);
+    try {
+      const q = activeIndustryTypeId ? `?industryTypeId=${activeIndustryTypeId}` : '';
+      await api(`/vehicle/deliveries/${id}${q}`, { method: 'PATCH', body: JSON.stringify(body) });
+      window.location.reload();
+    } catch (e) { window.alert(e instanceof Error ? e.message : 'Could not update the delivery'); setBusy(false); }
+  };
+  const pass = () => { if (window.confirm('Mark PDI as Passed for this vehicle?')) void send({ pdi_status: 'Passed' }); };
+  const fail = () => {
+    const reason = window.prompt('Why did the PDI fail? (saved in Remarks)');
+    if (reason && reason.trim()) void send({ pdi_status: 'Failed', remarks: reason.trim() });
+  };
+  const addInsurance = () => queueVehicleDraft('insurance', { vin: String(r.vin ?? ''), ...(r.client_id ? { client_id: String(r.client_id) } : {}), client_name: String(r.client_name ?? ''), policy_type: 'Comprehensive' });
+  const deliver = () => {
+    if (window.confirm('Customer has acknowledged the handover and the vehicle is being delivered now?')) void send({ customer_acknowledgement: 'Yes', status: 'Delivered' });
+  };
+  return (
+    <>
+      {r.pdi_status !== 'Passed' && r.vin ? <button type="button" className="quiet-button" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={pass}>PDI passed</button> : null}
+      {r.pdi_status !== 'Passed' && r.pdi_status !== 'Failed' && r.vin ? <button type="button" className="quiet-button" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={fail}>PDI failed</button> : null}
+      {r.vin && r.insurance_status === 'Pending' ? <button type="button" className="quiet-button" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={addInsurance}>Add insurance</button> : null}
+      {r.status === 'Ready for Delivery' ? <button type="button" className="quiet-button" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={deliver}>Deliver</button> : null}
+    </>
+  );
+}
+
+// What is still missing before this vehicle can be handed over, at a glance.
+function ReadinessChips({ r }: { r: Record<string, unknown> }) {
+  if (r.status === 'Cancelled') return null;
+  const docs = Array.isArray(r.document_checklist) ? (r.document_checklist as DeliveryDoc[]) : [];
+  const docsDone = docs.length ? docs.every((d) => d.status !== 'Pending') : r.documentation_status === 'Complete';
+  const ok = (v: boolean) => (v ? '\u2713' : '\u2717');
+  const okOrNa = (v: unknown, good: string[]) => good.includes(String(v ?? ''));
+  const items: [string, boolean][] = [
+    ['PDI', r.pdi_status === 'Passed'],
+    ['Docs', docsDone],
+    ['Pay', r.payment_status === 'Complete'],
+    ['Ins', okOrNa(r.insurance_status, ['Complete', 'Not Applicable'])],
+    ['Acc', okOrNa(r.accessories_status, ['Fitted', 'Not Applicable'])],
+    ['Ack', r.customer_acknowledgement === 'Yes'],
+  ];
+  return (
+    <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap', fontSize: 11 }} title="PDI, documents, payment, insurance, accessories, customer acknowledgement">
+      {items.map(([label, done]) => (
+        <span key={label} style={{ borderRadius: 999, padding: '1px 7px', background: done ? '#dcfce7' : '#fef3c7', color: done ? '#166534' : '#92400e', whiteSpace: 'nowrap' }}>{label} {ok(done)}</span>
+      ))}
+    </span>
+  );
+}
+
 type DocStatus = 'Pending' | 'Received' | 'Not Applicable';
 type DeliveryDoc = { name: string; status: DocStatus; received_date: string | null; remarks: string | null; file_path?: string | null; file_name?: string | null; uploaded_at?: string | null };
 type DocsResponse = { data: { delivery_number: string; client_name: string; status: string; locked: boolean; saved: boolean; documents: DeliveryDoc[] } };
 const DOC_STATUS_OPTIONS: DocStatus[] = ['Pending', 'Received', 'Not Applicable'];
-const today = () => new Date().toISOString().slice(0, 10);
 const NO_FILE = { file_path: null, file_name: null, uploaded_at: null };
 
 function DocumentsModal({ id, onClose }: { id: string; onClose: () => void }) {
@@ -239,12 +304,20 @@ function DocumentsButton({ id, list }: { id: string; list: unknown }) {
   const done = docs.filter((d) => d.status !== 'Pending').length;
   return (
     <>
-      <button type="button" className="quiet-button" onClick={() => setOpen(true)}>{docs.length ? `Documents ${done}/${docs.length}` : 'Documents'}</button>
+      <button type="button" className="quiet-button" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => setOpen(true)}>{docs.length ? `Documents ${done}/${docs.length}` : 'Documents'}</button>
       {open && <DocumentsModal id={id} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
 export function VehicleDeliveryPdiPage() {
-  return <VehicleMasterPage config={{ ...config, inlineActions: (r) => (typeof r.id === 'string' && !r.id.startsWith('demo-') ? <DocumentsButton id={r.id} list={r.document_checklist} /> : null), rowActions: (r) => (typeof r.id === 'string' && !r.id.startsWith('demo-') ? <HandoverButton id={r.id} /> : null) }} />;
+  return <VehicleMasterPage config={{ ...config, fitToScreen: true, inlineActions: (r) => (typeof r.id === 'string' && !r.id.startsWith('demo-') ? (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start', minWidth: 0, maxWidth: 260 }}>
+      <ReadinessChips r={r} />
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        <DocumentsButton id={r.id} list={r.document_checklist} />
+        <PdiButtons r={r} />
+      </div>
+    </div>
+  ) : null), rowActions: (r) => (typeof r.id === 'string' && !r.id.startsWith('demo-') ? <HandoverButton id={r.id} /> : null) }} />;
 }

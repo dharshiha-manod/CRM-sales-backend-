@@ -64,7 +64,7 @@ const config: VehicleModuleConfig = {
       // model when one is set. A dealer is NOT required (individual buyers drive showroom vehicles); when the
       // vehicle has a dealer it is filled in automatically, and the vehicle's last odometer becomes the start reading.
       lookupFilter: (option, f) =>
-        !['Sold', 'Delivered', 'Damaged', 'Under Service'].includes(String(option.status ?? '')) &&
+        !['Sold', 'Delivered', 'Damaged', 'Under Service', 'Reserved', 'Booked', 'Allocated', 'Returned'].includes(String(option.status ?? '')) &&
         (!f.model_id || !option.model_id || String(option.model_id) === f.model_id),
       autoFillMap: { model_id: 'model_id', model_name: 'model_name', dealer_id: 'dealer_id', dealer_name: 'dealer_name', odometer: 'odometer_start' },
     },

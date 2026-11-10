@@ -1,4 +1,5 @@
 import { VehicleMasterPage, VehicleModuleConfig } from './VehicleMasterPage';
+import { orderPicker } from '../lib/vehicleOrderFill';
 
 const STATUSES = ['Not Required', 'Started', 'Documents Pending', 'Submitted', 'Under Review', 'Approved', 'Rejected', 'Disbursed'];
 
@@ -6,7 +7,7 @@ const config: VehicleModuleConfig = {
   resource: '/vehicle/finance-applications',
   eyebrowModule: 'FINANCE / LOAN',
   title: 'Vehicle finance / loan',
-  description: 'Finance applications linked to a client and sales order. Approval updates the linked Core Order and its payment requirement; rejection creates a Core follow-up automatically.',
+  description: 'Finance applications linked to a client and sales order. Approval ticks the Loan sanction letter on the delivery file; the disbursed amount is posted to Core Collections and counts towards the order payment; rejection creates a high-priority follow-up call for the sales representative.',
   icon: '₹',
   emptyIcon: '₹',
   codeField: 'application_number',
@@ -17,10 +18,9 @@ const config: VehicleModuleConfig = {
     { key: 'application_number', label: 'Finance application number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'FIN' },
     { key: 'client_name', label: 'Client', type: 'text', required: true, listColumn: true },
     { key: 'client_id', label: 'Client (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/clients', lookupLabelKey: 'client_name', autoFillMap: { client_name: 'client_name' } },
-    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', lookupResource: '/orders', lookupLabelKey: 'order_number', autoFillMap: { order_number: 'order_number' } },
-    { key: 'order_number', label: 'Order number (auto-filled)', type: 'text', readOnly: true, group: 'Link' },
+    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', ...orderPicker({ vin: 'vin' }), autoFillMap: { sales_order_reference: 'order_number' } },
     { key: 'booking_number', label: 'Booking number (auto-linked)', type: 'text', readOnly: true, group: 'Link' },
-    { key: 'vin', label: 'Vehicle (VIN)', type: 'lookup', group: 'Vehicle & order', lookupResource: '/vehicle/units', lookupLabelKey: 'model_name' },
+    { key: 'vin', label: 'Vehicle (VIN)', type: 'lookup', group: 'Vehicle & order', lookupResource: '/vehicle/units', lookupLabelKey: 'vin', lookupSecondaryLabelKey: 'model_name', lookupValueKey: 'vin' },
     { key: 'sales_order_reference', label: 'Sales order reference (Core Orders)', type: 'text', group: 'Vehicle & order' },
     { key: 'finance_provider', label: 'Finance provider', type: 'text', listColumn: true, group: 'Loan details' },
     { key: 'loan_amount', label: 'Loan amount', type: 'number', group: 'Loan details' },

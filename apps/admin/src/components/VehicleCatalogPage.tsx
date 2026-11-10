@@ -12,53 +12,6 @@ import './VehicleUnitIntake.css';
  * the "Individual units" that reference a model by VIN.
  */
 
-const VEHICLE_TYPES = ['Hatchback', 'Sedan', 'SUV', 'MUV', 'Pickup', 'Commercial Vehicle', 'Two Wheeler', 'Electric Vehicle', 'Other'];
-const FUEL_TYPES = ['Petrol', 'Diesel', 'CNG', 'Electric', 'Hybrid'];
-const TRANSMISSIONS = ['Manual', 'Automatic', 'AMT', 'CVT'];
-const CONDITION = ['New', 'Used'];
-const MODEL_STATUSES = ['Active', 'Discontinued', 'Upcoming'];
-
-const modelConfig: VehicleModuleConfig = {
-  resource: '/vehicle/models',
-  eyebrowModule: 'VEHICLE / PARTS CATALOG',
-  title: 'Model / variant catalog',
-  description: 'Vehicle make, model and variant master data — extends the existing Core Products module rather than duplicating it.',
-  icon: '▣',
-  emptyIcon: '▣',
-  codeField: 'model_code',
-  nameField: 'model_name',
-  statusOptions: MODEL_STATUSES,
-  searchableKeys: ['model_code', 'model_name', 'make', 'brand', 'variant'],
-  fields: [
-    { key: 'model_code', label: 'Model code', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'MDL' },
-    { key: 'make', label: 'Make', type: 'text', required: true, listColumn: true },
-    { key: 'brand', label: 'Brand', type: 'text' },
-    { key: 'model_name', label: 'Model', type: 'text', required: true, listColumn: true },
-    { key: 'variant', label: 'Variant', type: 'text', listColumn: true },
-    { key: 'vehicle_type', label: 'Vehicle type', type: 'select', options: VEHICLE_TYPES, listColumn: true, group: 'Specification' },
-    { key: 'model_year', label: 'Model year', type: 'number', group: 'Specification' },
-    { key: 'fuel_type', label: 'Fuel type', type: 'select', options: FUEL_TYPES, group: 'Specification' },
-    { key: 'transmission', label: 'Transmission', type: 'select', options: TRANSMISSIONS, group: 'Specification' },
-    { key: 'engine_type', label: 'Engine type', type: 'text', group: 'Specification' },
-    { key: 'engine_capacity', label: 'Engine capacity (cc)', type: 'number', group: 'Specification' },
-    { key: 'seating_capacity', label: 'Seating capacity', type: 'number', group: 'Specification' },
-    { key: 'body_type', label: 'Body type', type: 'text', group: 'Specification' },
-    { key: 'vehicle_category', label: 'Vehicle category', type: 'text', group: 'Specification' },
-    { key: 'condition', label: 'New / Used', type: 'select', options: CONDITION, group: 'Pricing' },
-    { key: 'ex_showroom_price', label: 'Ex-showroom price', type: 'number', listColumn: true, group: 'Pricing' },
-    { key: 'recommended_selling_price', label: 'Recommended selling price', type: 'number', group: 'Pricing' },
-    { key: 'warranty', label: 'Standard warranty', type: 'text', group: 'Ownership' },
-    { key: 'service_interval', label: 'Service interval', type: 'text', group: 'Ownership' },
-    { key: 'status', label: 'Model status', type: 'select', options: MODEL_STATUSES, listColumn: true, group: 'Ownership' },
-  ],
-  kpis: [
-    { icon: '▣', iconClass: 'kpi-icon-ink', label: 'Model / variants', value: (r) => String(r.length) },
-    { icon: '✔', iconClass: 'kpi-icon-green', label: 'Active', value: (r) => String(r.filter((x) => x.status === 'Active').length) },
-    { icon: '◷', iconClass: 'kpi-icon-amber', label: 'Upcoming', value: (r) => String(r.filter((x) => x.status === 'Upcoming').length) },
-  ],
-  sampleRecords: [],
-};
-
 const partsConfig: VehicleModuleConfig = {
   resource: '/vehicle/parts',
   eyebrowModule: 'VEHICLE / PARTS CATALOG',
@@ -141,7 +94,7 @@ const unitConfig: VehicleModuleConfig = {
       key: 'dealer_id', label: 'Dealer', type: 'lookup', listColumn: true,
       lookupResource: '/vehicle/dealers', lookupLabelKey: 'dealer_name',
       autoFillMap: { dealer_name: 'dealer_name' },
-      helpText: 'Assign the dealer this vehicle belongs to — Test drive only offers vehicles that have a dealer.',
+      helpText: 'Assign the dealer this vehicle belongs to (optional).',
     },
     { key: 'dealer_name', label: 'Dealer', type: 'text', readOnly: true, visibleIf: () => false },
     { key: 'current_location', label: 'Current location', type: 'text', visibleIf: () => false },
@@ -346,4 +299,4 @@ export function VehicleCatalogPage() {
       {tab === 'parts' ? <VehicleMasterPage config={partsConfig} /> : <VehicleMasterPage config={{ ...unitConfig, renderInsights: (rows) => <UnitIntakePanel rows={rows} /> }} />}
     </div>
   );
-}
+} 

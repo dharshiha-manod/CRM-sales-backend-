@@ -1,4 +1,5 @@
 import { VehicleMasterPage, VehicleModuleConfig } from './VehicleMasterPage';
+import { orderPicker } from '../lib/vehicleOrderFill';
 
 const STATUSES = ['Requested', 'Inspection', 'Valuation', 'Approved', 'Rejected', 'Converted'];
 
@@ -17,8 +18,7 @@ const config: VehicleModuleConfig = {
     { key: 'exchange_id', label: 'Exchange ID', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'EXG' },
     { key: 'client_name', label: 'Client', type: 'text', required: true, listColumn: true },
     { key: 'client_id', label: 'Client (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/clients', lookupLabelKey: 'client_name', autoFillMap: { client_name: 'client_name' } },
-    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', lookupResource: '/orders', lookupLabelKey: 'order_number', autoFillMap: { order_number: 'order_number' } },
-    { key: 'order_number', label: 'Order number (auto-filled)', type: 'text', readOnly: true, group: 'Link' },
+    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', ...orderPicker({ vin: 'new_vehicle_vin' }), autoFillMap: { sales_order_reference: 'order_number' } },
     { key: 'booking_number', label: 'Booking number (auto-linked)', type: 'text', readOnly: true, group: 'Link' },
     { key: 'existing_registration_number', label: 'Existing vehicle registration number', type: 'text', group: 'Existing vehicle' },
     { key: 'existing_make', label: 'Make', type: 'text', group: 'Existing vehicle' },
@@ -32,7 +32,7 @@ const config: VehicleModuleConfig = {
     { key: 'approved_value', label: 'Approved value', type: 'number', listColumn: true, group: 'Valuation' },
     { key: 'outstanding_loan', label: 'Outstanding loan', type: 'number', group: 'Valuation' },
     { key: 'net_exchange_value', label: 'Net exchange value', type: 'number', listColumn: true, group: 'Valuation' },
-    { key: 'new_vehicle_vin', label: 'New vehicle (VIN)', type: 'lookup', group: 'New vehicle', lookupResource: '/vehicle/units', lookupLabelKey: 'model_name' },
+    { key: 'new_vehicle_vin', label: 'New vehicle (VIN)', type: 'lookup', group: 'New vehicle', lookupResource: '/vehicle/units', lookupLabelKey: 'vin', lookupSecondaryLabelKey: 'model_name', lookupValueKey: 'vin' },
     { key: 'sales_order_reference', label: 'Sales order reference (Core Orders)', type: 'text', group: 'New vehicle' },
     { key: 'status', label: 'Status', type: 'select', options: STATUSES, listColumn: true, group: 'New vehicle' },
   ],

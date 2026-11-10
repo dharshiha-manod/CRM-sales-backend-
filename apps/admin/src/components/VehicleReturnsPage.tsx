@@ -1,4 +1,5 @@
 import { VehicleMasterPage, VehicleModuleConfig } from './VehicleMasterPage';
+import { orderPicker } from '../lib/vehicleOrderFill';
 
 const STATUSES = ['Requested', 'Under Review', 'Approved', 'Rejected', 'Vehicle Received', 'Inspection', 'Refund Pending', 'Refunded', 'Closed'];
 
@@ -18,8 +19,8 @@ const config: VehicleModuleConfig = {
     { key: 'return_type', label: 'Type', type: 'select', options: ['Booking Cancellation', 'Sales Cancellation', 'Vehicle Return', 'Exchange Cancellation'], listColumn: true },
     { key: 'client_name', label: 'Client', type: 'text', required: true, listColumn: true },
     { key: 'client_id', label: 'Client (pick to link)', type: 'lookup', group: 'Link', lookupResource: '/clients', lookupLabelKey: 'client_name', autoFillMap: { client_name: 'client_name' } },
-    { key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', lookupResource: '/orders', lookupLabelKey: 'order_number' },
-    { key: 'vin', label: 'VIN', type: 'lookup', group: 'Reference', lookupResource: '/vehicle/units', lookupLabelKey: 'model_name' },
+{ key: 'order_id', label: 'Core order', type: 'lookup', group: 'Link', helpText: 'Shows the order with its client. Picking it fills the client, VIN, booking and amount paid.', ...orderPicker({ vin: 'vin', booking: 'booking_reference' }), autoFillMap: { sales_order_reference: 'order_number' } },
+    { key: 'vin', label: 'VIN', type: 'lookup', group: 'Reference', lookupResource: '/vehicle/units', lookupLabelKey: 'vin', lookupSecondaryLabelKey: 'model_name', lookupValueKey: 'vin' },
     { key: 'sales_order_reference', label: 'Sales order reference (Core Orders)', type: 'text', group: 'Reference' },
     { key: 'booking_reference', label: 'Booking reference', type: 'text', group: 'Reference' },
     { key: 'reason', label: 'Reason', type: 'textarea', group: 'Request' },

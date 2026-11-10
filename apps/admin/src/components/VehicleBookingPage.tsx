@@ -131,7 +131,7 @@ const config: VehicleModuleConfig = {
       helpText: 'Only this client\'s exchange requests',
     },
     { key: 'finance_required', label: 'Finance required', type: 'select', options: ['Yes', 'No'], group: 'Payment', defaultValue: () => 'No' },
-    { key: 'insurance_required', label: 'Insurance required', type: 'select', options: ['Yes', 'No'], group: 'Payment', defaultValue: () => 'No' },
+    { key: 'insurance_source', label: 'Insurance', type: 'select', options: ['Dealer arranged', "Customer's own", 'Not required'], group: 'Payment', defaultValue: () => 'Not required', helpText: 'Dealer arranged: an Insurance file opens by itself once the vehicle is allocated, ready for the quote. Customer\u2019s own: the policy copy is collected before handover.' },
     { key: 'cancellation_reason', label: 'Cancellation reason', type: 'textarea', group: 'Status' },
     { key: 'remarks', label: 'Remarks', type: 'textarea', group: 'Status' },
     // New bookings start Confirmed, which makes the system link the Core order, pick the VIN and open the delivery file by itself.

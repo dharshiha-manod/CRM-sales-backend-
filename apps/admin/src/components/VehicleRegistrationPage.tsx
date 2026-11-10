@@ -14,7 +14,7 @@ const config: VehicleModuleConfig = {
   statusOptions: STATUSES,
   searchableKeys: ['vin', 'engine_number', 'registration_number', 'registration_authority'],
   fields: [
-    { key: 'vin', label: 'VIN', type: 'lookup', required: true, listColumn: true, lookupResource: '/vehicle/units', lookupLabelKey: 'model_name' },
+    { key: 'vin', label: 'VIN', type: 'lookup', required: true, listColumn: true, lookupResource: '/vehicle/units', lookupLabelKey: 'vin', lookupSecondaryLabelKey: 'model_name', lookupValueKey: 'vin' },
     { key: 'client_name', label: 'Owner (auto-filled from delivery)', type: 'text', listColumn: true, group: 'References' },
     { key: 'engine_number', label: 'Engine number', type: 'text', group: 'Registration' },
     { key: 'registration_number', label: 'Registration number', type: 'text', listColumn: true, group: 'Registration' },

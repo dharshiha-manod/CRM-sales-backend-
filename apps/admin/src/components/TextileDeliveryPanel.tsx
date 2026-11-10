@@ -36,12 +36,14 @@ export function TextileDeliveryPanel({ order, onSaved }: { order: TextileDeliver
     if (next === 'delivered' && !receivedBy.trim()) { setMessage('Enter the name of the person at the client who received the fabric.'); return; }
     setBusy(true); setMessage('');
     try {
-      const res = await api<{ data: Partial<TextileDeliveryOrder> }>(`/textile/orders/${order.id}/delivery`, {
+      const res = await api<{ data: Partial<TextileDeliveryOrder>; invoice?: { invoice_number?: string } | null; invoiceNote?: string | null }>(`/textile/orders/${order.id}/delivery`, {
         method: 'PATCH',
         body: JSON.stringify({ status: next, receivedBy: next === 'delivered' ? receivedBy.trim() : undefined, note: note.trim() || undefined }),
       });
       onSaved(res.data);
       setNote(''); setReceivedBy('');
+      // Automation: dispatching raises the GST invoice by itself; tell the user what happened.
+      if (next === 'dispatched') setMessage(res.invoice?.invoice_number ? `Dispatched. GST invoice ${res.invoice.invoice_number} is ready in GST Sales Invoices (add transport / LR details there).` : (res.invoiceNote ?? ''));
     } catch (err) { setMessage(err instanceof Error ? err.message : 'Could not update the delivery.'); }
     finally { setBusy(false); }
   };

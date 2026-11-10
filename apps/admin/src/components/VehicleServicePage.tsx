@@ -19,7 +19,7 @@ const config: VehicleModuleConfig = {
   searchableKeys: ['service_number', 'client_name', 'vin', 'registration_number', 'workshop'],
   fields: [
     { key: 'service_number', label: 'Service number', type: 'text', required: true, listColumn: true, readOnly: true, autoGenerate: 'SRV' },
-    { key: 'vin', label: 'VIN', type: 'lookup', listColumn: true, group: 'Vehicle', lookupResource: '/vehicle/units', lookupLabelKey: 'model_name' },
+    { key: 'vin', label: 'VIN', type: 'lookup', listColumn: true, group: 'Vehicle', lookupResource: '/vehicle/units', lookupLabelKey: 'vin', lookupSecondaryLabelKey: 'model_name', lookupValueKey: 'vin' },
     { key: 'client_name', label: 'Client', type: 'text', required: true, listColumn: true, group: 'Vehicle' },
     { key: 'registration_number', label: 'Registration number', type: 'text', group: 'Vehicle' },
     { key: 'service_type', label: 'Service type', type: 'select', options: SERVICE_TYPES, listColumn: true, group: 'Service' },

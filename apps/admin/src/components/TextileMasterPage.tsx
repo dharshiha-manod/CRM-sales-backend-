@@ -74,6 +74,11 @@ export interface FieldDef {
    * which otherwise return every industry's products to an admin login.
    */
   industryScoped?: boolean;
+  /**
+   * for type: 'lookup' / 'multi-lookup' — opt-in. Re-fetches the options every time the add / edit form opens,
+   * so records created after this page loaded (or a first load that failed) still show up. Default: off.
+   */
+  refreshOnOpen?: boolean;
     /** for type: 'lookup' — which field on the looked-up record to show as the label */
   lookupLabelKey?: string;
   /**
@@ -363,26 +368,34 @@ export function TextileMasterPage({ config }: { config: TextileModuleConfig }) {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState('');
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
- useEffect(() => {
-    const lookupFields = fields.filter((f) => (f.type === 'lookup' || f.type === 'multi-lookup') && f.lookupResource);
-    lookupFields.forEach(async (f) => {
-      try {
-        // Scope client/customer lookups (e.g. Trading's "Customer" field
-        // pointing at /clients) to the active industry, exactly like the
-        // main record load() below already does — otherwise every industry's
-        // lookup dropdown shows every other industry's clients too.
-        const base = f.lookupResource!;
-        const needsIndustryScope = base.startsWith('/clients') || Boolean(f.industryScoped);
-        const separator = base.includes('?') ? '&' : '?';
-        const query = needsIndustryScope && activeIndustryTypeId ? `${separator}industryTypeId=${activeIndustryTypeId}` : '';
-        const res = await api<{ data: TextileRecord[] }>(`${base}${query}`);
-        setLookupData((prev) => ({ ...prev, [f.key]: res.data ?? [] }));
-      } catch {
-        // lookup options are a convenience — leave the field usable even if this fails
-      }
-    });
+ async function fetchLookupOptions(f: FieldDef) {
+    try {
+      // Scope client/customer lookups (e.g. Trading's "Customer" field
+      // pointing at /clients) to the active industry, exactly like the
+      // main record load() below already does — otherwise every industry's
+      // lookup dropdown shows every other industry's clients too.
+      const base = f.lookupResource!;
+      const needsIndustryScope = base.startsWith('/clients') || Boolean(f.industryScoped);
+      const separator = base.includes('?') ? '&' : '?';
+      const query = needsIndustryScope && activeIndustryTypeId ? `${separator}industryTypeId=${activeIndustryTypeId}` : '';
+      const res = await api<{ data: TextileRecord[] }>(`${base}${query}`);
+      setLookupData((prev) => ({ ...prev, [f.key]: res.data ?? [] }));
+    } catch {
+      // lookup options are a convenience — leave the field usable even if this fails
+    }
+  }
+
+  useEffect(() => {
+    fields.filter((f) => (f.type === 'lookup' || f.type === 'multi-lookup') && f.lookupResource).forEach((f) => { void fetchLookupOptions(f); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resource, activeIndustryTypeId]);
+
+  // Only fields that opt in with `refreshOnOpen` are re-fetched when the form opens.
+  useEffect(() => {
+    if (!modal) return;
+    fields.filter((f) => (f.type === 'lookup' || f.type === 'multi-lookup') && f.lookupResource && f.refreshOnOpen).forEach((f) => { void fetchLookupOptions(f); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modal]);
 
 
   async function load() {

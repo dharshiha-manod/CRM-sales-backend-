@@ -22,7 +22,7 @@ const INDUSTRY_FIELDS: Record<string, IndustryField[]> = {
     { key: 'schoolType', label: 'School type', type: 'select', options: ['government', 'private', 'international', 'college', 'coaching'] }
   ],
   TEXTILE: [
-    { key: 'unitType', label: 'Unit type', type: 'select', required: true, options: ['Powerloom', 'Handloom', 'Composite mill', 'Garment unit', 'Trader'] },
+    { key: 'unitType', label: 'Unit type', type: 'select', required: true, options: ['Powerloom', 'Handloom', 'Composite mill', 'Garment unit', 'Trader', 'Wholesaler', 'Retailer', 'Distributor', 'Agent'] },
     { key: 'iecCode', label: 'Import Export Code (IEC)', type: 'text', hint: '10 digits' }
   ],
   PHARMA: [
@@ -558,4 +558,4 @@ const stageOf = (clientId: string): string => {
       );
     })()}
   </section>;
-} 
+}

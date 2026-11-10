@@ -24,13 +24,13 @@ const config: VehicleModuleConfig = {
     {
       key: 'model_id', label: 'Model / variant', type: 'lookup', group: 'Scope',
       format: (v, rec) => String(rec?.model_name || (v ? v : 'All models')),
-      lookupResource: '/vehicle/models', lookupLabelKey: 'model_name', autoFillMap: { model_name: 'model_name' },
+      lookupResource: '/vehicle/models', lookupLabelKey: 'model_name', lookupSecondaryLabelKey: 'variant', industryScoped: true, refreshOnOpen: true, autoFillMap: { model_name: 'model_name' },
     },
     { key: 'model_name', label: 'Model', type: 'text', readOnly: true, listColumn: true, group: 'Scope', visibleIf: () => false }, // shown once, in 'Model / variant'
     {
       key: 'dealer_id', label: 'Branch (optional)', type: 'lookup', group: 'Scope',
       format: (v, rec) => String(rec?.dealer_name || (v ? v : 'All branches')),
-      lookupResource: '/vehicle/dealers', lookupLabelKey: 'dealer_name', autoFillMap: { dealer_name: 'dealer_name' },
+      lookupResource: '/vehicle/dealers', lookupLabelKey: 'dealer_name', industryScoped: true, refreshOnOpen: true, autoFillMap: { dealer_name: 'dealer_name' },
       lookupFilter: (o) => o.dealer_type === 'Branch', helpText: 'Leave blank if the scheme is for all branches.',
     },
     { key: 'dealer_name', label: 'Dealer (auto-filled)', type: 'text', readOnly: true, group: 'Scope', visibleIf: () => false }, // shown once, in 'Dealer'
@@ -54,8 +54,8 @@ const config: VehicleModuleConfig = {
     { key: 'finance_offer', label: 'Finance offer', type: 'combo', group: 'Discount', comboOptions: ['Zero down payment', 'Low interest rate', 'Zero processing fee', 'Cashback on finance', 'Extended tenure', 'Pre-approved loan'] },
     { key: 'accessories_offer', label: 'Accessories offer', type: 'combo', group: 'Discount', comboOptions: ['Free accessories kit', 'Free helmet', 'Free seat cover', 'Free floor mats', 'Free body cover', 'Free mobile holder'] },
     { key: 'insurance_offer', label: 'Insurance offer', type: 'combo', group: 'Discount', comboOptions: ['Free first-year insurance', 'Discount on insurance', 'Zero depreciation cover', 'Free roadside assistance'] },
-    { key: 'approval_required', label: 'Approval required', type: 'select', options: ['Yes', 'No'], group: 'Approval', defaultValue: () => 'No',
-      helpText: 'Yes = never given automatically on a quotation / order; only a manager can select it on a booking.' },
+    { key: 'approval_required', label: 'Manager approval to pick on a booking', type: 'select', options: ['Yes', 'No'], group: 'Approval', defaultValue: () => 'No',
+      helpText: 'The scheme applies automatically on every quotation / order while it is Active and in date. Yes = a sales rep cannot select it on a booking, only a manager / admin can.' },
     // Rules that limit a scheme (all optional; leave blank for no limit).
     { key: 'min_quantity', label: 'Minimum quantity', type: 'number', group: 'Limits', helpText: 'Scheme applies only when the line has at least this many vehicles.' },
     { key: 'usage_limit', label: 'Usage limit (vehicles)', type: 'number', group: 'Limits', helpText: 'Stops applying once this many vehicles have taken the scheme.' },

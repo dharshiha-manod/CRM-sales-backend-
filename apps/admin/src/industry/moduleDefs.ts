@@ -45,9 +45,15 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'customer-invoices', label: 'Customer Invoices', icon: '🧾' },
   ],
   textile: [
+    { id: 'design-pattern', label: 'Design & Pattern Management', icon: '✎' },
+    { id: 'colour-size', label: 'Colour & Size Management', icon: '◧' },
+    { id: 'suppliers', label: 'Suppliers / Mills', icon: '🏭' },
+    { id: 'purchase-orders', label: 'Purchase Orders', icon: '🧾' },
+    { id: 'goods-receipt', label: 'Goods Receipt (GRN)', icon: '📥' },
     { id: 'fabric-roll', label: 'Fabric Roll Management', icon: '▤' },
     { id: 'textile-sample', label: 'Textile Sample Management', icon: '▣' },
     { id: 'quality-inspection', label: 'Quality & Inspection Management', icon: '✔' },
+    { id: 'invoices', label: 'GST Sales Invoices', icon: '🧾' },
   ],
  
   school: [
@@ -105,6 +111,7 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'delivery-pdi', label: 'Vehicle Delivery / PDI', icon: '▣' },
     { id: 'registration', label: 'Registration & Documents', icon: '📄' },
     { id: 'finance', label: 'Finance / Loan', icon: '₹' },
+    { id: 'invoices', label: 'Tax Invoices', icon: '₹' },
     { id: 'insurance', label: 'Insurance', icon: '▣' },
     { id: 'exchange', label: 'Vehicle Exchange', icon: '↔' },
     { id: 'warranty', label: 'Warranty', icon: '✔' },
