@@ -45,15 +45,17 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'customer-invoices', label: 'Customer Invoices', icon: '🧾' },
   ],
   textile: [
-    { id: 'design-pattern', label: 'Design & Pattern Management', icon: '✎' },
-    { id: 'colour-size', label: 'Colour & Size Management', icon: '◧' },
+    { id: 'automation', label: 'Automation Center', icon: '⚡' },
     { id: 'suppliers', label: 'Suppliers / Mills', icon: '🏭' },
     { id: 'purchase-orders', label: 'Purchase Orders', icon: '🧾' },
     { id: 'goods-receipt', label: 'Goods Receipt (GRN)', icon: '📥' },
     { id: 'fabric-roll', label: 'Fabric Roll Management', icon: '▤' },
     { id: 'textile-sample', label: 'Textile Sample Management', icon: '▣' },
     { id: 'quality-inspection', label: 'Quality & Inspection Management', icon: '✔' },
-    { id: 'invoices', label: 'GST Sales Invoices', icon: '🧾' },
+       { id: 'invoices', label: 'GST Sales Invoices', icon: '🧾' },
+    { id: 'credit-notes', label: 'GST Credit Notes', icon: '↩' },
+    { id: 'returns-refunds', label: 'Returns & Refunds', icon: '⇄' },
+    { id: 'supplier-payments', label: 'Supplier Bills & Payments', icon: '₹' },
   ],
  
   school: [

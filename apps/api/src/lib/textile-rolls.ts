@@ -108,6 +108,14 @@ export async function markRollsSoldForOrder(orgId: string, orderId: string) {
   } catch (e) { logger.error({ err: e, orderId }, 'textile: marking rolls sold for dispatched order failed'); }
 }
 
+/** A roll may only be cut / allocated for an order line of the same colour. A line with no colour accepts any roll. */
+export function rollColourFitsLines(rollColour: unknown, lineColours: unknown[]): boolean {
+  const rc = String(rollColour ?? '').trim().toLowerCase();
+  if (!rc || !lineColours.length) return true;
+  if (lineColours.some((c) => !String(c ?? '').trim())) return true;
+  return lineColours.some((c) => String(c).trim().toLowerCase() === rc);
+}
+
 /** Dispatch gate: for every product on the order that is tracked by fabric rolls, allocated rolls must cover the ordered metres. */
 export async function assertRollsCoverOrder(orgId: string, orderId: string) {
   const { data: lines, error } = await supabaseAdmin.from('sale_order_items')

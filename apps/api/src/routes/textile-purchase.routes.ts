@@ -288,6 +288,13 @@ textilePurchaseRouter.post('/textile/grns', authenticate, manager, async (req, r
   if (!['Ordered', 'Partially Received'].includes(po.status)) throw bad(`Goods can only be received against an Ordered or Partially Received purchase order (this one is ${po.status}).`);
   const receivedDate = str(b.received_date) || today();
   if (!isDate(receivedDate)) throw bad('Received date is not valid.');
+  if (receivedDate > today()) throw bad('Received date cannot be in the future.');
+  const invoiceNo = str(b.supplier_invoice_no);
+  if (invoiceNo) { // the same supplier bill must not be booked twice (double bill = double payment)
+    const { data: sameInv } = await supabaseAdmin.from('textile_grns').select('grn_number').eq('organization_id', orgId).eq('industry_type_id', it)
+      .eq('supplier_id', po.supplier_id).eq('status', 'Posted').ilike('supplier_invoice_no', like(invoiceNo)).limit(1);
+    if ((sameInv ?? []).length) throw new AppError(409, 'DUPLICATE_RECORD', `Supplier invoice ${invoiceNo} is already recorded on ${String((sameInv as Row[])[0].grn_number)}. Check the number, or cancel that receipt first.`);
+  }
   const rollsIn = (Array.isArray(b.rolls) ? b.rolls : []) as Row[];
   if (!rollsIn.length) throw bad('Add at least one roll.');
   if (rollsIn.length > 500) throw bad('A receipt can hold at most 500 rolls. Split it into two receipts.');

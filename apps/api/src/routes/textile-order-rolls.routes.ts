@@ -9,6 +9,7 @@ import { assertRecordInScope } from '../lib/industry-scope.js';
 import { industryCodeOf, toBase } from '../lib/fmcg-market.js';
 import { syncProductStockFromRolls } from '../lib/textile-rolls.js';
 import { rpcError } from '../lib/textile-grn.js';
+import { issueCreditNotesForOrder } from '../lib/textile-finance.js';
 
 export const textileOrderRollsRouter = Router();
 const manager = requireRoles('super_admin', 'admin', 'sales_manager');
@@ -103,7 +104,8 @@ textileOrderRollsRouter.post('/textile/orders/:id/return-roll', authenticate, ma
     },
   });
   if (ie) throw rpcError(ie);
-  await syncProductStockFromRolls(orgId, roll.product_code);
+   await syncProductStockFromRolls(orgId, roll.product_code);
+  await issueCreditNotesForOrder(orgId, order.id as string, req.auth!.sub as string); // GST credit note, never blocks the return
 
   const { data: all } = await supabaseAdmin.from('sales_returns').select('credit_amount')
     .eq('organization_id', orgId).eq('order_id', order.id as string).eq('status', 'approved');

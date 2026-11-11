@@ -8,11 +8,13 @@ import { requireRoles } from '../middleware/authorize.js';
 import { assertRecordInScope, resolveIndustryTypeId } from '../lib/industry-scope.js';
 import { TEXTILE_RESOURCES, type TextileResource } from '../lib/textile-resources.js';
 import { createMovement } from '../repositories/inventory.repository.js';
-import { syncProductStockFromRolls } from '../lib/textile-rolls.js';
+import { rollColourFitsLines, syncProductStockFromRolls } from '../lib/textile-rolls.js';
 import { logger } from '../lib/logger.js';
 
 export const textileRouter = Router();
 const manager = requireRoles('super_admin', 'admin', 'sales_manager');
+// Typing a fabric roll by hand (opening stock) is admin-only: normal stock comes in through Goods Receipt (GRN).
+const adminOnly = requireRoles('super_admin', 'admin');
 // Sales reps get READ-ONLY access to the catalogue-type modules (not Quality Inspections).
 const reader = requireRoles('super_admin', 'admin', 'sales_manager', 'sales_representative');
 
@@ -167,6 +169,24 @@ async function afterSave(table: string, orgId: string, row: Row) {
   
 }
 
+// Ledger row for a hand-entered roll: "Opening stock: <reason>". If the database already wrote a receipt row, only its note is set.
+async function logOpeningStock(orgId: string, userId: string, roll: Row, reason: string) {
+  try {
+    const note = `Opening stock (manual entry): ${reason}`;
+    const { count } = await supabaseAdmin.from('textile_roll_transactions').select('id', { count: 'exact', head: true })
+      .eq('organization_id', orgId).eq('roll_id', roll.id as string);
+    if (count) {
+      await supabaseAdmin.from('textile_roll_transactions').update({ note }).eq('organization_id', orgId).eq('roll_id', roll.id as string).eq('txn_type', 'receipt');
+      return;
+    }
+    const length = Number(roll.length_meters) || 0;
+    await supabaseAdmin.from('textile_roll_transactions').insert({
+      organization_id: orgId, industry_type_id: roll.industry_type_id ?? null, roll_id: roll.id, roll_number: roll.roll_number,
+      txn_type: 'receipt', quantity_m: length, available_delta: length, balance_after: length, note, created_by: userId,
+    });
+  } catch (e) { logger.error({ err: e }, 'textile: opening stock ledger row failed'); } // the roll itself is already saved
+}
+
 async function countWhere(table: string, orgId: string, industryTypeId: unknown, column: string, value: unknown): Promise<number> {
   if (typeof value !== 'string' || !value) return 0;
   let q = supabaseAdmin.from(table).select('id', { count: 'exact', head: true }).eq('organization_id', orgId).eq(column, value);
@@ -223,7 +243,7 @@ async function loadOrderForRoll(orgId: string, industryTypeId: string, orderId: 
 
 // A roll may only be allocated when: its latest inspection is Pass, it is the same product as an order line,
 // and the order still needs more metres of that product.
-async function assertRollCanBeAllocated(orgId: string, industryTypeId: string, orderId: string, roll: { id?: string; roll_number?: unknown; product_code?: unknown }) {
+async function assertRollCanBeAllocated(orgId: string, industryTypeId: string, orderId: string, roll: { id?: string; roll_number?: unknown; product_code?: unknown; colour?: unknown }) {
   const rollNumber = typeof roll.roll_number === 'string' ? roll.roll_number : '';
   const productCode = typeof roll.product_code === 'string' ? roll.product_code : '';
   if (!productCode) throw new AppError(400, 'VALIDATION_ERROR', 'Set the product code on this roll before allocating it to an order.');
@@ -237,14 +257,15 @@ async function assertRollCanBeAllocated(orgId: string, industryTypeId: string, o
   if (latest.status !== 'Pass') throw new AppError(400, 'INSPECTION_REQUIRED', `Roll ${rollNumber} did not pass its latest quality inspection.`);
 
   const { data: lines, error: le } = await supabaseAdmin.from('sale_order_items')
-    .select('quantity, free_quantity, products(product_code)').eq('order_id', orderId);
+    .select('quantity, free_quantity, colour, products(product_code)').eq('order_id', orderId);
   if (le) throw le;
-  let needed = 0; let matched = false;
+  let needed = 0; let matched = false; const lineColours: unknown[] = [];
   for (const l of (lines ?? []) as unknown as { quantity: number | null; free_quantity: number | null; products: { product_code?: string } | { product_code?: string }[] | null }[]) {
     const p = Array.isArray(l.products) ? l.products[0] : l.products;
-    if (p?.product_code === productCode) { matched = true; needed += (Number(l.quantity) || 0) + (Number(l.free_quantity) || 0); }
+    if (p?.product_code === productCode) { matched = true; lineColours.push((l as { colour?: string | null }).colour ?? ''); needed += (Number(l.quantity) || 0) + (Number(l.free_quantity) || 0); }
   }
   if (!matched) throw new AppError(400, 'VALIDATION_ERROR', `This order has no line for product ${productCode}. The roll must be the same product as the order.`);
+  if (!rollColourFitsLines(roll.colour, lineColours)) throw new AppError(422, 'COLOUR_MISMATCH', `Roll ${rollNumber} is ${String(roll.colour)}, but this order asks for a different colour.`);
 
   let q = supabaseAdmin.from('textile_fabric_rolls').select('length_meters')
     .eq('organization_id', orgId).eq('order_id', orderId).eq('product_code', productCode).in('status', ['Issued', 'Sold']);
@@ -278,6 +299,7 @@ async function prepareRollOrderLink(orgId: string, industryTypeId: string, paylo
     id: existing?.id as string | undefined,
     roll_number: payload.roll_number ?? existing?.roll_number,
     product_code: payload.product_code ?? existing?.product_code,
+    colour: payload.colour ?? existing?.colour,
   });
   payload.order_id = order.id;
   payload.order_number = order.order_number;
@@ -389,9 +411,16 @@ for (const r of TEXTILE_RESOURCES) {
     res.json({ data: isVariants ? (await withInventoryStatus(org(req), [data as Row]))[0] : data });
   });
 
-  textileRouter.post(base, authenticate, manager, async (req, res) => {
+  textileRouter.post(base, authenticate, isRolls ? adminOnly : manager, async (req, res) => {
     const payload = clean(r, req.body);
     validateValues(r, payload, false);
+    // Manual roll = opening stock only. A reason is mandatory and goes into the roll's ledger.
+    let openingNote = '';
+    if (isRolls) {
+      openingNote = typeof (req.body as Row | undefined)?.opening_note === 'string' ? String((req.body as Row).opening_note).trim().slice(0, 300) : '';
+      if (openingNote.length < 5) throw new AppError(400, 'OPENING_REASON_REQUIRED', 'Rolls received from a supplier must be added through Goods Receipt (GRN). To add opening stock by hand, enter the reason (at least 5 characters).');
+      delete payload.order_id; // a hand-entered roll cannot be allocated to an order in the same step
+    }
     const missing = r.requiredFields.filter((k) => payload[k] === undefined || payload[k] === null || payload[k] === '');
     if (missing.length) throw new AppError(400, 'VALIDATION_ERROR', `${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} required.`);
     const industryTypeId = resolveIndustryTypeId(req.industryScope!, typeof payload.industry_type_id === 'string' ? payload.industry_type_id : undefined);
@@ -409,6 +438,7 @@ for (const r of TEXTILE_RESOURCES) {
       }
     }
     await afterSave(r.table, org(req), data as Row);
+    if (isRolls) await logOpeningStock(org(req), req.auth!.sub as string, data as Row, openingNote);
     res.status(201).json({ data });
   });
 

@@ -11,7 +11,7 @@ import { todayLocal } from '../lib/ist-date.js';
 import { VEHICLE_RESOURCES, type VehicleResource } from '../lib/vehicle-resources.js';
 import {
   allocatePendingBookings, deliveryStageFor, followUpAfterTestDrive, insuranceSourceOf, nextVehicleCode, onBookingAllocated, ownerOfVin,
-  refreshDeliveryPayments, releaseBookingFiles, representativeFor, resolveParty, retireModelProduct, syncModelProduct, syncProductModel, isVehicleIndustry, ensureBookingInsurance, tryAllocate,
+  refreshDeliveryPayments, releaseBookingFiles, representativeFor, resolveParty, retireModelProduct, syncModelProduct, syncProductModel, isVehicleIndustry, ensureBookingInsurance, tryAllocate, isFreeInsuranceOffer, onBookingInsuranceChanged, alignSchemeInsuranceToDelivery, openInsuranceFromRegistration,
 } from '../lib/vehicle-links.js';
 import { collectionsService } from '../services/collections.service.js';
 import { cancelOrder } from '../repositories/orders.repository.js';
@@ -118,6 +118,19 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
     const dealer = await findOne('vehicle_dealers', orgId, industryTypeId, 'id', payload.dealer_id);
     if (!dealer) throw bad('The selected dealer does not exist.', 'INVALID_REFERENCE');
     payload.dealer_name = dealer.dealer_name;
+  }
+  // A new test drive with no status starts as Requested (the database does not accept an empty status).
+  if (r.table === 'vehicle_test_drives' && !has(m.status) && !has(payload.status)) { payload.status = 'Requested'; m.status = 'Requested'; }
+  // A test drive with a model but no VIN takes a free vehicle of that model by itself (the newest free unit, so the oldest stays for sales).
+  if (r.table === 'vehicle_test_drives' && !has(payload.vin) && !has(m.vin) && has(m.model_id)) {
+    const { data: live } = await supabaseAdmin.from('vehicle_test_drives').select('vin').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).in('status', ['Requested', 'Scheduled', 'Confirmed', 'In Progress']).not('vin', 'is', null);
+    const taken = new Set(((live ?? []) as Row[]).map((x) => String(x.vin)));
+    const { data: free } = await supabaseAdmin.from('vehicle_units').select('vin, odometer').eq('organization_id', orgId).eq('industry_type_id', industryTypeId).eq('model_id', String(m.model_id)).eq('status', 'Available').order('created_at', { ascending: false }).order('vin', { ascending: false }).limit(50);
+    const pick = ((free ?? []) as Row[]).find((u) => !taken.has(String(u.vin)));
+    if (pick) {
+      payload.vin = pick.vin; m.vin = pick.vin;
+      if (!has(m.odometer_start) && has(pick.odometer)) payload.odometer_start = pick.odometer;
+    }
   }
   // A unit picked on a child record fills what the unit already knows.
   if (has(payload.vin) && ['vehicle_bookings', 'vehicle_test_drives'].includes(r.table)) {
@@ -236,6 +249,11 @@ async function normalise(r: VehicleResource, orgId: string, industryTypeId: stri
       const { data: lines } = await supabaseAdmin.from('sale_order_items').select('vehicle_scheme_ref, vehicle_scheme_name').eq('order_id', String(m.order_id)).not('vehicle_scheme_ref', 'is', null);
       const applied = ((lines ?? []) as Row[]).flatMap((l) => schemeRefsToIds(l.vehicle_scheme_ref));
       if (applied.length && !applied.includes(str(scheme.scheme_id))) throw bad(`Order ${str(m.order_number)} already has the scheme "${((lines ?? []) as Row[]).map((l) => str(l.vehicle_scheme_name)).filter(Boolean).join(', ')}" applied. Only an Exchange Bonus scheme can be added on the booking.`, 'SCHEME_ALREADY_APPLIED');
+    }
+    // GAP FIX 1: a scheme with FREE insurance switches the booking's insurance on (the form's default "Not required" must not hide it)
+    if (isFreeInsuranceOffer(scheme.insurance_offer) && m.insurance_source !== "Customer's own") {
+      payload.insurance_source = 'Dealer arranged'; m.insurance_source = 'Dealer arranged';
+      payload.insurance_required = 'Yes'; m.insurance_required = 'Yes';
     }
     const benefit = [
       num(scheme.cash_discount) > 0 ? `cash discount ${num(scheme.cash_discount)}` : '',
@@ -532,6 +550,7 @@ async function afterSave(r: VehicleResource, orgId: string, ind: string, row: Ro
     if (status === 'Cancelled') { if (changed('status')) await releaseBookingFiles(orgId, ind, { ...row, model_id: row.model_id ?? before?.model_id }); } // open delivery + invoice cancelled, VIN released to the next waiting booking
     else if (!has(row.vin)) await tryAllocate(orgId, ind, row); // Confirmed / pending with no VIN: take the oldest available unit of that model
     else if (['Vehicle Allocated', 'Converted to Order'].includes(status)) await onBookingAllocated(orgId, ind, row); // opens delivery (+ finance) file
+    else if (changed('scheme_name') || changed('insurance_source')) await onBookingInsuranceChanged(orgId, ind, row); // scheme / insurance added after the vehicle was allocated
   }
 
   if (r.table === 'vehicle_deliveries') {
@@ -550,11 +569,13 @@ async function afterSave(r: VehicleResource, orgId: string, ind: string, row: Ro
       if (row.payment_status === 'Complete') await markVehicleInvoicePaid(orgId, ind, row.vin, row.order_id);
       await syncDeliveryDocuments(orgId, ind, row.vin); // the Tax invoice paper ticks itself
     }
+    if (row.status === 'Delivered' && changed('status')) await alignSchemeInsuranceToDelivery(orgId, ind, row); // free scheme cover runs from the delivery date
     if (row.status === 'Delivered' && changed('status')) await onDelivered(orgId, ind, row);
     else if (!['Delivered', 'Cancelled'].includes(String(row.status))) await refreshDeliveryPayments(orgId, ind);
   }
 
   if (r.table === 'vehicle_registrations') {
+    if (has(row.insurance_reference) && changed('insurance_reference')) await openInsuranceFromRegistration(orgId, ind, row); // insurance typed at registration reaches the Insurance module
        if (row.status === 'Completed' && has(row.registration_number)) {
       await supabaseAdmin.from('vehicle_service_records').update({ registration_number: row.registration_number }).eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', row.vin as string).is('registration_number', null); // service files show the plate once it is issued
       await supabaseAdmin.from('vehicle_units').update({ registration_number: row.registration_number }).eq('organization_id', orgId).eq('industry_type_id', ind).eq('vin', row.vin as string);
@@ -953,7 +974,7 @@ for (const r of VEHICLE_RESOURCES) {
     }
     if (r.table === 'vehicle_insurance_policies' && ind) { // bookings that already hold a vehicle but have no insurance file yet (e.g. made before the free-insurance scheme was linked) get it now
       try {
-        const { data: held } = await supabaseAdmin.from('vehicle_bookings').select('*').eq('organization_id', org(req)).eq('industry_type_id', ind).not('vin', 'is', null).neq('status', 'Cancelled').limit(50);
+        const { data: held } = await supabaseAdmin.from('vehicle_bookings').select('*').eq('organization_id', org(req)).eq('industry_type_id', ind).not('vin', 'is', null).neq('status', 'Cancelled').order('created_at', { ascending: false }).limit(300);
         for (const b of (held ?? []) as Row[]) await ensureBookingInsurance(org(req), ind, b);
       } catch (e) { logger.warn({ err: e }, 'vehicle insurance: backfill from bookings failed'); }
     }

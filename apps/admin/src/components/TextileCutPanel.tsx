@@ -8,6 +8,7 @@ import './SchoolReturnsPanel.css';
 type CutLine = { product_code: string; product_name: string; ordered: number; covered: number; remaining: number; colours: string[] };
 type CutRoll = { id: string; roll_number: string; product_code: string; colour?: string | null; lot_number?: string | null; length_meters: number; quality_grade?: string | null; warehouse_location?: string | null };
 type Cut = { id: string; roll_number: string; product_code?: string | null; metres: number; status: string };
+type SoldCut = { id: string; roll_number: string; metres: number; returnable: number };
 export type TextileCutOrder = { id: string; status: string; textile_delivery_status?: string | null };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -20,6 +21,8 @@ export function TextileCutPanel({ order, onChanged }: { order: TextileCutOrder; 
   const [metres, setMetres] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [sold, setSold] = useState<SoldCut[]>([]);
+  const [ret, setRet] = useState<{ id: string; metres: string; condition: 'good' | 'damaged'; reason: string; creditClient: boolean } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -28,6 +31,7 @@ export function TextileCutPanel({ order, onChanged }: { order: TextileCutOrder; 
         api<{ data: Cut[] }>(`/textile/orders/${order.id}/cuts`),
       ]);
       setOptions(o.data); setCuts(c.data ?? []);
+      try { const r = await api<{ data: SoldCut[] }>(`/textile/orders/${order.id}/returnable-cuts`); setSold(r.data ?? []); } catch { setSold([]); } // managers only
     } catch (err) { setMessage(err instanceof Error ? err.message : 'Could not load the fabric cuts.'); }
   }, [order.id]);
   useEffect(() => { void load(); }, [load, order.status, order.textile_delivery_status]);
@@ -65,6 +69,18 @@ export function TextileCutPanel({ order, onChanged }: { order: TextileCutOrder; 
     setBusy(true); setMessage('');
     try { await api(`/textile/cuts/${c.id}`, { method: 'DELETE' }); await load(); onChanged(); }
     catch (err) { setMessage(err instanceof Error ? err.message : 'Could not remove the cut.'); }
+    finally { setBusy(false); }
+  }
+
+  async function returnCut() {
+    if (!ret) return;
+    const n = Number(ret.metres);
+    if (!Number.isFinite(n) || n <= 0) { setMessage('Enter the metres that came back.'); return; }
+    setBusy(true); setMessage('');
+    try {
+      await api(`/textile/orders/${order.id}/return-cut`, { method: 'POST', body: JSON.stringify({ allocationId: ret.id, metres: n, condition: ret.condition, reason: ret.reason || null, creditClient: ret.creditClient }) });
+      setRet(null); await load(); onChanged();
+    } catch (err) { setMessage(err instanceof Error ? err.message : 'Could not record the return.'); }
     finally { setBusy(false); }
   }
 
@@ -126,6 +142,34 @@ export function TextileCutPanel({ order, onChanged }: { order: TextileCutOrder; 
               </div>
               {c.status === 'Reserved' && order.status !== 'cancelled' && (
                 <div className="sd-actions"><button type="button" className="sd-btn ghost" disabled={busy} onClick={() => void release(c)}>Remove cut</button></div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {sold.length > 0 && (
+        <div className="sr-list">
+          {sold.map((c) => (
+            <div className="sr-row" key={c.id}>
+              <div className="sr-top"><span className="sr-name">{c.metres} m dispatched from roll {c.roll_number}</span><span className="qd-pill ok">{c.returnable} m returnable</span></div>
+              {ret?.id === c.id ? (
+                <div className="sd-form">
+                  <div className="sr-grid">
+                    <label className="sd-field">Metres back<input type="number" step="0.01" min="0" max={c.returnable} value={ret.metres} onChange={(e) => setRet({ ...ret, metres: e.target.value })} /></label>
+                    <label className="sd-field">Condition
+                      <select className="sr-select" value={ret.condition} onChange={(e) => setRet({ ...ret, condition: e.target.value as 'good' | 'damaged' })}><option value="good">Good - back in stock</option><option value="damaged">Damaged</option></select>
+                    </label>
+                    <label className="sd-field">Reason<input value={ret.reason} onChange={(e) => setRet({ ...ret, reason: e.target.value })} /></label>
+                  </div>
+                  {ret.condition === 'damaged' && <label className="sd-hint"><input type="checkbox" checked={ret.creditClient} onChange={(e) => setRet({ ...ret, creditClient: e.target.checked })} /> Credit the customer (untick when the damage happened at their end)</label>}
+                  <div className="sd-actions">
+                    <button type="button" className="sd-btn" disabled={busy} onClick={() => void returnCut()}>{busy ? 'Saving…' : 'Record return & credit note'}</button>
+                    <button type="button" className="sd-btn ghost" disabled={busy} onClick={() => setRet(null)}>Close</button>
+                  </div>
+                </div>
+              ) : (
+order.status !== 'cancelled' && <div className="sd-actions"><button type="button" className="sd-btn" disabled={busy} style={{ background: '#d97706', borderColor: '#d97706', color: '#fff', fontWeight: 700, fontSize: 14, padding: '10px 18px', borderRadius: 10, boxShadow: '0 2px 8px rgba(217,119,6,.45)' }} onClick={() => setRet({ id: c.id, metres: String(c.returnable), condition: 'good', reason: '', creditClient: true })}>↩ Return from customer</button></div>
               )}
             </div>
           ))}

@@ -32,7 +32,7 @@ function quotationPdf(quote: DeliveredQuotation): Buffer {
 
 function mailTransport() {
   if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASS || !env.MAIL_FROM) throw new AppError(503, 'EMAIL_NOT_CONFIGURED', 'Quotation email is not configured. Add SMTP_HOST, SMTP_USER, SMTP_PASS, and MAIL_FROM to the API environment.');
-  return nodemailer.createTransport({ host: env.SMTP_HOST, port: env.SMTP_PORT, secure: env.SMTP_PORT === 465, auth: { user: env.SMTP_USER, pass: env.SMTP_PASS } });
+  return nodemailer.createTransport({ host: env.SMTP_HOST, port: env.SMTP_PORT, secure: env.SMTP_PORT === 465, auth: { user: env.SMTP_USER, pass: env.SMTP_PASS }, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000 });
 }
 
 export async function sendQuotationEmail(quote: DeliveredQuotation, publicLink: string, template: EmailTemplate = null): Promise<DeliveryResult> {
@@ -85,7 +85,8 @@ export async function sendQuotationEmail(quote: DeliveredQuotation, publicLink: 
     return { messageId: result.messageId, accepted, rejected };
   } catch (cause) {
     if (cause instanceof AppError) throw cause;
-    logger.error({ err: cause, quotationNumber: quote.quotation_number, recipient }, 'Quotation email delivery failed');
-    throw new AppError(502, 'EMAIL_DELIVERY_FAILED', 'The quotation could not be delivered by SMTP. Check the API log for the mail-server response.');
+    const smtp = cause as { code?: string; responseCode?: number; response?: string; message?: string };
+    logger.error({ err: cause, smtpCode: smtp.code, smtpResponseCode: smtp.responseCode, smtpResponse: smtp.response, quotationNumber: quote.quotation_number, recipient }, 'Quotation email delivery failed');
+    throw new AppError(502, 'EMAIL_DELIVERY_FAILED', `The quotation could not be delivered by SMTP: ${smtp.code ?? 'ERROR'}${smtp.responseCode ? ` ${smtp.responseCode}` : ''} ${(smtp.response ?? smtp.message ?? '').slice(0, 160)}`.trim());
   }
 }

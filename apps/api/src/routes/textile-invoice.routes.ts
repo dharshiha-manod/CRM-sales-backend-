@@ -133,6 +133,8 @@ textileInvoiceRouter.post('/textile/invoices/:id/cancel', authenticate, manager,
   const { data: ex } = await supabaseAdmin.from('textile_invoices').select('industry_type_id').eq('organization_id', orgId).eq('id', idOf(req)).maybeSingle();
   if (!ex) throw notFound();
   assertRecordInScope(req.industryScope!, (ex as Row).industry_type_id, notFound());
+  const { count: creditNotes } = await supabaseAdmin.from('textile_credit_notes').select('id', { count: 'exact', head: true }).eq('organization_id', orgId).eq('invoice_id', idOf(req)).neq('status', 'Cancelled');
+  if (creditNotes) throw new AppError(409, 'INVOICE_HAS_CREDIT_NOTES', `This invoice already has ${creditNotes} GST credit note(s) against it, so it cannot be cancelled.`);
   // Claim the cancel: only one request can move Issued -> Cancelled.
   const { data, error } = await supabaseAdmin.from('textile_invoices').update({ status: 'Cancelled', cancel_reason: reason, cancelled_at: new Date().toISOString() })
     .eq('organization_id', orgId).eq('id', idOf(req)).eq('status', 'Issued').select().maybeSingle();

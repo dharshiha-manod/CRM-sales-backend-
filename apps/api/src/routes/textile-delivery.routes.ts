@@ -76,7 +76,7 @@ textileDeliveryRouter.patch('/textile/orders/:id/delivery', authenticate, manage
   if (!saved || saved.length === 0) throw new AppError(409, 'DELIVERY_CHANGED', 'This order was just updated by someone else. Refresh and try again.');
   await markRollsSoldForOrder(orgId, order.id as string);
   // Automation: dispatching the fabric raises its GST sales invoice (when Company & GST details are saved). Never blocks the dispatch.
-  const auto = target === 'dispatched'
+  const auto = (target === 'dispatched' || target === 'delivered') // retried on delivery in case dispatch could not invoice
     ? await autoInvoiceOnDispatch(orgId, industryTypeId, order.id as string, ((req as unknown as { auth?: { sub?: string } }).auth?.sub as string | undefined) ?? null)
     : { invoice: null, note: null };
   res.json({ data: saved[0], invoice: auto.invoice, invoiceNote: auto.note });

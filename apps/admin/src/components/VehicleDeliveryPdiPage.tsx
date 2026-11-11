@@ -6,6 +6,7 @@ import { useIndustryScope } from '../industry/useIndustryScope';
 import { HandoverData, openHandoverNote } from '../lib/vehicleHandover';
 import { orderPicker } from '../lib/vehicleOrderFill';
 import { queueVehicleDraft } from '../lib/vehicleDraftHandoff';
+import { openRecord } from '../lib/recordFocus';
 
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const UNAVAILABLE_UNIT = ['Delivered', 'Sold', 'Damaged', 'Returned', 'Under Service', 'In Transit'];
@@ -101,7 +102,15 @@ function PdiButtons({ r }: { r: Record<string, unknown> }) {
     const reason = window.prompt('Why did the PDI fail? (saved in Remarks)');
     if (reason && reason.trim()) void send({ pdi_status: 'Failed', remarks: reason.trim() });
   };
-  const addInsurance = () => queueVehicleDraft('insurance', { vin: String(r.vin ?? ''), ...(r.client_id ? { client_id: String(r.client_id) } : {}), client_name: String(r.client_name ?? ''), policy_type: 'Comprehensive' });
+  // The vehicle may already have an insurance file (e.g. opened by the scheme's free insurance): open THAT policy; only start a new one when there is none.
+  const addInsurance = async () => {
+    try {
+      const res = await api<{ data: Record<string, unknown>[] }>('/vehicle/insurance-policies');
+      const p = (res.data ?? []).filter((x) => x.vin === r.vin && x.status !== 'Cancelled').sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))[0];
+      if (p && p.policy_number) { openRecord('industry:vehicle:insurance', { resource: '/vehicle/insurance-policies', field: 'policy_number', value: String(p.policy_number) }); return; }
+    } catch { /* fall through to a new policy */ }
+    queueVehicleDraft('insurance', { vin: String(r.vin ?? ''), ...(r.client_id ? { client_id: String(r.client_id) } : {}), client_name: String(r.client_name ?? ''), policy_type: 'Comprehensive' });
+  };
   const deliver = () => {
     if (window.confirm('Customer has acknowledged the handover and the vehicle is being delivered now?')) void send({ customer_acknowledgement: 'Yes', status: 'Delivered' });
   };
@@ -109,7 +118,7 @@ function PdiButtons({ r }: { r: Record<string, unknown> }) {
     <>
       {r.pdi_status !== 'Passed' && r.vin ? <button type="button" className="quiet-button" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={pass}>PDI passed</button> : null}
       {r.pdi_status !== 'Passed' && r.pdi_status !== 'Failed' && r.vin ? <button type="button" className="quiet-button" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={fail}>PDI failed</button> : null}
-      {r.vin && r.insurance_status === 'Pending' ? <button type="button" className="quiet-button" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={addInsurance}>Add insurance</button> : null}
+      {r.vin && r.insurance_status === 'Pending' ? <button type="button" className="quiet-button" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={() => void addInsurance()} title="Open this vehicle's insurance (or add one if it has none)">Insurance</button> : null}
       {r.status === 'Ready for Delivery' ? <button type="button" className="quiet-button" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={deliver}>Deliver</button> : null}
     </>
   );

@@ -59,6 +59,7 @@ const config: VehicleModuleConfig = {
     { key: 'model_name', label: 'Model (auto-filled)', type: 'text', readOnly: true, group: 'Vehicle', visibleIf: () => false }, // shown once, in 'Model / variant' above
     {
       key: 'vin', label: 'VIN', type: 'lookup', group: 'Vehicle',
+      helpText: 'Leave blank: a free vehicle of the chosen model is assigned when you save.',
       lookupResource: '/vehicle/units', lookupLabelKey: 'vin', lookupSecondaryLabelKey: 'model_name',
       // Offers vehicles that can actually be driven (not sold/delivered/damaged/in service), limited to the chosen
       // model when one is set. A dealer is NOT required (individual buyers drive showroom vehicles); when the
@@ -90,7 +91,7 @@ const config: VehicleModuleConfig = {
     { key: 'fuel_end', label: 'Fuel / battery (end)', type: 'combo', comboOptions: FUEL_LEVELS, placeholder: 'Pick or type, e.g. 72%', group: 'Vehicle condition' },
     { key: 'customer_feedback', label: 'Customer feedback', type: 'textarea', placeholder: 'What the customer said about the drive…', group: 'Outcome' },
     { key: 'outcome', label: 'Outcome', type: 'select', options: OUTCOMES, group: 'Outcome' },
-    { key: 'status', label: 'Status', type: 'select', options: STATUSES, listColumn: true, group: 'Outcome' },
+    { key: 'status', label: 'Status', type: 'select', options: STATUSES, listColumn: true, group: 'Outcome', defaultValue: () => 'Requested' },
   ],
   kpis: [
     { icon: '○', iconClass: 'kpi-icon-ink', label: 'Total test drives', value: (r) => String(r.length) },

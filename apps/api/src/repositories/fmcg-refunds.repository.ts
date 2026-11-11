@@ -45,8 +45,8 @@ export async function createRefund(org: string, userId: string, scope: IndustryS
   if (!order || !order.client_id) throw notFound;
   const industryTypeId = (order.clients as unknown as { industry_type_id?: string | null } | null)?.industry_type_id ?? null;
   assertRecordInScope(scope, industryTypeId, notFound);
-  // FMCG, School and Pharma (same refund rules: money owed back after an approved return credit)
-  if (!(await isFmcgIndustry(org, industryTypeId)) && !['school', 'pharma'].includes((await industryCodeOf(org, industryTypeId)) ?? '')) throw new AppError(422, 'NOT_FMCG', 'Refunds are only available in the FMCG, School and Pharma industries.');
+  // FMCG, School, Pharma and Textile (same refund rules: money owed back after an approved return credit)
+  if (!(await isFmcgIndustry(org, industryTypeId)) && !['school', 'pharma', 'textile'].includes((await industryCodeOf(org, industryTypeId)) ?? '')) throw new AppError(422, 'NOT_FMCG', 'Refunds are only available in the FMCG, School, Pharma and Textile industries.');
   if (order.status === 'cancelled') throw new AppError(422, 'ORDER_CANCELLED', 'A cancelled order cannot be refunded here.');
 
   const [paid, credits, refunds] = await Promise.all([

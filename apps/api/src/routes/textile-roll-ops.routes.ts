@@ -8,7 +8,7 @@ import { authenticate } from '../middleware/authenticate.js';
 import { requireRoles } from '../middleware/authorize.js';
 import { assertRecordInScope } from '../lib/industry-scope.js';
 import { industryCodeOf } from '../lib/fmcg-market.js';
-import { syncProductStockFromRolls } from '../lib/textile-rolls.js';
+import { rollColourFitsLines, syncProductStockFromRolls } from '../lib/textile-rolls.js';
 import { cutMetresForOrder, cutRelease, cutReserve, moveRoll } from '../lib/textile-roll-ledger.js';
 
 export const textileRollOpsRouter = Router();
@@ -126,13 +126,14 @@ textileRollOpsRouter.get('/textile/orders/:id/cut-options', authenticate, reader
     .select('quantity, free_quantity, colour, products(product_code, product_name)').eq('order_id', order.id as string);
   if (error) throw error;
 
-  const need = new Map<string, { product_code: string; product_name: string; ordered: number; colours: string[] }>();
+  const need = new Map<string, { product_code: string; product_name: string; ordered: number; colours: string[]; anyColour: boolean }>();
   for (const l of (items ?? []) as unknown as Line[]) {
     const p = prodOf(l);
     if (!p.product_code) continue;
-    const cur = need.get(p.product_code) ?? { product_code: p.product_code, product_name: p.product_name ?? p.product_code, ordered: 0, colours: [] };
+    const cur = need.get(p.product_code) ?? { product_code: p.product_code, product_name: p.product_name ?? p.product_code, ordered: 0, colours: [], anyColour: false };
     cur.ordered += num(l.quantity) + num(l.free_quantity);
     if (l.colour && !cur.colours.includes(l.colour)) cur.colours.push(l.colour);
+    if (!l.colour) cur.anyColour = true; // a line with no colour accepts any roll
     need.set(p.product_code, cur);
   }
 
@@ -161,7 +162,11 @@ textileRollOpsRouter.get('/textile/orders/:id/cut-options', authenticate, reader
       : { data: [] as Row[] };
     const latest = new Map<string, string>();
     for (const i of (insp ?? []) as { roll_number: string; status: string }[]) if (!latest.has(i.roll_number)) latest.set(i.roll_number, i.status);
-    rolls = list.filter((r) => latest.get(r.roll_number as string) === 'Pass');
+    rolls = list.filter((r) => {
+      if (latest.get(r.roll_number as string) !== 'Pass') return false;
+      const n = need.get(String(r.product_code));
+      return !n || rollColourFitsLines(r.colour, n.anyColour ? [''] : n.colours); // colour must match the order line
+    });
   }
   res.json({ data: { open: orderIsOpenForCuts(order), lines, rolls } });
 });
@@ -200,12 +205,13 @@ textileRollOpsRouter.post('/textile/orders/:id/cut-roll', authenticate, manager,
 
   // The order must have a line for this product, and may not be over-covered.
   const { data: items, error: le } = await supabaseAdmin.from('sale_order_items')
-    .select('quantity, free_quantity, products(product_code)').eq('order_id', order.id as string);
+    .select('quantity, free_quantity, colour, products(product_code)').eq('order_id', order.id as string);
   if (le) throw le;
-  let ordered = 0; let matched = false;
+  let ordered = 0; let matched = false; const lineColours: unknown[] = [];
   for (const l of (items ?? []) as unknown as Line[]) {
-    if (prodOf(l).product_code === productCode) { matched = true; ordered += num(l.quantity) + num(l.free_quantity); }
+    if (prodOf(l).product_code === productCode) { matched = true; lineColours.push(l.colour ?? ''); ordered += num(l.quantity) + num(l.free_quantity); }
   }
+  if (matched && !rollColourFitsLines(r.colour, lineColours)) throw new AppError(422, 'COLOUR_MISMATCH', `Roll ${String(r.roll_number)} is ${String(r.colour)}, but this order asks for a different colour. Pick a roll of the ordered colour.`);
   if (!matched) throw new AppError(400, 'VALIDATION_ERROR', `This order has no line for product ${productCode}. The roll must be the same product as the order.`);
   const { data: whole } = await supabaseAdmin.from('textile_fabric_rolls').select('length_meters')
     .eq('organization_id', orgId).eq('order_id', order.id as string).eq('product_code', productCode).in('status', ['Issued', 'Sold']);

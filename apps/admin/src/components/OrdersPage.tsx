@@ -15,6 +15,7 @@ import { SchoolReturnsPanel } from './SchoolReturnsPanel';
 import { SchoolRefundPanel } from './SchoolRefundPanel';
 import { TextileDeliveryBadge, TextileDeliveryPanel } from './TextileDeliveryPanel';
 import { TextileRollsPanel } from './TextileRollsPanel';
+import { TextileCutPanel } from './TextileCutPanel';
 
 const ORDER_DOC_TYPES = ['Commercial Invoice', 'Packing List', 'Delivery Note', 'Bill of Lading', 'Other'];
 
@@ -919,6 +920,7 @@ export function OrdersPage() {
               </div>
 
               {isTextile && selected.status !== 'cancelled' && <TextileDeliveryPanel key={`tdeliv-${selected.id}`} order={selected} onSaved={(saved) => { setSelected((s) => (s ? { ...s, ...saved } : s)); void load(); }} />}
+                        {isTextile && selected.status !== 'cancelled' && <TextileCutPanel key={`tcut-${selected.id}`} order={selected} onChanged={() => { void load(); }} />}
               {isTextile && <TextileRollsPanel key={`trolls-${selected.id}`} order={selected} onChanged={(patch) => { setSelected((s) => (s ? { ...s, ...patch } : s)); void load(); }} />}
 
               {notesText && (

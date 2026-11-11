@@ -19,16 +19,17 @@ type PurchaseOrder = {
 type GrnLine = { roll_number: string; product_name: string; colour: string | null; length_meters: number; quality_grade: string | null; inspection: string };
 type Grn = {
   id: string; grn_number: string; received_date: string; supplier_invoice_no?: string | null; total_rolls: number; total_metres: number;
-  total_amount: number; status: string; cancel_reason?: string | null; lines: GrnLine[];
+  total_amount: number; status: string; cancel_reason?: string | null; lines: GrnLine[]; supplier_id?: string; transporter?: string | null;
   textile_suppliers?: { supplier_name?: string } | null; textile_purchase_orders?: { po_number?: string } | null;
 };
-type Product = { id: string; product_code: string; product_name: string; unit?: string | null; cost_price?: number | null; tax_percent?: number | null; textile_details?: { colors?: { name: string }[] } | null };
+type Product = { id: string; product_code: string; product_name: string; unit?: string | null; cost_price?: number | null; tax_percent?: number | null; textile_details?: { colors?: { name: string }[]; gsm?: number | null; width?: number | null; widthUnit?: 'in' | 'cm' | null; lengthPerRoll?: number | null; lengthUnit?: 'm' | 'yd' | null } | null };
 
 const money = (v: number | null | undefined) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(Number(v ?? 0));
 const metres = (v: number) => `${Math.round(v * 100) / 100} m`;
 const today = () => new Date().toISOString().slice(0, 10);
 const messageOf = (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback);
 const colourNames = (p: Product | undefined) => (p?.textile_details?.colors ?? []).map((c) => c.name).filter(Boolean);
+const GRN_PREFILL_KEY = 'textile.grn.prefillPo';
 
 function useRows<T>(path: string, industryTypeId: string | null) {
   const [rows, setRows] = useState<T[]>([]);
@@ -86,7 +87,7 @@ function Shell({ module, title, description, toolbar, error, message, children }
 function Modal({ title, onClose, wide, children }: { title: string; onClose: () => void; wide?: boolean; children: ReactNode }) {
   return (
     <div className="modal-backdrop modal-backdrop--center" role="dialog" aria-modal="true">
-      <div className="master-modal master-modal--center" style={wide ? { width: 'min(1100px, 96vw)', maxHeight: '92vh', overflowY: 'auto' } : { maxHeight: '92vh', overflowY: 'auto' }}>
+      <div className={`master-modal master-modal--center${wide ? ' master-modal--wide' : ''}`} style={wide ? { width: 'min(1100px, 96vw)', maxHeight: '92vh', overflowY: 'auto' } : { maxHeight: '92vh', overflowY: 'auto' }}>
         <div className="modal-heading">
           <h3>{title}</h3>
           <button type="button" className="quiet-button" onClick={onClose}>Close</button>
@@ -307,6 +308,7 @@ export function TextilePurchaseOrdersPage() {
                   <td>{metres(ordered)} / {metres(received)}</td><td>{money(po.total_amount)}</td><td><span className="status-badge">{po.status}</span></td>
                   <td>
                     {po.status === 'Draft' && <><button type="button" className="quiet-button" onClick={() => openForm(po)}>Edit</button> <button type="button" className="quiet-button" onClick={() => void setStatus(po, 'Ordered')}>Place order</button> <button type="button" className="quiet-button" onClick={() => void remove(po)}>Delete</button></>}
+                    {(po.status === 'Ordered' || po.status === 'Partially Received') && <button type="button" className="primary-action" onClick={() => { sessionStorage.setItem(GRN_PREFILL_KEY, po.id); window.location.hash = '#industry:textile:goods-receipt'; }}>Receive goods</button>}{' '}
                     {po.status === 'Ordered' && <button type="button" className="quiet-button" onClick={() => void setStatus(po, 'Cancelled')}>Cancel</button>}
                     {po.status === 'Partially Received' && <button type="button" className="quiet-button" onClick={() => void setStatus(po, 'Closed')}>Close short</button>}
                   </td>
@@ -317,7 +319,8 @@ export function TextilePurchaseOrdersPage() {
         </table>
       )}
       {open && (
-        <Modal wide title={editingId ? 'Edit purchase order' : 'New purchase order'} onClose={() => setOpen(false)}>
+              <Modal wide title={editingId ? 'Edit purchase order' : 'New purchase order'} onClose={() => setOpen(false)}>
+          <div className="master-modal-form">
           <div className="field-grid">
             <label>Supplier *
               <select value={head.supplier_id} onChange={(e) => setHead({ ...head, supplier_id: e.target.value })}>
@@ -329,6 +332,7 @@ export function TextilePurchaseOrdersPage() {
             <label>Expected delivery<input type="date" value={head.expected_date} onChange={(e) => setHead({ ...head, expected_date: e.target.value })} /></label>
             <label>Over/short tolerance %<input type="number" min={0} max={100} value={head.tolerance_percent} onChange={(e) => setHead({ ...head, tolerance_percent: e.target.value })} /></label>
           </div>
+          <div style={{ overflowX: 'auto' }}>
           <table>
             <thead><tr><th>Fabric product</th><th>Colour</th><th>Metres</th><th>Rate / m</th><th>GST %</th><th /></tr></thead>
             <tbody>
@@ -347,13 +351,15 @@ export function TextilePurchaseOrdersPage() {
               })}
             </tbody>
           </table>
+          </div>
           <p><button type="button" className="quiet-button" onClick={() => setLines([...lines, blankLine()])}>Add another fabric line</button> <strong style={{ marginLeft: '1rem' }}>Total with GST: {money(total)}</strong></p>
           <label>Notes<textarea value={head.notes} onChange={(e) => setHead({ ...head, notes: e.target.value })} /></label>
           {formError && <p className="error-message">{formError}</p>}
           <div className="modal-actions">
             <button type="button" className="quiet-button" onClick={() => setOpen(false)}>Cancel</button>
             <button type="button" className="quiet-button" disabled={busy} onClick={() => void save(false)}>Save as draft</button>
-            <button type="button" className="primary-action" disabled={busy} onClick={() => void save(true)}>{busy ? 'Saving…' : 'Save & place order'}</button>
+                       <button type="button" className="primary-action" disabled={busy} onClick={() => void save(true)}>{busy ? 'Saving…' : 'Save & place order'}</button>
+          </div>
           </div>
         </Modal>
       )}
@@ -364,11 +370,28 @@ export function TextilePurchaseOrdersPage() {
 // =================================================================== Goods receipt (creates the rolls)
 type RollRow = { roll_number: string; product_code: string; colour: string; length_meters: string; lot_number: string; gsm: string; width_inches: string; quality_grade: string; warehouse_location: string; inspection: string };
 const lineKey = (l: PoLine) => `${l.product_code}|${l.colour ?? ''}`;
+// One roll per fabric line that still has metres pending; length = pending metres (split it with "Add these rolls" if it arrives as several rolls).
+// GSM, width (converted to inches) and standard roll length come from the product master.
+const fabricDefaults = (products: Product[], code: string) => {
+  const td = products.find((p) => p.product_code === code)?.textile_details;
+  const width = td?.width == null ? '' : String(td.widthUnit === 'cm' ? Math.round((Number(td.width) / 2.54) * 100) / 100 : td.width);
+  const perRoll = td?.lengthPerRoll ? Math.round(Number(td.lengthPerRoll) * (td.lengthUnit === 'yd' ? 0.9144 : 1) * 100) / 100 : 0;
+  return { gsm: td?.gsm == null ? '' : String(td.gsm), width_inches: width, perRoll };
+};
+// Each PO line with metres pending becomes one roll of those metres. Split it with "Add these rolls" if the mill sends several rolls.
+const rollsFromPo = (order: PurchaseOrder, products: Product[]): RollRow[] => order.lines.flatMap((l) => {
+  const left = Math.round((Number(l.quantity || 0) - Number(l.received_quantity || 0)) * 100) / 100;
+  if (!(left > 0)) return [];
+  const d = fabricDefaults(products, l.product_code);
+  const base = { roll_number: '', product_code: l.product_code, colour: l.colour ?? '', lot_number: '', gsm: d.gsm, width_inches: d.width_inches, quality_grade: '', warehouse_location: '', inspection: 'Pass' };
+  return [{ ...base, length_meters: String(left) }];
+});
 
 export function TextileGrnPage() {
   const { activeIndustryTypeId } = useIndustryScope();
   const { rows, loading, error, reload } = useRows<Grn>('/textile/grns', activeIndustryTypeId);
-  const orders = useRows<PurchaseOrder>('/textile/purchase-orders', activeIndustryTypeId);
+   const orders = useRows<PurchaseOrder>('/textile/purchase-orders', activeIndustryTypeId);
+  const products = useProducts(activeIndustryTypeId);
   const [open, setOpen] = useState(false);
   const [viewing, setViewing] = useState<Grn | null>(null);
   const [head, setHead] = useState({ po_id: '', received_date: today(), supplier_invoice_no: '', transporter: '', vehicle_number: '', lr_number: '', notes: '' });
@@ -380,7 +403,23 @@ export function TextileGrnPage() {
 
   const receivable = useMemo(() => orders.rows.filter((po) => po.status === 'Ordered' || po.status === 'Partially Received'), [orders.rows]);
   const po = receivable.find((x) => x.id === head.po_id);
-  const totalMetres = rolls.reduce((s, r) => s + (Number(r.length_meters) || 0), 0);
+  const lastTransporter = (supplierId: string) => rows.find((g) => g.supplier_id === supplierId && g.transporter)?.transporter ?? '';
+   const totalMetres = rolls.reduce((s, r) => s + (Number(r.length_meters) || 0), 0);
+
+  // Arrived from "Receive goods" on the Purchase Orders page: open the form with that PO and its rolls already filled in.
+  useEffect(() => {
+     const id = sessionStorage.getItem(GRN_PREFILL_KEY);
+       if (!id || !orders.rows.length || !products.length || loading) return;
+    const target = orders.rows.find((x) => x.id === id && (x.status === 'Ordered' || x.status === 'Partially Received'));
+    sessionStorage.removeItem(GRN_PREFILL_KEY);
+    if (!target) return;
+    setFormError('');
+    setHead({ po_id: target.id, received_date: today(), supplier_invoice_no: '', transporter: lastTransporter(target.supplier_id), vehicle_number: '', lr_number: '', notes: '' });
+      setRolls(rollsFromPo(target, products));
+    setBulk({ key: '', count: '1', length: '', lot: '', location: '' });
+    setOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [orders.rows, products, loading]);
 
   function openForm() {
     setFormError('');
@@ -397,7 +436,7 @@ export function TextileGrnPage() {
     setFormError('');
     const fresh: RollRow[] = Array.from({ length: count }, () => ({
       roll_number: '', product_code: line.product_code, colour: line.colour ?? '', length_meters: bulk.length, lot_number: bulk.lot,
-      gsm: '', width_inches: '', quality_grade: '', warehouse_location: bulk.location, inspection: 'Pass',
+          gsm: fabricDefaults(products, line.product_code).gsm, width_inches: fabricDefaults(products, line.product_code).width_inches, quality_grade: '', warehouse_location: bulk.location, inspection: 'Pass',
     }));
     setRolls((current) => [...current, ...fresh]);
   }
@@ -464,11 +503,11 @@ export function TextileGrnPage() {
       )}
 
       {open && (
-        <Modal wide title="Receive goods" onClose={() => setOpen(false)}>
-          <form onSubmit={save}>
+               <Modal wide title="Receive goods" onClose={() => setOpen(false)}>
+          <form className="master-modal-form" onSubmit={save}>
             <div className="field-grid">
               <label>Purchase order *
-                <select value={head.po_id} onChange={(e) => { setHead({ ...head, po_id: e.target.value }); setRolls([]); setBulk({ ...bulk, key: '' }); }}>
+                  <select value={head.po_id} onChange={(e) => { const picked = receivable.find((x) => x.id === e.target.value); setHead({ ...head, po_id: e.target.value, transporter: head.transporter || (picked ? lastTransporter(picked.supplier_id) : '') }); setRolls(picked ? rollsFromPo(picked, products) : []); setBulk({ ...bulk, key: '' }); }}>
                   <option value="">Select an open order</option>
                   {receivable.map((p) => <option key={p.id} value={p.id}>{p.po_number} — {p.textile_suppliers?.supplier_name ?? 'Supplier'}</option>)}
                 </select>

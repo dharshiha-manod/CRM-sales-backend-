@@ -9,7 +9,7 @@ import { VEHICLE_RESOURCES } from './vehicle-resources.js';
 import { schemeCredit, stageFor } from './vehicle-calc.js';
 import { defaultChecklistFor } from './vehicle-documents.js';
 import { enqueueCustomerMessage } from './vehicle-notify.js';
-import { syncDeliveryDocuments } from './vehicle-doc-sync.js';
+import { syncDeliveryDocuments, addBookingDocuments } from './vehicle-doc-sync.js';
 import { cancelVehicleInvoices, ensureVehicleInvoice, markVehicleInvoicePaid } from './vehicle-invoice.js';
 import type { IndustryScope } from './industry-scope.js';
 
@@ -191,6 +191,9 @@ export async function refreshDeliveryPayments(org: string, ind?: string | null):
 export async function releaseBookingFiles(org: string, ind: string, booking: Row): Promise<void> {
   await safe('releaseBookingFiles', async () => {
     const bookingNo = str(booking.booking_number);
+    if (bookingNo) { // insurance still only requested / quoted for this booking is cancelled with it (an issued cover note / policy is left alone)
+      await supabaseAdmin.from('vehicle_insurance_policies').update({ status: 'Cancelled' }).eq('organization_id', org).eq('industry_type_id', ind).eq('booking_number', bookingNo).in('status', ['Requested', 'Quoted', 'Customer Accepted']);
+    }
     if (bookingNo) {
       const { data: open } = await supabaseAdmin.from('vehicle_deliveries').select('id, vin, order_id').eq('organization_id', org).eq('industry_type_id', ind).eq('booking_number', bookingNo).in('status', OPEN_DELIVERY);
       for (const d of (open ?? []) as Row[]) {
@@ -290,6 +293,59 @@ async function schemeOffersOf(org: string, ind: string, booking: Row): Promise<{
   return { name: str(scheme.scheme_name), insurance: str(scheme.insurance_offer), accessories: str(scheme.accessories_offer), finance: str(scheme.finance_offer) };
 }
 
+/** GAP FIX 3: only offers that really give free cover open a policy ("Free first-year insurance", "Zero depreciation cover"); "Discount on insurance" / "Free roadside assistance" do not. */
+export function isFreeInsuranceOffer(offer: unknown): boolean {
+  const t = str(offer);
+  return t !== '' && (/free.*insur|insur.*free|zero\s*dep/i.test(t));
+}
+
+/** GAP FIX 2: a scheme / insurance choice was added to a booking that already holds a vehicle: open the policy and add the insurance paper to the open delivery file. Never throws. */
+export async function onBookingInsuranceChanged(org: string, ind: string, booking: Row): Promise<void> {
+  await safe('onBookingInsuranceChanged', async () => {
+    if (!has(booking.vin)) return;
+    await ensureBookingInsurance(org, ind, booking);
+    const offers = await schemeOffersOf(org, ind, booking);
+    const on = insuranceSourceOf(booking) !== 'Not required' || isFreeInsuranceOffer(offers?.insurance);
+    if (on) await addBookingDocuments(org, ind, { ...booking, insurance_required: 'Yes' });
+  }, undefined);
+}
+
+/** GAP FIX 3: a free scheme policy must run for one year from the DELIVERY date, not from the booking date. Never throws. */
+export async function alignSchemeInsuranceToDelivery(org: string, ind: string, delivery: Row): Promise<void> {
+  await safe('alignSchemeInsuranceToDelivery', async () => {
+    if (!has(delivery.vin)) return;
+    const start = has(delivery.delivery_date) ? String(delivery.delivery_date).slice(0, 10) : todayLocal();
+    const end = new Date(`${start}T00:00:00Z`); end.setUTCFullYear(end.getUTCFullYear() + 1); end.setUTCDate(end.getUTCDate() - 1);
+    await supabaseAdmin.from('vehicle_insurance_policies').update({ start_date: start, expiry_date: end.toISOString().slice(0, 10) })
+      .eq('organization_id', org).eq('industry_type_id', ind).eq('vin', String(delivery.vin)).like('coverage', '%(scheme:%').eq('premium', 0).neq('start_date', start)
+      .in('status', ['Requested', 'Quoted', 'Customer Accepted', 'Cover Note Issued', 'Active']);
+  }, undefined);
+}
+
+/** GAP FIX 4: an insurance reference typed on the Registration page opens an insurance file (copy awaited) when the vehicle has none. Never throws. */
+export async function openInsuranceFromRegistration(org: string, ind: string, reg: Row): Promise<void> {
+  await safe('openInsuranceFromRegistration', async () => {
+    if (!has(reg.vin) || !has(reg.insurance_reference)) return;
+    const vin = String(reg.vin), ref = String(reg.insurance_reference).trim();
+    const { data: existing } = await supabaseAdmin.from('vehicle_insurance_policies').select('id, policy_number').eq('organization_id', org).eq('industry_type_id', ind).eq('vin', vin).neq('status', 'Cancelled').limit(1);
+    if ((existing ?? []).length) return; // the vehicle already has an insurance file
+    const start = todayLocal();
+    const end = new Date(`${start}T00:00:00Z`); end.setUTCFullYear(end.getUTCFullYear() + 1); end.setUTCDate(end.getUTCDate() - 1);
+    const row: Row = {
+      client_name: reg.client_name ?? null, client_id: reg.client_id ?? null, vin, insurance_source: "Customer's own", policy_type: 'Comprehensive',
+      coverage: `Comprehensive cover for ${vin} (insurance reference ${ref} entered at registration)`, policy_document_reference: ref,
+      start_date: start, expiry_date: end.toISOString().slice(0, 10), status: 'Requested', organization_id: org, industry_type_id: ind,
+    };
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const number = await nextVehicleCode('vehicle_insurance_policies', 'INS', org, attempt);
+      const { error } = await supabaseAdmin.from('vehicle_insurance_policies').insert({ ...row, policy_number: number });
+      if (!error) { logger.info({ vin, policy: number }, 'vehicle-insurance: policy opened from registration'); return; }
+      if (/insurance_source/.test(String(error.message))) { delete row.insurance_source; continue; }
+      if (error.code !== '23505') throw error;
+    }
+  }, undefined);
+}
+
 /**
  * Opens the insurance file of a booking once its vehicle is known (status Requested). The insurance desk then moves it
  * Requested > Quoted > Customer Accepted > Cover Note Issued > Active, and the delivery file counts a cover note as cover.
@@ -301,24 +357,47 @@ export async function ensureBookingInsurance(org: string, ind: string, booking: 
     const offers = await schemeOffersOf(org, ind, booking); // a scheme with an insurance offer shows it on the policy
     let source = insuranceSourceOf(booking);
     // no insurance choice was made on the booking (e.g. booking made from an order) and the scheme gives free insurance: the showroom arranges it
-    if (source === 'Not required' && offers?.insurance && !has(booking.insurance_source) && !has(booking.insurance_required)) source = 'Dealer arranged';
+    // GAP FIX 1/3: only a FREE-insurance offer opens a policy, and it wins over the booking form's default "Not required".
+    const freeOffer = isFreeInsuranceOffer(offers?.insurance);
+    if (source === 'Not required' && freeOffer) {
+      source = 'Dealer arranged';
+      // an older booking still says insurance "No": correct it, so the delivery file and its checklist ask for the insurance too
+      await supabaseAdmin.from('vehicle_bookings').update({ insurance_source: 'Dealer arranged', insurance_required: 'Yes' }).eq('organization_id', org).eq('industry_type_id', ind).eq('booking_number', String(booking.booking_number));
+      await addBookingDocuments(org, ind, { ...booking, insurance_source: 'Dealer arranged', insurance_required: 'Yes' });
+    }
+    if (freeOffer && has(booking.vin)) { // a vehicle already delivered: its free year runs from the delivery date
+      const { data: dl } = await supabaseAdmin.from('vehicle_deliveries').select('vin, delivery_date').eq('organization_id', org).eq('industry_type_id', ind).eq('vin', String(booking.vin)).eq('status', 'Delivered').order('created_at', { ascending: false }).limit(1).maybeSingle();
+      if (dl) await alignSchemeInsuranceToDelivery(org, ind, dl as Row);
+    }
     if (source === 'Not required') { logger.info({ booking: booking.booking_number, insurance_required: booking.insurance_required ?? null, insurance_source: booking.insurance_source ?? null, schemeFound: Boolean(offers), schemeInsuranceOffer: offers?.insurance ?? null }, 'vehicle-insurance: skipped - booking says insurance Not required (or no scheme with a free insurance offer was found)'); return; }
     const vin = String(booking.vin), bookingNo = String(booking.booking_number);
-    const byBooking = await supabaseAdmin.from('vehicle_insurance_policies').select('id').eq('organization_id', org).eq('industry_type_id', ind).eq('booking_number', bookingNo).neq('status', 'Cancelled').limit(1);
-    if (!byBooking.error && (byBooking.data ?? []).length) return; // already opened for this booking (logged only when it fails below)
+    const byBooking = await supabaseAdmin.from('vehicle_insurance_policies').select('id, coverage, premium, status').eq('organization_id', org).eq('industry_type_id', ind).eq('booking_number', bookingNo).neq('status', 'Cancelled').limit(1);
+    if (!byBooking.error && (byBooking.data ?? []).length) { // already opened for this booking
+      const have = (byBooking.data as Row[])[0];
+      if (freeOffer && !str(have.coverage).includes('(scheme:')) { // the scheme was added after the policy was opened: write the free offer onto it
+        const patch: Row = { coverage: `${offers?.insurance} (scheme: ${offers?.name}) - Comprehensive cover for ${vin}` };
+        if (!has(have.premium)) patch.premium = 0;
+        if (/zero\s*dep/i.test(offers?.insurance ?? '')) patch.policy_type = 'Zero Depreciation';
+        await supabaseAdmin.from('vehicle_insurance_policies').update(patch).eq('id', have.id as string);
+      }
+      return;
+    }
+    const { data: orphan } = await supabaseAdmin.from('vehicle_insurance_policies').select('id').eq('organization_id', org).eq('industry_type_id', ind).eq('vin', vin).is('booking_number', null).neq('status', 'Cancelled').limit(1);
+    if ((orphan ?? []).length) { await supabaseAdmin.from('vehicle_insurance_policies').update({ booking_number: bookingNo }).eq('id', (orphan![0] as Row).id as string); return; } // a policy opened by hand / from Registration: link it, no second file
     const { data: covered } = await supabaseAdmin.from('vehicle_insurance_policies').select('id').eq('organization_id', org).eq('industry_type_id', ind).eq('vin', vin).in('status', ['Cover Note Issued', 'Active', 'Expiring Soon']).limit(1);
     if ((covered ?? []).length) return; // the vehicle is already covered (a policy added by hand)
     const start = todayLocal();
     const end = new Date(`${start}T00:00:00Z`); end.setUTCFullYear(end.getUTCFullYear() + 1); end.setUTCDate(end.getUTCDate() - 1);
     const row: Row = {
       client_name: booking.client_name, client_id: booking.client_id ?? null, vin, booking_number: bookingNo, insurance_source: source,
-      policy_type: 'Comprehensive', coverage: offers?.insurance ? `${offers.insurance} (scheme: ${offers.name}) - Comprehensive cover for ${vin}` : `Comprehensive cover for ${vin}`, start_date: start, expiry_date: end.toISOString().slice(0, 10), status: 'Requested',
+      policy_type: freeOffer && /zero\s*dep/i.test(offers?.insurance ?? '') ? 'Zero Depreciation' : 'Comprehensive', ...(freeOffer ? { premium: 0 } : {}), coverage: freeOffer ? `${offers?.insurance} (scheme: ${offers?.name}) - Comprehensive cover for ${vin}` : `Comprehensive cover for ${vin}`, start_date: start, expiry_date: end.toISOString().slice(0, 10), status: 'Requested',
       organization_id: org, industry_type_id: ind,
     };
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const number = await nextVehicleCode('vehicle_insurance_policies', 'INS', org, attempt);
       const { error } = await supabaseAdmin.from('vehicle_insurance_policies').insert({ ...row, policy_number: number });
       if (!error) { logger.info({ booking: bookingNo, policy: number }, 'vehicle-insurance: policy created'); return; }
+      if (/premium/.test(String(error.message)) && 'premium' in row) { delete row.premium; continue; }
       if (/booking_number|insurance_source/.test(String(error.message))) { delete row.booking_number; delete row.insurance_source; continue; } // migration not run yet: open the file without the new columns
       if (error.code !== '23505') throw error;
     }
