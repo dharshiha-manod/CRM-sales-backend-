@@ -9,9 +9,16 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      ["expo-location", {
-        "locationWhenInUsePermission": "Allow Field Sales to use your location for visit check-ins, check-outs, and active visit updates."
-      }]
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Field Sales to use your location for visit check-ins, check-outs, and active visit updates.",
+          "locationAlwaysAndWhenInUsePermission": "Allow Field Sales to record your route during your work day, even when the app is in the background.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "isIosBackgroundLocationEnabled": true
+        }
+      ]
     ],
     "ios": {
       "infoPlist": {
@@ -19,7 +26,14 @@
       }
     },
     "android": {
-      "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]
+      "package": "com.manod.fieldsales",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION"
+      ]
     },
     "experiments": { "typedRoutes": true }
   }

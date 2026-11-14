@@ -21,7 +21,7 @@ export function localNow(now = new Date()) {
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
   return { date: `${get('year')}-${get('month')}-${get('day')}`, day: get('weekday'), hour: Number(get('hour')) };
 }
-function startOfLocalDayIso(date: string): string {
+export function startOfLocalDayIso(date: string): string {
   const name = new Intl.DateTimeFormat('en-US', { timeZone: TZ, timeZoneName: 'longOffset' }).formatToParts(new Date(`${date}T12:00:00Z`)).find((p) => p.type === 'timeZoneName')?.value ?? 'GMT';
   const m = /GMT([+-])(\d{2}):?(\d{2})?/.exec(name);
   const minutes = m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3] ?? 0)) : 0;

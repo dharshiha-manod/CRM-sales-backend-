@@ -1,4 +1,5 @@
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, type StyleProp, type ViewStyle } from 'react-native';
+import { colors, radius } from '../lib/theme';
 
 type AppButtonProps = {
   title: string;
@@ -11,6 +12,7 @@ type AppButtonProps = {
 
 export function AppButton({ title, onPress, variant = 'primary', loading = false, disabled = false, style }: AppButtonProps) {
   const inactive = disabled || loading;
+  const light = variant === 'secondary' || variant === 'ghost';
   return (
     <TouchableOpacity
       accessibilityRole="button"
@@ -20,18 +22,18 @@ export function AppButton({ title, onPress, variant = 'primary', loading = false
       onPress={onPress}
       style={[styles.button, styles[variant], inactive && styles.disabled, style]}
     >
-      {loading ? <ActivityIndicator color={variant === 'secondary' || variant === 'ghost' ? '#0f172a' : '#fff'} /> : <Text style={[styles.label, (variant === 'secondary' || variant === 'ghost') && styles.darkLabel]}>{title}</Text>}
+      {loading ? <ActivityIndicator color={light ? colors.ink : '#fff'} /> : <Text style={[styles.label, light && styles.darkLabel]}>{title}</Text>}
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
-  button: { minHeight: 40, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  primary: { backgroundColor: '#0f172a' },
-  secondary: { backgroundColor: '#f1f5f9', borderWidth: 1, borderColor: '#cbd5e1' },
-  danger: { backgroundColor: '#b91c1c' },
+  button: { minHeight: 46, paddingHorizontal: 16, paddingVertical: 10, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
+  primary: { backgroundColor: colors.brand },
+  secondary: { backgroundColor: colors.brandSoft, borderWidth: 1, borderColor: '#bfdbfe' },
+  danger: { backgroundColor: colors.danger },
   ghost: { backgroundColor: 'transparent' },
   disabled: { opacity: 0.5 },
-  label: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  darkLabel: { color: '#0f172a' },
+  label: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  darkLabel: { color: colors.brand },
 });

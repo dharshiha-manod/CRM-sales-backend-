@@ -1,0 +1,12 @@
+.wdr-toolbar { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.wdr-toolbar label { display: flex; align-items: center; gap: .5rem; font-weight: 600; }
+.wdr-toolbar input[type='date'] { padding: .35rem .5rem; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
+.wdr-refresh, .wdr-view { padding: .35rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-weight: 600; cursor: pointer; }
+.wdr-refresh:hover, .wdr-view:hover { border-color: var(--accent-blue); color: var(--accent-blue); }
+.wdr-hint { color: var(--muted, #64748b); font-size: .8rem; }
+.wdr-sub { color: var(--muted, #64748b); font-size: .75rem; }
+.wdr-warn { color: #b45309; font-size: .78rem; font-weight: 600; margin-top: .25rem; }
+.wdr-row-active { background: rgba(37, 99, 235, .06); }
+.wdr-route { margin-top: 1.25rem; }
+.wdr-route h3 { margin: 0 0 .75rem; }
+.wdr-map { height: 480px; }

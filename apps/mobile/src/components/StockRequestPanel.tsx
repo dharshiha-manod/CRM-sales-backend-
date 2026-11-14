@@ -11,7 +11,7 @@ type StockRequest = { id: string; quantity: number; reason: string | null; statu
 const STATUS_LABEL: Record<StockRequest['status'], string> = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected', fulfilled: 'Stock given' };
 const STATUS_COLOR: Record<StockRequest['status'], string> = { pending: '#b45309', approved: '#1d4ed8', rejected: '#b91c1c', fulfilled: '#15803d' };
 
-export function StockRequestPanel() {
+export function StockRequestPanel({ refreshKey = 0 }: { refreshKey?: number }) {
   const [stock, setStock] = useState<Holding[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [requests, setRequests] = useState<StockRequest[]>([]);
@@ -35,7 +35,7 @@ export function StockRequestPanel() {
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, refreshKey]);
 
   async function openForm() {
     setMessage('');
