@@ -2,6 +2,7 @@ import { assertNoActiveShipments } from './fmcg-shipment.repository.js';
 import { assertPharmaOrderRules, assertPharmaMrp, assertPharmaOrderMovable } from '../lib/pharma-order-rules.js';
 import { assertNoLivePharmaInvoice } from '../lib/pharma-billing.js';
 import { assertNoLiveTextileInvoice } from '../lib/textile-billing.js';
+import { assertNoLiveSchoolInvoice } from '../lib/school-gst.js';
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { getOrderConfig, industryTypeIdOfClient } from '../lib/settings.js';
@@ -232,6 +233,7 @@ export async function cancelOrder(organizationId: string, scope: IndustryScope, 
   await assertPharmaOrderMovable(organizationId, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null, (order as { dispatch_status?: string | null }).dispatch_status, 'cancelled'); // Pharma only
   await assertNoLivePharmaInvoice(organizationId, id, 'cancelled'); // Pharma only: cancel the GST invoice first
   await assertNoLiveTextileInvoice(organizationId, id, 'cancelled'); // Textile only: cancel the GST invoice first
+  await assertNoLiveSchoolInvoice(organizationId, id, 'cancelled'); // School only: cancel the GST invoice first
   // School: goods that already left (dispatched / delivered) cannot be cancelled - undo the dispatch first or record a return.
   if (['dispatched', 'delivered'].includes(String((order as { dispatch_status?: string | null }).dispatch_status ?? '')) && await isSchoolIndustry(organizationId, (order.clients as { industry_type_id?: string | null } | null)?.industry_type_id ?? null)) {
     throw new AppError(422, 'ORDER_ALREADY_DISPATCHED', 'This order has already been dispatched. Move it back to Pending first, or record a sales return.');
@@ -299,6 +301,7 @@ export async function updateOrder(organizationId: string, scope: IndustryScope, 
     await assertPharmaOrderMovable(organizationId, orderIndustryTypeId, (order as { dispatch_status?: string | null }).dispatch_status, 'edited', (order as { tax_amount?: number | null }).tax_amount); // Pharma only
     await assertNoLivePharmaInvoice(organizationId, id, 'edited'); // Pharma only
     await assertNoLiveTextileInvoice(organizationId, id, 'edited'); // Textile only
+    await assertNoLiveSchoolInvoice(organizationId, id, 'edited'); // School only
     // School only: once the goods have left the store the lines are locked, and an order whose total includes tax
     // (converted from a quotation) cannot be re-priced here because this edit path has no tax. Notes stay editable.
     if (await isSchoolIndustry(organizationId, orderIndustryTypeId)) {

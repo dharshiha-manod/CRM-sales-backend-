@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import { consumeTradeDocumentDraft } from '../lib/tradeDocumentHandoff';
 import { TradeDocumentInsights } from './TradeDocumentInsights';
 import { supabase } from '../lib/supabase';
+import { printTradeDocument } from '../lib/tradeDocumentPrint';
 
 const DOC_TYPES = [
   'Proforma Invoice', 'Commercial Invoice', 'Purchase Order', 'Sales Order', 'Packing List',
@@ -172,6 +173,15 @@ function DetailActions({ record }: { record: Record<string, unknown> }) {
 }
 // Stamps who actually uploaded the file, at the moment the file is set —// Same workflow as the detail window, but inside the row's ⋮ menu.
 function RowMenuActions({ record }: { record: Record<string, unknown> }) {
+  return (
+    <>
+      <button type="button" style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, borderRadius: 4, whiteSpace: 'nowrap' }} onClick={() => printTradeDocument(record)}>⬇ Download PDF</button>
+      <RowMenuWorkflow record={record} />
+    </>
+  );
+}
+
+function RowMenuWorkflow({ record }: { record: Record<string, unknown> }) {
   const status = String(record.status ?? 'Draft');
   const verification = String(record.verification_status ?? '');
   const item: React.CSSProperties = {
@@ -369,7 +379,7 @@ const config: TradingModuleConfig = {
     },
   ],
   renderInsights: (rows) => <TradeDocumentInsights rows={rows} />,
-  detailActions: (record) => <><DetailActions record={record} /><ReviewNote record={record} /></>,
+  detailActions: (record) => <><button type="button" className="quiet-button" onClick={() => printTradeDocument(record)}>⬇ Download PDF</button><DetailActions record={record} /><ReviewNote record={record} /></>,
     rowActions: (record) => <RowMenuActions record={record} />,
   consumePendingDraft: () => consumeTradeDocumentDraft(),
   onRecordsLoaded: (rows) => reconcileExpiry(rows),

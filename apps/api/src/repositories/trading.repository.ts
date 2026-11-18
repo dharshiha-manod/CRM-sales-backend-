@@ -223,7 +223,20 @@ async function autoCreateShipmentDocuments(org: string, shipment: Record<string,
       .eq('organization_id', org).eq('shipment_number', shipmentNumber).in('document_type', types);
     if (existingError) throw existingError;
     const already = new Set((existing ?? []).map((d) => d.document_type as string));
-    const suffix = shipmentNumber.replace(/^SHP-/, '');
+const suffix = shipmentNumber.replace(/^SHP-/, '');
+    // Price, currency and total come from the order / deal, so the Commercial Invoice is not blank.
+    const pick = async (table: string, column: string, value: string): Promise<Record<string, unknown> | null> => {
+      if (!value) return null;
+      const { data } = await supabaseAdmin.from(table).select('*').eq('organization_id', org).eq(column, value).limit(1).maybeSingle();
+      return (data as Record<string, unknown> | null) ?? null;
+    };
+    const shipRow = await pick('trading_shipments', 'shipment_number', shipmentNumber);
+    const orderRow = await pick('trading_sales_orders', 'order_number', asText(shipment.order_number ?? shipRow?.order_number));
+    const dealRow = await pick('trading_deals', 'deal_number', asText(shipment.deal_number ?? shipRow?.deal_number));
+    const docQty = Number(shipment.quantity ?? orderRow?.quantity ?? dealRow?.customer_quantity ?? dealRow?.quantity ?? 0);
+    const docRate = Number(orderRow?.selling_rate ?? dealRow?.selling_rate ?? 0);
+    const docCurrency = asText(orderRow?.currency ?? dealRow?.currency);
+    const docTotal = Number(orderRow?.total_amount ?? 0) > 0 ? Number(orderRow?.total_amount) : Math.round(docQty * docRate * 100) / 100;
     const today = new Date().toISOString().slice(0, 10);
     for (const type of types) {
       if (already.has(type)) continue;
@@ -242,7 +255,10 @@ async function autoCreateShipmentDocuments(org: string, shipment: Record<string,
         reference_number: shipmentNumber,
         quantity: shipment.quantity ?? null,
         unit: shipment.unit ?? null,
-        expected_delivery_date: shipment.expected_delivery_date ?? null,
+     expected_delivery_date: shipment.expected_delivery_date ?? null,
+        currency: docCurrency || null,
+        unit_price: docRate > 0 ? docRate : null,
+        total_value: docTotal > 0 ? docTotal : null,
         shipping_mode: shipment.shipping_mode ?? null,
         transporter: shipment.transporter ?? null,
         tracking_number: shipment.tracking_number ?? null,
@@ -331,6 +347,100 @@ async function autoCreateShipmentPaperwork(org: string, shipment: Record<string,
   }
 }
 
+/** Creates the Import/Export transaction (TXN-...) for a cross-border shipment, filled from the order / deal. Never throws. */
+async function ensureShipmentTransaction(org: string, shipmentRef: Record<string, unknown>) {
+  try {
+    const shipmentNumber = asText(shipmentRef.shipment_number);
+    if (!shipmentNumber) return;
+    const { data: existing, error: existingError } = await supabaseAdmin.from('trading_import_export').select('id').eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
+    if (existingError) throw existingError;
+    if (existing) return;
+
+    const load = async (table: string, column: string, value: string): Promise<Row | null> => {
+      if (!value) return null;
+      const { data } = await supabaseAdmin.from(table).select('*').eq('organization_id', org).eq(column, value).limit(1).maybeSingle();
+      return (data as Row | null) ?? null;
+    };
+
+    const shipRow = await load('trading_shipments', 'shipment_number', shipmentNumber);
+    const shipment: Row = { ...shipmentRef, ...(shipRow ?? {}) };
+    // Only goods that cross a border get an Import/Export transaction.
+    if (!(await isCrossBorderShipment(org, shipment))) return;
+
+    const order = await load('trading_sales_orders', 'order_number', asText(shipment.order_number));
+    const deal = await load('trading_deals', 'deal_number', asText(shipment.deal_number));
+    const inbound = asText(shipment.direction).toLowerCase() === 'inbound';
+    const customerName = asText(shipment.customer_name ?? deal?.customer_name);
+    const client = inbound ? null : await load('clients', 'client_name', customerName);
+
+    const quantity = Number(shipment.quantity ?? order?.quantity ?? deal?.customer_quantity ?? deal?.quantity ?? 0);
+    const currency = asText(order?.currency ?? deal?.currency) || 'INR';
+    const savedTotal = Number(order?.total_amount ?? 0);
+    const rate = Number(order?.selling_rate ?? deal?.selling_rate ?? 0);
+    const value = savedTotal > 0 ? savedTotal : Math.round(quantity * rate * 100) / 100;
+    const fx = await baseRateFor(org, shipment.industry_type_id, currency);
+    const baseValue = fx.rate != null && value > 0 ? Math.round(value * fx.rate * 100) / 100 : null;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const reference = await nextOrgReference(org, 'trading_import_export', 'transaction_number', 'TXN');
+      const { data: created, error } = await supabaseAdmin.from('trading_import_export').insert({
+        organization_id: org,
+        industry_type_id: shipment.industry_type_id ?? null,
+        transaction_number: reference,
+        transaction_type: inbound ? 'Import' : 'Export',
+        shipment_number: shipmentNumber,
+        order_number: asText(shipment.order_number) || null,
+        deal_number: asText(shipment.deal_number) || null,
+        customer_name: inbound ? null : (customerName || null),
+        supplier_name: inbound ? (asText(shipment.supplier_name) || null) : null,
+        product_name: shipment.product_name ?? null,
+        quantity: quantity > 0 ? quantity : null,
+        unit: shipment.unit ?? null,
+        country_of_origin: inbound ? null : 'India',
+        destination_country: asText(client?.country ?? client?.country_code) || null,
+        port_of_loading: shipment.origin ?? null,
+        port_of_discharge: shipment.destination ?? null,
+        shipping_mode: shipment.shipping_mode ?? null,
+        incoterm: deal?.incoterm ?? order?.incoterm ?? null,
+        currency,
+        total_value: value > 0 ? value : null,
+        exchange_rate: fx.rate,
+        base_currency: fx.base,
+        base_value: baseValue,
+        expected_shipment_date: shipment.shipment_date ?? null,
+        expected_arrival_date: shipment.expected_delivery_date ?? null,
+        status: 'Documentation Pending',
+        notes: `Automatically created from shipment ${shipmentNumber}.`,
+      }).select().single();
+      if (!error) {
+        // Links the shipment's customs record to this transaction and raises its compliance check.
+        await runTradeLinks(org, 'trading_import_export', created as Row, true);
+        return;
+      }
+      if (error.code !== '23505') throw error;
+    }
+  } catch (error) {
+    logger.error({ err: error, shipmentNumber: shipmentRef.shipment_number }, 'Automatic import/export transaction failed');
+  }
+}
+/** One-time catch-up: creates the Import/Export transaction for every cross-border shipment that has none. Safe to re-run. */
+export async function backfillShipmentTransactions(): Promise<{ checked: number; created: number }> {
+  const { data, error } = await supabaseAdmin.from('trading_shipments').select('*');
+  if (error) throw error;
+  const hasTxn = async (org: string, shipmentNumber: string) => {
+    const { data: row } = await supabaseAdmin.from('trading_import_export').select('id').eq('organization_id', org).eq('shipment_number', shipmentNumber).limit(1).maybeSingle();
+    return Boolean(row);
+  };
+  let created = 0;
+  for (const shipment of (data ?? []) as Array<Record<string, unknown>>) {
+    const org = asText(shipment.organization_id);
+    const shipmentNumber = asText(shipment.shipment_number);
+    if (!org || !shipmentNumber || await hasTxn(org, shipmentNumber)) continue;
+    await ensureShipmentTransaction(org, shipment);
+    if (await hasTxn(org, shipmentNumber)) created += 1;
+  }
+  return { checked: (data ?? []).length, created };
+}
 /** Throws SHIPMENT_NOT_READY (422) listing everything still blocking an outbound shipment from leaving. */
 async function assertReadyToDispatch(org: string, shipmentNumber: string): Promise<void> {
   if (!shipmentNumber) return;
@@ -1590,7 +1700,10 @@ export async function createTradingRecord(resource: TradingResource, org: string
           if (tagError) logger.warn({ err: tagError }, 'Could not tag shipment charges with the new invoice number');
         await syncInvoicePaymentsForDeal(org, String(inv.deal_number ?? ''));
       }
-       if (resource.table === 'trading_shipments') await ensureLogisticsPlan(org, data as Record<string, unknown>);
+   if (resource.table === 'trading_shipments') {
+        await ensureLogisticsPlan(org, data as Record<string, unknown>);
+        await ensureShipmentTransaction(org, data as Record<string, unknown>);
+      }
       if (resource.table === 'trading_logistics') await syncFreightChargeFromLogistics(org, data as Record<string, unknown>);
       if (resource.table === 'trading_deals') await runDealSideEffects(org, data as Record<string, unknown>);
          if (resource.table === 'trading_shipment_charges') await rebuildDraftInvoiceFromCharges(org, String((data as Record<string, unknown>).shipment_number ?? ''));
@@ -1899,7 +2012,8 @@ async function autoCreateShipmentForConfirmedOrder(org: string, orderNumber: str
     });
     if (error && error.code !== '23505') throw error;
     await ensureLogisticsPlan(org, { shipment_number: shipmentNumber, industry_type_id: deal.industry_type_id ?? null, deal_number: deal.deal_number, customer_name: deal.customer_name, product_name: deal.product_name, quantity: deal.customer_quantity ?? deal.quantity, unit: deal.unit });
-    await supabaseAdmin.from('trading_sales_orders').update({ shipment_number: shipmentNumber }).eq('organization_id', org).eq('order_number', orderNumber);
+await supabaseAdmin.from('trading_sales_orders').update({ shipment_number: shipmentNumber }).eq('organization_id', org).eq('order_number', orderNumber);
+    await ensureShipmentTransaction(org, { shipment_number: shipmentNumber, industry_type_id: deal.industry_type_id ?? null, order_number: orderNumber, deal_number: deal.deal_number });
     await autoCreateShipmentDocuments(org, {
       shipment_number: shipmentNumber,
       deal_number: deal.deal_number,

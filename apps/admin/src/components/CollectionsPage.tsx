@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { useOrgSettings } from '../settings/useOrgSettings';
 import { kpiClick } from '../lib/kpiClick';
+import { formatMoneyWithBase } from '../lib/currencyFormat';
 import './MasterDataPages.css';
 import './CollectionsPage.css';
 
@@ -532,7 +533,7 @@ export function CollectionsPage() {
                   <td>{row.repName}</td>
              <td className="num">{money(row.invoiceAmount, row.currency)}{row.returnsCredit > 0 && <small style={{ display: 'block', fontSize: '.74rem', color: 'var(--text-faint)' }}>after {money(row.returnsCredit, row.currency)} returns credit</small>}</td>
                   <td className="num">{money(row.paidAmount, row.currency)}</td>
-                  <td className={`num ${row.balance > 0 ? 'num-due' : ''}`}>{money(row.balance, row.currency)}</td>
+                 <td className={`num ${row.balance > 0 ? 'num-due' : ''}`}>{formatMoneyWithBase(row.balance, row.currency)}</td>
                   <td><span className={`status-badge ${STATUS_CLASS[row.status]}`}>{STATUS_LABEL[row.status]}</span></td>
                   <td>{row.lastPaymentDate ? dateLabel(row.lastPaymentDate) : '—'}</td>
                   <td className="master-actions">
