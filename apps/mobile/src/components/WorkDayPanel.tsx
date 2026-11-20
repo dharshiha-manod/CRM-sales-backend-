@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Alert, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { AppButton } from './AppButton';
 import { colors, radius, shadow } from '../lib/theme';
@@ -79,6 +79,13 @@ export function WorkDayPanel({ refreshKey = 0, onChanged }: { refreshKey?: numbe
     }
   }
 
+  function confirmEnd() {
+    Alert.alert('End work day?', 'Route tracking will stop. Make sure all visits are checked out.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'End day', style: 'destructive', onPress: () => void end() },
+    ]);
+  }
+
   async function end() {
     setWorking(true);
     setError('');
@@ -95,6 +102,7 @@ export function WorkDayPanel({ refreshKey = 0, onChanged }: { refreshKey?: numbe
 
   if (loading) return null;
 
+  const since = day ? new Date(day.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   return (
     <View style={[styles.card, day ? styles.cardActive : null]}>
       <View style={styles.titleRow}>
@@ -102,30 +110,26 @@ export function WorkDayPanel({ refreshKey = 0, onChanged }: { refreshKey?: numbe
           <Ionicons name={day ? 'radio-button-on' : 'time-outline'} size={22} color={day ? colors.success : colors.brand} />
         </View>
         <View style={styles.titleText}>
-          <Text style={styles.title}>{day ? 'Work day in progress' : 'Start your work day'}</Text>
-          <Text style={styles.meta}>
-            {day ? `Since ${new Date(day.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${elapsed(day.startedAt)}` : 'Your route is recorded until you end the day.'}
-          </Text>
+          <Text style={styles.title}>{day ? 'Work day' : 'Start your work day'}</Text>
+          <Text style={styles.meta}>{day ? `Since ${since} · ${elapsed(day.startedAt)}` : 'Your route is recorded until you end the day.'}</Text>
         </View>
+        {day ? <AppButton title="End day" variant="dangerSoft" compact loading={working} disabled={working} onPress={confirmEnd} /> : null}
       </View>
 
       {day ? (
         <>
           <View style={[styles.statusRow, mode === 'background' ? styles.statusOk : styles.statusWarn]}>
-            <Ionicons name={mode === 'background' ? 'checkmark-circle' : 'warning'} size={18} color={mode === 'background' ? colors.success : colors.warn} />
+            <Ionicons name={mode === 'background' ? 'checkmark-circle' : 'warning'} size={16} color={mode === 'background' ? colors.success : colors.warn} />
             <Text style={mode === 'background' ? styles.ok : styles.warn}>{MODE_TEXT[mode]}</Text>
           </View>
           {queued > 0 ? (
             <View style={styles.queueRow}>
-              <Ionicons name="cloud-upload-outline" size={18} color={colors.warn} />
-              <Text style={[styles.warn, styles.queueText]}>{queued} location point{queued === 1 ? '' : 's'} waiting to upload</Text>
-           <AppButton title="Upload now" variant="ghost" onPress={() => { void flushQueue().then(readLocal); }} style={styles.small} />
+              <Ionicons name="cloud-upload-outline" size={16} color={colors.warn} />
+              <Text style={[styles.warn, styles.queueText]}>{queued} point{queued === 1 ? '' : 's'} waiting to upload</Text>
+              <AppButton title="Upload" variant="ghost" compact onPress={() => { void flushQueue().then(readLocal); }} />
             </View>
           ) : null}
-          {queued > 0 && getLastFlushError() ? (
-            <Text style={styles.warn}>Upload error: {getLastFlushError()}</Text>
-          ) : null}
-          <AppButton title="End day" variant="danger" loading={working} disabled={working} onPress={() => void end()} />
+          {queued > 0 && getLastFlushError() ? <Text style={styles.warn}>Upload error: {getLastFlushError()}</Text> : null}
         </>
       ) : (
         <AppButton title="Start day" loading={working} disabled={working} onPress={() => void start()} />
@@ -141,22 +145,21 @@ export function WorkDayPanel({ refreshKey = 0, onChanged }: { refreshKey?: numbe
 }
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: colors.card, padding: 16, borderRadius: radius.lg, gap: 12, marginBottom: 14, ...shadow },
+  card: { backgroundColor: colors.card, padding: 14, borderRadius: radius.lg, gap: 10, ...shadow },
   cardActive: { borderLeftWidth: 4, borderLeftColor: colors.success },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  iconBox: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.brandSoft, alignItems: 'center', justifyContent: 'center' },
+  iconBox: { width: 42, height: 42, borderRadius: 14, backgroundColor: colors.brandSoft, alignItems: 'center', justifyContent: 'center' },
   iconBoxActive: { backgroundColor: colors.successSoft },
   titleText: { flex: 1 },
-  title: { color: colors.ink, fontSize: 17, fontWeight: '800' },
-  meta: { color: colors.muted, fontSize: 13, marginTop: 2 },
-  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: radius.md },
+  title: { color: colors.ink, fontSize: 16, fontWeight: '800' },
+  meta: { color: colors.muted, fontSize: 13, marginTop: 1 },
+  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, paddingHorizontal: 10, borderRadius: radius.md },
   statusOk: { backgroundColor: colors.successSoft },
   statusWarn: { backgroundColor: colors.warnSoft },
-  ok: { flex: 1, color: colors.success, fontWeight: '600', fontSize: 13 },
-  warn: { flex: 1, color: colors.warn, fontWeight: '600', fontSize: 13 },
-  queueRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.warnSoft, padding: 10, borderRadius: radius.md },
+  ok: { flex: 1, color: colors.success, fontWeight: '600', fontSize: 12 },
+  warn: { flex: 1, color: colors.warn, fontWeight: '600', fontSize: 12 },
+  queueRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.warnSoft, paddingLeft: 10, borderRadius: radius.md },
   queueText: { flex: 1 },
-  small: { minHeight: 32, paddingVertical: 4, paddingHorizontal: 8 },
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.dangerSoft, borderRadius: radius.md, padding: 10 },
   error: { flex: 1, color: colors.danger, fontSize: 13, fontWeight: '600' },
 });

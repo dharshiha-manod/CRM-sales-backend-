@@ -177,7 +177,7 @@ export function TextileAutomationPage() {
   const loading = summary === null && !err;
   const selectedCount = reorder.filter((r) => picked[r.product_code]?.on).length;
 
-  const attention: Array<{ label: string; n: number; tone: Tone; to?: string }> = [
+  const attention = ([
     { label: 'rolls waiting for QC', n: Number(s.qc_waiting ?? 0), tone: 'amber' },
     { label: 'products below minimum stock', n: Number(s.reorder_count ?? 0), tone: 'red' },
     { label: 'overdue purchase orders', n: Number(s.overdue_pos ?? 0), tone: 'red', to: 'purchase-orders' },
@@ -185,7 +185,7 @@ export function TextileAutomationPage() {
     { label: 'returns without a credit note', n: Number(s.credit_notes_pending ?? 0), tone: 'amber', to: 'credit-notes' },
     { label: 'rolls to send back', n: Number(s.rolls_to_send_back ?? 0), tone: 'amber', to: 'returns-refunds' },
     { label: 'customer refunds due', n: Number(s.customer_refunds_due ?? 0), tone: 'red', to: 'returns-refunds' },
-  ].filter((x) => x.n > 0);
+  ] as Array<{ label: string; n: number; tone: Tone; to?: string }>).filter((x) => x.n > 0);
 
   return (
     <section className="page-panel master-page">

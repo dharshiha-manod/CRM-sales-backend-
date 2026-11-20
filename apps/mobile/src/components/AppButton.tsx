@@ -4,15 +4,17 @@ import { colors, radius } from '../lib/theme';
 type AppButtonProps = {
   title: string;
   onPress: () => void;
-  variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
+  variant?: 'primary' | 'secondary' | 'danger' | 'dangerSoft' | 'ghost';
   loading?: boolean;
   disabled?: boolean;
+  compact?: boolean;
   style?: StyleProp<ViewStyle>;
 };
 
-export function AppButton({ title, onPress, variant = 'primary', loading = false, disabled = false, style }: AppButtonProps) {
+const LABEL_COLOR = { primary: '#fff', danger: '#fff', secondary: colors.brand, ghost: colors.brand, dangerSoft: colors.danger } as const;
+
+export function AppButton({ title, onPress, variant = 'primary', loading = false, disabled = false, compact = false, style }: AppButtonProps) {
   const inactive = disabled || loading;
-  const light = variant === 'secondary' || variant === 'ghost';
   return (
     <TouchableOpacity
       accessibilityRole="button"
@@ -20,20 +22,22 @@ export function AppButton({ title, onPress, variant = 'primary', loading = false
       activeOpacity={0.8}
       disabled={inactive}
       onPress={onPress}
-      style={[styles.button, styles[variant], inactive && styles.disabled, style]}
+      style={[styles.button, compact && styles.compact, styles[variant], inactive && styles.disabled, style]}
     >
-      {loading ? <ActivityIndicator color={light ? colors.ink : '#fff'} /> : <Text style={[styles.label, light && styles.darkLabel]}>{title}</Text>}
+      {loading ? <ActivityIndicator color={LABEL_COLOR[variant]} /> : <Text style={[styles.label, compact && styles.compactLabel, { color: LABEL_COLOR[variant] }]}>{title}</Text>}
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
-  button: { minHeight: 46, paddingHorizontal: 16, paddingVertical: 10, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
+  button: { minHeight: 50, paddingHorizontal: 16, paddingVertical: 10, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
+  compact: { minHeight: 38, paddingVertical: 6, paddingHorizontal: 14 },
   primary: { backgroundColor: colors.brand },
   secondary: { backgroundColor: colors.brandSoft, borderWidth: 1, borderColor: '#bfdbfe' },
   danger: { backgroundColor: colors.danger },
+  dangerSoft: { backgroundColor: colors.dangerSoft, borderWidth: 1, borderColor: '#fecaca' },
   ghost: { backgroundColor: 'transparent' },
   disabled: { opacity: 0.5 },
-  label: { color: '#fff', fontSize: 15, fontWeight: '700' },
-  darkLabel: { color: colors.brand },
+  label: { fontSize: 16, fontWeight: '700' },
+  compactLabel: { fontSize: 14 },
 });

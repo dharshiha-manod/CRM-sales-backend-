@@ -284,7 +284,7 @@ export function hydrateSettingsState(stored: unknown): SettingsState {
   const defaults = createInitialSettingsState();
   if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return defaults;
   const raw = stored as Record<string, unknown>;
-  const merged = { ...defaults } as SettingsState;
+  const merged: Record<string, unknown> = { ...defaults };
   for (const key of Object.keys(defaults) as (keyof SettingsState)[]) {
     const savedValue = raw[key];
     const defaultValue = defaults[key];
@@ -295,7 +295,7 @@ export function hydrateSettingsState(stored: unknown): SettingsState {
     }
   }
   merged.industrySpecific = { ...defaults.industrySpecific, ...(raw.industrySpecific as Partial<SettingsState['industrySpecific']> | undefined) };
-  return merged;
+  return merged as unknown as SettingsState;
 }
 
 // ---------------------------------------------------------------------------

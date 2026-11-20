@@ -21,7 +21,6 @@ const emptyExtra: Extra = { leads: [], clients: [], followUps: [], orders: [], c
 const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
 const timeLabel = (value?: string | null) => (value ? new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(value)) : '—');
 const dateLabel = (value?: string | null) => (value ? new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short' }).format(new Date(value)) : '—');
-function isToday(value?: string | null) { if (!value) return false; const d = new Date(value); const now = new Date(); return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate(); }
 const sourceLabels: Record<string, string> = { referral: 'Referral', cold_call: 'Cold call', walk_in: 'Walk-in', website: 'Website', exhibition: 'Exhibition', social_media: 'Social media', ivr: 'IVR / phone line', other: 'Other' };
 const sourceColors: Record<string, string> = { referral: 'var(--accent-teal)', cold_call: 'var(--amber)', walk_in: 'var(--accent-violet)', website: 'var(--accent-blue)', exhibition: 'var(--ind-textile)', social_media: 'var(--accent-coral)', ivr: 'var(--green)', other: 'var(--text-faint)' };
 
@@ -43,10 +42,14 @@ function rangeBounds(key: RangeKey, customFrom: string, customTo: string): [Date
   if (key === 'month') return [new Date(now.getFullYear(), now.getMonth(), 1), end];
   if (key === 'quarter') { const q = Math.floor(now.getMonth() / 3); return [new Date(now.getFullYear(), q * 3, 1), end]; }
   if (key === 'year') return [new Date(now.getFullYear(), 0, 1), end];
-  const from = customFrom ? new Date(customFrom) : startOfDay(now);
-  const to = customTo ? new Date(new Date(customTo).getTime() + 86400000) : end;
+  const parseLocal = (v: string) => { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d); };
+  const from = customFrom ? parseLocal(customFrom) : startOfDay(now);
+  let to = end;
+  if (customTo) { to = parseLocal(customTo); to.setDate(to.getDate() + 1); }
+  if (to <= from) { to = new Date(from); to.setDate(to.getDate() + 1); }
   return [from, to];
 }
+const addDays = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 
 export function DashboardPage() {
   const { activeIndustry, activeIndustryTypeId } = useIndustryScope();
@@ -56,6 +59,12 @@ export function DashboardPage() {
   const [customTo, setCustomTo] = useState('');
   const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
+
+  const [rangeStart, rangeEnd] = useMemo(() => rangeBounds(range, customFrom, customTo), [range, customFrom, customTo]);
+  const rangeFromIso = rangeStart.toISOString();
+  const rangeToIso = rangeEnd.toISOString();
+  const rangeLabel = RANGES.find((r) => r.key === range)?.label ?? '';
+  const suffix = range === 'today' ? 'today' : range === 'custom' ? 'in range' : rangeLabel.toLowerCase();
 
   useEffect(() => {
     // Do not load the organisation-wide dashboard and then try to hide values
@@ -70,8 +79,9 @@ export function DashboardPage() {
     }
 
     const industryQuery = `?industryTypeId=${encodeURIComponent(activeIndustryTypeId)}`;
+    const dashboardQuery = `${industryQuery}&from=${encodeURIComponent(rangeFromIso)}&to=${encodeURIComponent(rangeToIso)}`;
     const load = () => void Promise.all([
-      api<{ data: Data }>(`/dashboard${industryQuery}`),
+      api<{ data: Data }>(`/dashboard${dashboardQuery}`),
       api<{ data: LiveVisit[] }>(`/field-visits/live${industryQuery}`),
       api<{ data: Lead[] }>(`/leads${industryQuery}`).catch(() => ({ data: [] })),
       api<{ data: ClientRecord[] }>(`/clients${industryQuery}`).catch(() => ({ data: [] })),
@@ -89,9 +99,7 @@ export function DashboardPage() {
     load();
     const timer = window.setInterval(load, 20000);
     return () => window.clearInterval(timer);
-  }, [activeIndustryTypeId]);
-
-  const [rangeStart, rangeEnd] = useMemo(() => rangeBounds(range, customFrom, customTo), [range, customFrom, customTo]);
+  }, [activeIndustryTypeId, rangeFromIso, rangeToIso]);
 
   // Trading pipeline snapshot for the dashboard's Trading section — reuses
   // the same margin math as TradingDealPage.tsx so the numbers always agree.
@@ -111,10 +119,13 @@ export function DashboardPage() {
 
   const rangeLeads = useMemo(() => extra.leads.filter((l) => inRange(l.created_at)), [extra.leads, rangeStart, rangeEnd]);
 
+  const rangeOrders = useMemo(() => extra.orders.filter((o) => inRange(o.created_at)), [extra.orders, rangeStart, rangeEnd]);
+  const rangeCalls = useMemo(() => extra.calls.filter((c) => inRange(c.started_at)), [extra.calls, rangeStart, rangeEnd]);
+
   const leadStats = (() => {
-    const total = extra.leads.length;
-    const converted = extra.leads.filter((l) => l.status === 'converted').length;
-    const lost = extra.leads.filter((l) => l.status === 'lost').length;
+    const total = rangeLeads.length;
+    const converted = rangeLeads.filter((l) => l.status === 'converted').length;
+    const lost = rangeLeads.filter((l) => l.status === 'lost').length;
     const open = total - converted - lost;
     const conversionRate = total ? Math.round((converted / total) * 100) : 0;
     return { total, open, converted, conversionRate };
@@ -174,11 +185,11 @@ export function DashboardPage() {
   })();
 
   const kpis: { label: string; value: string | number; note: string; icon: string }[] = [
-    { label: 'Visits today', value: data.visitsToday, note: `${data.completedVisitsToday} completed`, icon: '📍' },
+    { label: `Visits ${suffix}`, value: data.visitsToday, note: `${data.completedVisitsToday} completed`, icon: '📍' },
     { label: 'Active field visits', value: live.length, note: live.length ? 'GPS reporting active' : 'No one checked in', icon: '🛰️' },
-    { label: 'Orders today', value: data.ordersToday, note: money(data.salesToday), icon: '🧾' },
-    { label: 'Collections today', value: money(data.collectionsToday), note: 'Recorded receipts', icon: '💰' },
-    { label: 'Leads', value: leadStats.total, note: `${leadStats.open} open · ${leadStats.conversionRate}% converted`, icon: '🎯' },
+    { label: `Orders ${suffix}`, value: data.ordersToday, note: money(data.salesToday), icon: '🧾' },
+    { label: `Collections ${suffix}`, value: money(data.collectionsToday), note: 'Recorded receipts', icon: '💰' },
+    { label: `Leads ${suffix}`, value: leadStats.total, note: `${leadStats.open} open · ${leadStats.conversionRate}% converted`, icon: '🎯' },
     { label: 'Active clients', value: activeClients, note: `of ${extra.clients.length} total clients`, icon: '🏢' },
     { label: 'Follow-ups due', value: followUpStats.pending, note: `${followUpStats.overdue} overdue · ${followUpStats.dueToday} today`, icon: '⏰' },
     { label: 'Pending payments', value: money(pendingPayments), note: 'Outstanding across all orders', icon: '⚠️' },
@@ -186,7 +197,7 @@ export function DashboardPage() {
 
   const repPerformance = (() => {
     const byRep: Record<string, { name: string; orders: number; revenue: number }> = {};
-    extra.orders.forEach((o) => {
+    rangeOrders.forEach((o) => {
       const key = o.sales_representatives?.employee_code ?? 'unassigned';
       const name = o.sales_representatives?.user_profiles?.display_name ?? o.sales_representatives?.employee_code ?? 'Unassigned';
       if (!byRep[key]) byRep[key] = { name, orders: 0, revenue: 0 };
@@ -196,7 +207,7 @@ export function DashboardPage() {
     return Object.values(byRep).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
   })();
 
-  const callsToday = extra.calls.filter((c) => isToday(c.started_at));
+  const callsToday = rangeCalls;
   const callStats = { total: callsToday.length, inbound: callsToday.filter((c) => c.direction === 'inbound').length, outbound: callsToday.filter((c) => c.direction === 'outbound').length, missed: callsToday.filter((c) => c.status === 'missed' || c.status === 'no_answer').length };
 
   const leadBreakdown = (() => {
@@ -208,7 +219,7 @@ export function DashboardPage() {
       { key: 'unqualified', label: 'Unqualified', color: 'var(--text-faint)' },
       { key: 'lost', label: 'Lost', color: 'var(--red)' },
     ];
-    const counts = statuses.map((s) => ({ ...s, value: extra.leads.filter((l) => l.status === s.key).length }));
+    const counts = statuses.map((s) => ({ ...s, value: rangeLeads.filter((l) => l.status === s.key).length }));
     return { counts, max: Math.max(1, ...counts.map((c) => c.value)) };
   })();
 
@@ -220,16 +231,25 @@ export function DashboardPage() {
   }, [rangeLeads]);
 
   const revenueTrend = (() => {
-    const days: { label: string; value: number }[] = [];
-    for (let i = 6; i >= 0; i -= 1) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-      const dayEnd = new Date(dayStart);
-      dayEnd.setDate(dayEnd.getDate() + 1);
-      const value = extra.orders.filter((o) => { const c = new Date(o.created_at); return c >= dayStart && c < dayEnd; }).reduce((sum, o) => sum + Number(o.total_amount || 0), 0);
-      days.push({ label: dayStart.toLocaleDateString(undefined, { weekday: 'short' }), value });
+    const buckets: { label: string; start: Date; end: Date }[] = [];
+    const spanDays = Math.round((rangeEnd.getTime() - rangeStart.getTime()) / 86400000);
+    if (spanDays <= 31) {
+      // Daily bars. "Today" alone would be one bar, so show the last 7 days instead.
+      const first = range === 'today' ? addDays(rangeStart, -6) : rangeStart;
+      for (let d = new Date(first); d < rangeEnd; d = addDays(d, 1)) {
+        buckets.push({ label: d.toLocaleDateString(undefined, spanDays <= 7 || range === 'today' ? { weekday: 'short' } : { day: '2-digit', month: 'short' }), start: d, end: addDays(d, 1) });
+      }
+    } else {
+      // Monthly bars for quarter / year / long custom ranges.
+      for (let m = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1); m < rangeEnd; m = new Date(m.getFullYear(), m.getMonth() + 1, 1)) {
+        const next = new Date(m.getFullYear(), m.getMonth() + 1, 1);
+        buckets.push({ label: m.toLocaleDateString(undefined, { month: 'short' }), start: m < rangeStart ? rangeStart : m, end: next > rangeEnd ? rangeEnd : next });
+      }
     }
+    const days = buckets.map((b) => ({
+      label: b.label,
+      value: extra.orders.filter((o) => { const c = new Date(o.created_at); return c >= b.start && c < b.end; }).reduce((sum, o) => sum + Number(o.total_amount || 0), 0),
+    }));
     return { days, max: Math.max(1, ...days.map((d) => d.value)) };
   })();
 
@@ -328,7 +348,7 @@ export function DashboardPage() {
 
       <div className="chart-grid">
         <section className="ops-panel chart-panel">
-          <header><div><p className="eyebrow">Pipeline</p><h2>Leads by stage</h2></div></header>
+          <header><div><p className="eyebrow">{rangeLabel}</p><h2>Leads by stage</h2></div></header>
           <div className="bar-chart">
             {leadBreakdown.counts.map((c) => (
               <div className="bar-row" key={c.label}>
@@ -340,11 +360,11 @@ export function DashboardPage() {
           </div>
         </section>
         <section className="ops-panel chart-panel">
-          <header><div><p className="eyebrow">Last 7 days</p><h2>Revenue trend</h2></div></header>
+          <header><div><p className="eyebrow">{range === 'today' ? 'Last 7 days' : rangeLabel}</p><h2>Revenue trend</h2></div></header>
           <div className="trend-chart">
             {revenueTrend.days.map((d, index) => (
               <div className="trend-col" key={index}>
-                <span className="trend-value">{d.value ? money(d.value) : ''}</span>
+                <span className="trend-value">{d.value && revenueTrend.days.length <= 8 ? money(d.value) : ''}</span>
                 <div className="trend-bar" style={{ height: `${Math.max(4, (d.value / revenueTrend.max) * 100)}%` }} title={`${d.label}: ${money(d.value)}`} />
                 <span className="trend-label">{d.label}</span>
               </div>
@@ -352,7 +372,7 @@ export function DashboardPage() {
           </div>
         </section>
         <section className="ops-panel chart-panel">
-          <header><div><p className="eyebrow">{RANGES.find((r) => r.key === range)?.label}</p><h2>Lead source</h2></div></header>
+          <header><div><p className="eyebrow">{rangeLabel}</p><h2>Lead source</h2></div></header>
           {leadSourceBreakdown.total ? (
             <ul className="source-list">
               {leadSourceBreakdown.entries.map(([key, count]) => (
@@ -472,7 +492,7 @@ export function DashboardPage() {
 
       <div className="ops-grid">
         <section className="ops-panel">
-          <header><div><p className="eyebrow">Recent</p><h2>Latest field visits</h2></div></header>
+          <header><div><p className="eyebrow">{rangeLabel}</p><h2>Latest field visits</h2></div></header>
           {data.recentVisits.length ? (
             <div className="timeline">
               {data.recentVisits.map((visit) => (
@@ -487,14 +507,14 @@ export function DashboardPage() {
               ))}
             </div>
           ) : (
-            <div className="ops-empty"><strong>No visits recorded yet</strong><p>Field visit check-ins and check-outs will show up here as they happen.</p></div>
+            <div className="ops-empty"><strong>No visits in this date range</strong><p>Field visit check-ins and check-outs will show up here as they happen.</p></div>
           )}
         </section>
         <section className="sales-today ops-panel">
-          <p className="eyebrow">Today</p>
+          <p className="eyebrow">{rangeLabel}</p>
           <h2>{money(data.salesToday)}</h2>
-          <div><span>Orders today</span><b>{data.ordersToday}</b></div>
-          <div><span>Collections today</span><b>{money(data.collectionsToday)}</b></div>
+          <div><span>Orders {suffix}</span><b>{data.ordersToday}</b></div>
+          <div><span>Collections {suffix}</span><b>{money(data.collectionsToday)}</b></div>
           <div><span>Pending across all orders</span><b>{money(pendingPayments)}</b></div>
         </section>
       </div>
@@ -512,24 +532,24 @@ export function DashboardPage() {
               ))}
             </div>
           ) : (
-            <div className="ops-empty"><strong>No orders yet</strong><p>Rep performance ranks by total order value once orders come in.</p></div>
+            <div className="ops-empty"><strong>No orders in this date range</strong><p>Rep performance ranks by total order value for the selected period.</p></div>
           )}
         </section>
         <section className="ops-readiness">
           <p className="eyebrow">Health</p>
           <h2>Leads &amp; follow-ups</h2>
-          <div><span className={leadStats.total ? 'done' : ''}>{leadStats.total ? '✓' : '○'}</span><p><strong>Lead conversion</strong><small>{leadStats.converted} of {leadStats.total} leads converted ({leadStats.conversionRate}%)</small></p></div>
+          <div><span className={leadStats.total ? 'done' : ''}>{leadStats.total ? '✓' : '○'}</span><p><strong>Lead conversion</strong><small>{leadStats.converted} of {leadStats.total} leads converted {suffix} ({leadStats.conversionRate}%)</small></p></div>
           <div><span className={followUpStats.overdue === 0 && followUpStats.pending > 0 ? 'done' : ''}>{followUpStats.overdue === 0 ? '✓' : '○'}</span><p><strong>Follow-up discipline</strong><small>{followUpStats.overdue ? `${followUpStats.overdue} overdue follow-up(s) need attention` : `${followUpStats.pending} pending, none overdue`}</small></p></div>
           <div><span>○</span><p><strong>Sales target vs achievement</strong><small>Not available yet — connect a targets endpoint to track this here</small></p></div>
         </section>
       </div>
       <div className="ops-grid">
         <section className="ops-panel">
-          <header><div><p className="eyebrow">Support</p><h2>Calls today</h2></div></header>
+          <header><div><p className="eyebrow">Support</p><h2>Calls {suffix}</h2></div></header>
           <div className="ops-readiness" style={{ background: 'transparent', padding: 0 }}>
-            <div><span className={callStats.total ? 'done' : ''}>{callStats.total ? '✓' : '○'}</span><p><strong>{callStats.total} call{callStats.total === 1 ? '' : 's'} today</strong><small>{callStats.inbound} inbound · {callStats.outbound} outbound</small></p></div>
-            <div><span className={callStats.missed === 0 && callStats.total > 0 ? 'done' : ''}>{callStats.missed === 0 ? '✓' : '○'}</span><p><strong>Missed / unanswered</strong><small>{callStats.missed ? `${callStats.missed} call(s) need follow-up` : 'None missed today'}</small></p></div>
-            <div><span>○</span><p><strong>Recent callers</strong><small>{callsToday.slice(0, 3).map((c) => c.clients?.client_name ?? c.phone_number).join(', ') || 'No calls logged yet today'}</small></p></div>
+            <div><span className={callStats.total ? 'done' : ''}>{callStats.total ? '✓' : '○'}</span><p><strong>{callStats.total} call{callStats.total === 1 ? '' : 's'} {suffix}</strong><small>{callStats.inbound} inbound · {callStats.outbound} outbound</small></p></div>
+            <div><span className={callStats.missed === 0 && callStats.total > 0 ? 'done' : ''}>{callStats.missed === 0 ? '✓' : '○'}</span><p><strong>Missed / unanswered</strong><small>{callStats.missed ? `${callStats.missed} call(s) need follow-up` : `None missed ${suffix}`}</small></p></div>
+            <div><span>○</span><p><strong>Recent callers</strong><small>{callsToday.slice(0, 3).map((c) => c.clients?.client_name ?? c.phone_number).join(', ') || `No calls logged ${suffix}`}</small></p></div>
           </div>
         </section>
         <section className="ops-readiness">

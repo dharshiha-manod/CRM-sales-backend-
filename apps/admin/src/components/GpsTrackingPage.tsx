@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
-import { MapContainer, Marker, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { Circle, MapContainer, Marker, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import { api } from '../lib/api';
 import { useIndustry } from '../industry/IndustryContext';
 import { useIndustryScope } from '../industry/useIndustryScope';
@@ -15,7 +15,7 @@ import type { Coordinates } from '../gps/geo';
 import type { GpsMatchStatus, RepFieldStatus, TrackingPoint, TrackingSession } from '../gps/types';
 import './GpsTrackingPage.css';
 import './MasterDataPages.css';
-
+import { WorkDayRoutePanel } from './WorkDayRoutePanel';
 // Real GPS Verify & Tracking module. Every number on this page is computed
 // from live backend records (/field-visits, /field-visits/live, /clients,
 // /sales-representatives) — there is no seeded/mock data left. See
@@ -53,7 +53,13 @@ type LiveVisit = Visit & { latest_ping?: { latitude: number; longitude: number }
 
 type Representative = { id: string; employee_code: string; status: 'active' | 'inactive'; user_profiles?: { display_name?: string | null } | null };
 
-type Client = { id: string; client_code: string; client_name: string; address?: string | null; city?: string | null; latitude?: number | null; longitude?: number | null; industry_type_id?: string | null };
+type Client = { id: string; client_code: string; client_name: string; address?: string | null; city?: string | null; latitude?: number | null; longitude?: number | null; gps_radius_meters?: number | null; industry_type_id?: string | null };
+
+/** One rep's work day from GET /work-days/history (real phone GPS points). */
+type WorkDayHistoryRow = {
+  id: string; employeeCode: string; repName: string; date: string; startedAt: string; endedAt: string | null;
+  endReason: string | null; status: 'online' | 'signal_lost' | 'ended'; pointCount: number; distanceKm: number; mockedPoints: number;
+};
 
 type RepRow = {
   repId: string;
@@ -76,18 +82,26 @@ const STATUS_LABEL: Record<RepFieldStatus, string> = {
   offline: 'Offline',
 };
 
-type Tab = 'dashboard' | 'repList' | 'map' | 'trackingHistory' | 'clientLocations' | 'exceptions';
+type Tab = 'dashboard' | 'repList' | 'map' | 'routes' | 'trackingHistory' | 'clientLocations' | 'exceptions';
 const TABS: { key: Tab; label: string }[] = [
   { key: 'dashboard', label: 'Dashboard' },
   { key: 'repList', label: 'Sales Rep Tracking' },
   { key: 'map', label: 'Map View' },
+  { key: 'routes', label: 'Route Trail' },
   { key: 'trackingHistory', label: 'Tracking History' },
   { key: 'clientLocations', label: 'Client Locations' },
   { key: 'exceptions', label: 'Location Mismatches' },
 ];
 
 const timeLabel = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-const isToday = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
+// The business day is the Indian day (same as the server's BEAT_TIMEZONE), not the browser's / UTC day.
+const BUSINESS_TZ = 'Asia/Kolkata';
+const dayKey = (value: string | number | Date) => new Date(value).toLocaleDateString('en-CA', { timeZone: BUSINESS_TZ });
+const isToday = (iso: string) => dayKey(iso) === dayKey(Date.now());
+// Fewer than 4 decimals (about 11 m) means the coordinates were typed or looked up from an address, not taken from a GPS fix.
+const decimalsOf = (value: number) => (String(value).split('.')[1] ?? '').length;
+const isRoughCoordinate = (lat: number, lng: number) => decimalsOf(lat) < 4 || decimalsOf(lng) < 4;
+const CONFIRMED_AFTER_CHECKINS = 2;
 
 function pointCoords(lat?: number | null, lng?: number | null): Coordinates | null {
   return lat != null && lng != null ? { latitude: lat, longitude: lng } : null;
@@ -98,10 +112,18 @@ function clientCoordsFrom(byCode: Map<string, Client>, code?: string | null): Co
   return c && c.latitude != null && c.longitude != null ? { latitude: c.latitude, longitude: c.longitude } : null;
 }
 /** 'no_data' means one or both coordinates are missing, not that verification failed. */
-function matchStatus(point: Coordinates | null, client: Coordinates | null): { status: GpsMatchStatus; distance: number | null } {
+function matchStatus(point: Coordinates | null, client: Coordinates | null, radius: number = DEFAULT_VERIFICATION_RADIUS_METERS): { status: GpsMatchStatus; distance: number | null } {
   if (!point || !client) return { status: 'no_data', distance: null };
   const distance = distanceMeters(point, client);
-  return { status: distance <= DEFAULT_VERIFICATION_RADIUS_METERS ? 'verified' : 'mismatch', distance };
+  return { status: distance <= radius ? 'verified' : 'mismatch', distance };
+}
+const clientRadiusFrom = (byCode: Map<string, Client>, code?: string | null) => (code ? byCode.get(code)?.gps_radius_meters : null) ?? DEFAULT_VERIFICATION_RADIUS_METERS;
+/** What the server decided at check-in wins (it used the real Settings radius); otherwise work it out from the coordinates. */
+function visitMatchStatus(v: Visit, byCode: Map<string, Client>): GpsMatchStatus {
+  if (v.check_in_within_geofence === true) return 'verified';
+  if (v.check_in_within_geofence === false) return 'mismatch';
+  const code = v.clients?.client_code;
+  return matchStatus(pointCoords(v.check_in_lat, v.check_in_lng), clientCoordsFrom(byCode, code), clientRadiusFrom(byCode, code)).status;
 }
 function gpsBadgeKind(status: GpsMatchStatus): 'verified' | 'mismatch' | 'unavailable' {
   return status === 'no_data' ? 'unavailable' : status;
@@ -145,10 +167,11 @@ export function GpsTrackingPage() {
   const [live, setLive] = useState<LiveVisit[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [reps, setReps] = useState<Representative[]>([]);
+  const [workDays, setWorkDays] = useState<WorkDayHistoryRow[]>([]);
   const [error, setError] = useState('');
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [savingClientId, setSavingClientId] = useState<string | null>(null);
-  const [manualLocation, setManualLocation] = useState<{ clientId: string; address: string; latitude: string; longitude: string } | null>(null);
+  const [manualLocation, setManualLocation] = useState<{ clientId: string; address: string; latitude: string; longitude: string; radius: string } | null>(null);
   const [lookingUpClientId, setLookingUpClientId] = useState<string | null>(null);
   const lastGeocodeAt = useRef(0);
   const geocodeCache = useRef(new Map<string, { latitude: string; longitude: string }>());
@@ -156,16 +179,19 @@ export function GpsTrackingPage() {
 
   async function load() {
     try {
-      const [visitsRes, liveRes, clientsRes, repsRes] = await Promise.all([
+      const [visitsRes, liveRes, clientsRes, repsRes, historyRes] = await Promise.all([
         api<{ data: Visit[] }>('/field-visits'),
         api<{ data: LiveVisit[] }>('/field-visits/live'),
         api<{ data: Client[] }>('/clients'),
         api<{ data: Representative[] }>('/sales-representatives'),
+        // Real phone GPS distance per work day. If this call fails the page still works from visit data.
+        api<{ data: { rows: WorkDayHistoryRow[] } }>('/work-days/history?days=14').catch(() => null),
       ]);
       setVisits(visitsRes.data ?? []);
       setLive(liveRes.data ?? []);
       setClients(clientsRes.data ?? []);
       setReps(repsRes.data ?? []);
+      setWorkDays(historyRes?.data?.rows ?? []);
       setLastSynced(new Date());
       setError('');
     } catch (e) {
@@ -212,9 +238,17 @@ export function GpsTrackingPage() {
     return map;
   }, [scopedVisits]);
 
-  // Today's per-rep visit count and field-travel distance, built by walking
-  // each rep's check-in/check-out coordinates in order and summing the
-  // real Haversine distance between them.
+  // Today's real GPS distance per rep (phone points, GET /work-days/history). Used instead of the
+  // check-in-to-check-out straight-line estimate whenever the rep has a work day today.
+  const todayWorkKm = useMemo(() => {
+    const today = dayKey(Date.now());
+    const map = new Map<string, number>();
+    for (const wd of workDays) if (wd.date === today && wd.employeeCode) map.set(wd.employeeCode, (map.get(wd.employeeCode) ?? 0) + wd.distanceKm);
+    return map;
+  }, [workDays]);
+
+  // Today's per-rep visit count and field-travel distance. Distance = real GPS trail when the rep has a
+  // work day today, otherwise the straight-line distance between their check-in/check-out points.
   const { totalDistanceKm, repStats } = useMemo(() => {
     const byRep = new Map<string, { points: TrackingPoint[]; visitsToday: number }>();
     for (const v of [...todaysScopedVisits].sort((a, b) => a.check_in_time.localeCompare(b.check_in_time))) {
@@ -229,20 +263,26 @@ export function GpsTrackingPage() {
       byRep.set(code, entry);
     }
     const stats = new Map<string, { visitsToday: number; distanceKm: number }>();
-    let totalMeters = 0;
+    let totalKm = 0;
     for (const [code, entry] of byRep) {
-      const meters = routeDistanceMeters(entry.points);
-      totalMeters += meters;
-      stats.set(code, { visitsToday: entry.visitsToday, distanceKm: meters / 1000 });
+      const km = todayWorkKm.get(code) ?? routeDistanceMeters(entry.points) / 1000;
+      totalKm += km;
+      stats.set(code, { visitsToday: entry.visitsToday, distanceKm: km });
     }
-    return { totalDistanceKm: totalMeters / 1000, repStats: stats };
-  }, [todaysScopedVisits]);
+    // A rep who is travelling today but has not checked in anywhere yet still counts.
+    for (const [code, km] of todayWorkKm) {
+      if (byRep.has(code) || !scopedRepCodes.has(code)) continue;
+      totalKm += km;
+      stats.set(code, { visitsToday: 0, distanceKm: km });
+    }
+    return { totalDistanceKm: totalKm, repStats: stats };
+  }, [todaysScopedVisits, todayWorkKm, scopedRepCodes]);
 
   const verification = useMemo(() => {
     let verified = 0;
     let mismatch = 0;
     for (const v of todaysScopedVisits) {
-      const { status } = matchStatus(pointCoords(v.check_in_lat, v.check_in_lng), clientCoordsFrom(clientByCode, v.clients?.client_code));
+      const status = visitMatchStatus(v, clientByCode);
       if (status === 'verified') verified += 1;
       else if (status === 'mismatch') mismatch += 1;
     }
@@ -260,7 +300,7 @@ export function GpsTrackingPage() {
     if (liveVisit) {
       const point = pointCoords(liveVisit.latest_ping?.latitude ?? liveVisit.check_in_lat, liveVisit.latest_ping?.longitude ?? liveVisit.check_in_lng);
       const client = clientCoordsFrom(clientByCode, liveVisit.clients?.client_code);
-      const { status, distance } = matchStatus(point, client);
+      const { status, distance } = matchStatus(point, client, clientRadiusFrom(clientByCode, liveVisit.clients?.client_code));
       return {
         repId: rep.employee_code,
         repName: name,
@@ -310,20 +350,50 @@ export function GpsTrackingPage() {
     ? checkInVerifications.find(({ visit }) => visit.clients?.client_code === selectedClient.client_code) ?? null
     : null, [selectedClient, checkInVerifications]);
 
-  // Tracking History: group each rep's real visits by calendar day and
-  // connect their actual check-in/check-out coordinates — a real path
-  // through real points, not a simulated GPS trail.
+  // Tracking History: one row per real work day (distance, start and end come from the phone's GPS trail, so
+  // they match Route Trail). Visit counts and Verified / Mismatch come from the visits done during that day.
+  // A day with visits but no work day (older data) falls back to a check-in/check-out based row.
   const sessions: TrackingSession[] = useMemo(() => {
     const byKey = new Map<string, Visit[]>();
+    const covered = new Set<string>();
+    const workSessions: TrackingSession[] = [];
+    for (const wd of workDays) {
+      if (!scopedRepCodes.has(wd.employeeCode)) continue;
+      const from = Date.parse(wd.startedAt) - 10 * 60000;
+      const to = (wd.endedAt ? Date.parse(wd.endedAt) : Date.now()) + 10 * 60000;
+      const dayVisits = scopedVisits
+        .filter((v) => v.sales_representatives?.employee_code === wd.employeeCode && Date.parse(v.check_in_time) >= from && Date.parse(v.check_in_time) <= to)
+        .sort((a, b) => a.check_in_time.localeCompare(b.check_in_time));
+      const points: TrackingPoint[] = [];
+      let verifiedCount = 0;
+      let mismatchCount = 0;
+      for (const v of dayVisits) {
+        const inPoint = pointCoords(v.check_in_lat, v.check_in_lng);
+        if (inPoint) points.push({ ...inPoint, timestamp: v.check_in_time });
+        const outPoint = pointCoords(v.check_out_lat, v.check_out_lng);
+        if (outPoint && v.check_out_time) points.push({ ...outPoint, timestamp: v.check_out_time });
+        const status = visitMatchStatus(v, clientByCode);
+        if (status === 'verified') verifiedCount += 1;
+        else if (status === 'mismatch') mismatchCount += 1;
+      }
+      covered.add(`${wd.employeeCode}|${wd.date}`);
+      workSessions.push({
+        id: wd.id, repId: wd.employeeCode, repName: wd.repName, date: wd.date,
+        startTime: wd.startedAt, endTime: wd.endedAt, distanceKm: wd.distanceKm, points,
+        visitsCount: dayVisits.length, verifiedCount, mismatchCount, trackingActive: !wd.endedAt,
+      });
+    }
     for (const v of scopedVisits) {
       const code = v.sales_representatives?.employee_code;
       if (!code) continue;
-      const key = `${code}|${v.check_in_time.slice(0, 10)}`;
+      const date = dayKey(v.check_in_time);
+      if (covered.has(`${code}|${date}`)) continue;
+      const key = `${code}|${date}`;
       const list = byKey.get(key) ?? [];
       list.push(v);
       byKey.set(key, list);
     }
-    const result: TrackingSession[] = [];
+    const result: TrackingSession[] = [...workSessions];
     for (const [key, group] of byKey) {
       const [code, date] = key.split('|');
       const sorted = [...group].sort((a, b) => a.check_in_time.localeCompare(b.check_in_time));
@@ -337,7 +407,7 @@ export function GpsTrackingPage() {
         if (inPoint) points.push({ ...inPoint, timestamp: v.check_in_time });
         const outPoint = pointCoords(v.check_out_lat, v.check_out_lng);
         if (outPoint && v.check_out_time) points.push({ ...outPoint, timestamp: v.check_out_time });
-        const { status } = matchStatus(inPoint, clientCoordsFrom(clientByCode, v.clients?.client_code));
+        const status = visitMatchStatus(v, clientByCode);
         if (status === 'verified') verifiedCount += 1;
         else if (status === 'mismatch') mismatchCount += 1;
       }
@@ -357,7 +427,17 @@ export function GpsTrackingPage() {
       });
     }
     return result.sort((a, b) => b.startTime.localeCompare(a.startTime));
-  }, [scopedVisits, clientByCode]);
+  }, [scopedVisits, clientByCode, workDays, scopedRepCodes]);
+
+  // Visits that confirmed each client's saved location (inside the geofence). Two or more = location is trustworthy.
+  const confirmedVisitCount = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const v of scopedVisits) {
+      const code = v.clients?.client_code;
+      if (code && v.check_in_within_geofence === true) map.set(code, (map.get(code) ?? 0) + 1);
+    }
+    return map;
+  }, [scopedVisits]);
 
   // Location Mismatches: today's persisted outside-geofence check-ins.
   const mismatches = useMemo(() => checkInVerifications
@@ -379,19 +459,18 @@ export function GpsTrackingPage() {
     });
   }
 
-  async function setClientLocation(clientId: string) {
-    if (!navigator.geolocation) {
-      setError('Location services are not available in this browser.');
-      return;
-    }
-    setSavingClientId(clientId);
+  // The old "Set Client Location" button saved the ADMIN's own laptop/phone position, which is the office, not the client.
+  // The correct place is learned from the rep's first good-GPS check-in at the client. Reset clears a wrong location
+  // so the next good check-in by an assigned rep saves the right one.
+  async function resetClientLocation(client: Client) {
+    if (!window.confirm(`Clear the saved location of ${client.client_name}? The next good-GPS check-in by an assigned rep will save the correct one.`)) return;
+    setSavingClientId(client.id);
     try {
-      const position = await new Promise<GeolocationPosition>((resolve, reject) =>
-        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 20000 }));
-      await api(`/clients/${clientId}`, { method: 'PATCH', body: JSON.stringify({ latitude: position.coords.latitude, longitude: position.coords.longitude }) });
+      await api(`/clients/${client.id}`, { method: 'PATCH', body: JSON.stringify({ latitude: null, longitude: null }) });
+      setError('');
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not update client location.');
+      setError(e instanceof Error ? e.message : 'Could not reset client location.');
     } finally {
       setSavingClientId(null);
     }
@@ -412,6 +491,7 @@ export function GpsTrackingPage() {
       address: combinedAddress,
       latitude: client.latitude?.toString() ?? '',
       longitude: client.longitude?.toString() ?? '',
+      radius: client.gps_radius_meters?.toString() ?? '',
     });
   }
 
@@ -472,9 +552,16 @@ export function GpsTrackingPage() {
       return;
     }
 
+    const radiusText = manualLocation.radius.trim();
+    const radius = radiusText === '' ? null : Number(radiusText);
+    if (radius !== null && (!Number.isInteger(radius) || radius < 10 || radius > 10000)) {
+      setError('Geofence radius must be a whole number from 10 to 10000 metres (or leave it empty to use the Settings radius).');
+      return;
+    }
+
     setSavingClientId(manualLocation.clientId);
     try {
-      await api(`/clients/${manualLocation.clientId}`, { method: 'PATCH', body: JSON.stringify({ latitude, longitude }) });
+      await api(`/clients/${manualLocation.clientId}`, { method: 'PATCH', body: JSON.stringify({ latitude, longitude, ...(radius !== null ? { gpsRadiusMeters: radius } : {}) }) });
       setManualLocation(null);
       await load();
     } catch (e) {
@@ -596,7 +683,7 @@ export function GpsTrackingPage() {
                 <span className="gps-badge" data-kind="verified">Client location</span>
                 <dl>
                   <dt>Address</dt><dd>{selectedClient.address ?? selectedClient.city ?? 'Not recorded'}</dd>
-                  <dt>Coordinates</dt><dd>{selectedClient.latitude != null ? `${selectedClient.latitude.toFixed(4)}, ${selectedClient.longitude!.toFixed(4)}` : 'No GPS data'}</dd>
+                  <dt>Coordinates</dt><dd>{selectedClient.latitude != null ? `${selectedClient.latitude.toFixed(5)}, ${selectedClient.longitude!.toFixed(5)}` : 'No GPS data'}</dd>
                 </dl>
                 <section aria-label="Most recent rep check-in">
                   <h4>Most recent rep check-in</h4>
@@ -633,7 +720,7 @@ export function GpsTrackingPage() {
                   {sessions.map((s) => (
                     <tr key={s.id} onClick={() => setSelectedSession(s)} style={{ cursor: 'pointer' }}>
                       <td><strong>{s.repName}</strong></td>
-                      <td>{new Date(s.date).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                      <td>{new Date(s.date).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' })}</td>
                       <td>{timeLabel(s.startTime)} – {s.endTime ? timeLabel(s.endTime) : <span className="gps-status-pill" data-status="on_field">Tracking Active</span>}</td>
                       <td style={{ textAlign: 'right' }}>{s.distanceKm.toFixed(1)} km</td>
                       <td>{s.visitsCount}</td>
@@ -655,7 +742,7 @@ export function GpsTrackingPage() {
             <button type="button" className="secondary-action" onClick={() => setSelectedSession(null)}>Back to tracking history</button>
           </div>
           <div className="gps-route-summary">
-            <div><span>Date</span><strong>{new Date(selectedSession.date).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })}</strong></div>
+            <div><span>Date</span><strong>{new Date(selectedSession.date).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' })}</strong></div>
             <div><span>Start</span><strong>{timeLabel(selectedSession.startTime)}</strong></div>
             <div><span>End</span><strong>{selectedSession.endTime ? timeLabel(selectedSession.endTime) : 'In progress'}</strong></div>
             <div><span>Total Distance</span><strong>{selectedSession.distanceKm.toFixed(1)} km</strong></div>
@@ -684,16 +771,24 @@ export function GpsTrackingPage() {
                   <Fragment key={c.id}>
                   <tr>
                     <td><strong>{c.client_name}</strong></td>
-                    <td>{c.latitude != null ? `${c.latitude.toFixed(4)}, ${c.longitude!.toFixed(4)}` : '—'}</td>
+                    <td>{c.latitude != null ? `${c.latitude.toFixed(5)}, ${c.longitude!.toFixed(5)}` : '—'}{c.latitude != null && <div className="wdr-sub">Radius {c.gps_radius_meters ?? 'Settings default'}{c.gps_radius_meters ? ' m' : ''}</div>}</td>
                     <td>{c.address ?? c.city ?? '—'}</td>
-                    <td>{c.latitude != null ? <span className="gps-badge" data-kind="verified">Set</span> : <span className="gps-badge" data-kind="pending">Not set</span>}</td>
+                    <td>{(() => {
+                      if (c.latitude == null || c.longitude == null) return <span className="gps-badge" data-kind="pending" title="Saved automatically on the first good-GPS check-in by an assigned rep.">Not set · waits for first check-in</span>;
+                      const confirmed = confirmedVisitCount.get(c.client_code) ?? 0;
+                      if (isRoughCoordinate(c.latitude, c.longitude)) return <span className="gps-badge" data-kind="mismatch" title="Typed or looked-up coordinates are only approximate. Reset it so a rep's GPS check-in saves the exact spot.">Rough · reset recommended</span>;
+                      if (confirmed >= CONFIRMED_AFTER_CHECKINS) return <span className="gps-badge" data-kind="verified">Confirmed · {confirmed} visits</span>;
+                      return <span className="gps-badge" data-kind="pending" title="Saved, but fewer than 2 rep check-ins have matched it yet.">Set · {confirmed}/{CONFIRMED_AFTER_CHECKINS} confirmed</span>;
+                    })()}</td>
                     <td>
-                      <button type="button" className="text-action" disabled={savingClientId === c.id} onClick={() => void setClientLocation(c.id)}>
-                        {savingClientId === c.id ? 'Getting location…' : c.latitude != null ? 'Update location' : 'Set Client Location'}
-                      </button>
                       <button type="button" className="text-action" disabled={savingClientId === c.id} onClick={() => startManualLocation(c)}>
                         Enter coordinates
                       </button>
+                      {c.latitude != null && (
+                        <button type="button" className="text-action" disabled={savingClientId === c.id} onClick={() => void resetClientLocation(c)}>
+                          {savingClientId === c.id ? 'Working…' : 'Reset location'}
+                        </button>
+                      )}
                     </td>
                   </tr>
                   {manualLocation?.clientId === c.id && (
@@ -706,6 +801,7 @@ export function GpsTrackingPage() {
                           </button>
                           <label>Latitude<input type="number" step="any" min="-90" max="90" value={manualLocation.latitude} onChange={(event) => setManualLocation((current) => current ? { ...current, latitude: event.target.value } : current)} required /></label>
                           <label>Longitude<input type="number" step="any" min="-180" max="180" value={manualLocation.longitude} onChange={(event) => setManualLocation((current) => current ? { ...current, longitude: event.target.value } : current)} required /></label>
+                          <label>Geofence radius (m)<input type="number" step="1" min="10" max="10000" value={manualLocation.radius} onChange={(event) => setManualLocation((current) => current ? { ...current, radius: event.target.value } : current)} placeholder="Settings default" /></label>
                           <button type="submit" disabled={savingClientId === c.id}>{savingClientId === c.id ? 'Saving...' : 'Save coordinates'}</button>
                           <button type="button" className="secondary-action" disabled={savingClientId === c.id} onClick={() => setManualLocation(null)}>Cancel</button>
                           {error && <p className="gps-lookup-error" role="alert">{error}</p>}
@@ -718,9 +814,11 @@ export function GpsTrackingPage() {
               </tbody>
             </table>
           </div>
-          <p className="text-faint-inline" style={{ marginTop: '.6rem' }}>Use device GPS, enter coordinates, or look up a business address. Confirm the returned pin before saving. Address lookup powered by <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>.</p>
+          <p className="text-faint-inline" style={{ marginTop: '.6rem' }}>Best way: do nothing. The first rep check-in with a good GPS fix saves the exact client location automatically, and it shows Confirmed after 2 matching visits. Typed or address-lookup coordinates are only approximate, so use them only as a temporary start (a wrong or rough one can be cleared with Reset location). Address lookup powered by <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>.</p>
         </section>
       )}
+
+         {tab === 'routes' && <WorkDayRoutePanel />}
 
       {tab === 'exceptions' && (
         <section className="page-panel">
@@ -847,6 +945,9 @@ function MapCanvas({ reps, clientLocations, selectedRepId, selectedClientId, onS
             </Marker>
           );
         })}
+        {clientLocations.filter((c) => c.id === selectedClientId && c.latitude != null).map((c) => (
+          <Circle key={`radius-${c.id}`} center={[c.latitude as number, c.longitude as number]} radius={c.gps_radius_meters ?? DEFAULT_VERIFICATION_RADIUS_METERS} pathOptions={{ color: '#2563eb', weight: 1, fillOpacity: 0.08 }} />
+        ))}
         {reps.map((rep) => {
           const kind = rep.gpsStatus === 'mismatch' ? 'mismatch' : 'verified';
           return (
