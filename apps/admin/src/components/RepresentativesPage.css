@@ -64,3 +64,8 @@
 .rp-add-btn:hover { background: var(--paper, #f1f1ef); }
 .rp-target-footer { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-top: .9rem; }
 .rp-form-actions .quiet-button { padding: .5rem .9rem; }
+
+/* KPI cards are buttons now: same look, but clickable */
+.rep-kpi-grid button.kpi-card { font: inherit; color: inherit; text-align: left; width: 100%; cursor: pointer; appearance: none; -webkit-appearance: none; }
+.rep-kpi-grid button.kpi-card:focus-visible { outline: 2px solid var(--accent-blue, #2563eb); outline-offset: 2px; }
+.rep-kpi-grid .kpi-card[data-active='true'] { box-shadow: 0 0 0 2px rgba(16, 21, 31, .14), 0 6px 16px rgba(16, 21, 31, .08); }

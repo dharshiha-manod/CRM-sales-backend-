@@ -4,7 +4,19 @@ import { supabaseAdmin } from '../lib/supabase.js';
 import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 import { collectionBase, orderBase } from '../lib/fmcg-market.js';
 
-const todayStart = () => { const date = new Date(); date.setHours(0, 0, 0, 0); return date.toISOString(); };
+const todayStart = () => { const date = new Date(); date.setHours(0, 0, 0, 0); return date; };
+// Dashboard date range: the admin sends ?from=<ISO>&to=<ISO> (from inclusive, to exclusive).
+// Missing or invalid values fall back to "today".
+const parseRange = (fromRaw: unknown, toRaw: unknown): { start: string; end: string } => {
+  const from = typeof fromRaw === 'string' ? new Date(fromRaw) : null;
+  const to = typeof toRaw === 'string' ? new Date(toRaw) : null;
+  const validFrom = from && !Number.isNaN(from.getTime()) ? from : null;
+  const validTo = to && !Number.isNaN(to.getTime()) ? to : null;
+  const start = validFrom ?? todayStart();
+  let end = validTo;
+  if (!end || end <= start) { end = new Date(start); end.setDate(end.getDate() + 1); }
+  return { start: start.toISOString(), end: end.toISOString() };
+};
 const total = (result: { count: number | null }) => result.count ?? 0;
 
 export const dashboard: RequestHandler = async (req, res) => {
@@ -12,7 +24,7 @@ export const dashboard: RequestHandler = async (req, res) => {
   if (!organizationId) throw new AppError(400, 'ORGANIZATION_CONTEXT_REQUIRED', 'x-organization-id is required');
   const requested = typeof req.query.industryTypeId === 'string' ? req.query.industryTypeId : undefined;
   const industryTypeId = resolveIndustryTypeId(req.industryScope!, requested);
-  const start = todayStart();
+  const { start, end } = parseRange(req.query.from, req.query.to);
 
   let clientsQuery = supabaseAdmin.from('clients').select('*', { count: 'exact', head: true }).eq('organization_id', organizationId);
   if (industryTypeId) clientsQuery = clientsQuery.eq('industry_type_id', industryTypeId);
@@ -23,19 +35,19 @@ export const dashboard: RequestHandler = async (req, res) => {
   let activeRepsQuery = supabaseAdmin.from('sales_representatives').select(industryTypeId ? '*, sales_representative_industry_types!inner(industry_type_id)' : '*', { count: 'exact', head: true }).eq('organization_id', organizationId).eq('status', 'active');
   if (industryTypeId) activeRepsQuery = activeRepsQuery.eq('sales_representative_industry_types.industry_type_id', industryTypeId);
 
-  let visitsQuery = supabaseAdmin.from('field_visits').select(industryTypeId ? '*, clients!inner(industry_type_id)' : '*', { count: 'exact', head: true }).eq('organization_id', organizationId).gte('check_in_time', start);
+  let visitsQuery = supabaseAdmin.from('field_visits').select(industryTypeId ? '*, clients!inner(industry_type_id)' : '*', { count: 'exact', head: true }).eq('organization_id', organizationId).gte('check_in_time', start).lt('check_in_time', end);
   if (industryTypeId) visitsQuery = visitsQuery.eq('clients.industry_type_id', industryTypeId);
 
-  let completedVisitsQuery = supabaseAdmin.from('field_visits').select(industryTypeId ? '*, clients!inner(industry_type_id)' : '*', { count: 'exact', head: true }).eq('organization_id', organizationId).eq('status', 'checked_out').gte('check_in_time', start);
+  let completedVisitsQuery = supabaseAdmin.from('field_visits').select(industryTypeId ? '*, clients!inner(industry_type_id)' : '*', { count: 'exact', head: true }).eq('organization_id', organizationId).eq('status', 'checked_out').gte('check_in_time', start).lt('check_in_time', end);
   if (industryTypeId) completedVisitsQuery = completedVisitsQuery.eq('clients.industry_type_id', industryTypeId);
 
-  let ordersQuery = supabaseAdmin.from('sale_orders').select(industryTypeId ? 'id, total_amount, base_total, clients!inner(industry_type_id)' : 'id, total_amount, base_total').eq('organization_id', organizationId).gte('created_at', start);
+  let ordersQuery = supabaseAdmin.from('sale_orders').select(industryTypeId ? 'id, total_amount, base_total, clients!inner(industry_type_id)' : 'id, total_amount, base_total').eq('organization_id', organizationId).gte('created_at', start).lt('created_at', end);
   if (industryTypeId) ordersQuery = ordersQuery.eq('clients.industry_type_id', industryTypeId);
 
-  let collectionsQuery = supabaseAdmin.from('sales_collections').select(industryTypeId ? 'id, amount, sale_orders(exchange_rate), clients!inner(industry_type_id)' : 'id, amount, sale_orders(exchange_rate)').eq('organization_id', organizationId).gte('collected_at', start);
+  let collectionsQuery = supabaseAdmin.from('sales_collections').select(industryTypeId ? 'id, amount, sale_orders(exchange_rate), clients!inner(industry_type_id)' : 'id, amount, sale_orders(exchange_rate)').eq('organization_id', organizationId).gte('collected_at', start).lt('collected_at', end);
   if (industryTypeId) collectionsQuery = collectionsQuery.eq('clients.industry_type_id', industryTypeId);
 
-  let recentVisitsQuery = supabaseAdmin.from('field_visits').select(industryTypeId ? 'id, status, check_in_time, outcome, clients!inner(client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))' : 'id, status, check_in_time, outcome, clients(client_name), sales_representatives(employee_code, user_profiles(display_name))').eq('organization_id', organizationId).order('check_in_time', { ascending: false }).limit(8);
+  let recentVisitsQuery = supabaseAdmin.from('field_visits').select(industryTypeId ? 'id, status, check_in_time, outcome, clients!inner(client_name, industry_type_id), sales_representatives(employee_code, user_profiles(display_name))' : 'id, status, check_in_time, outcome, clients(client_name), sales_representatives(employee_code, user_profiles(display_name))').eq('organization_id', organizationId).gte('check_in_time', start).lt('check_in_time', end).order('check_in_time', { ascending: false }).limit(8);
   if (industryTypeId) recentVisitsQuery = recentVisitsQuery.eq('clients.industry_type_id', industryTypeId);
 
   const [clients, reps, activeReps, visits, completedVisits, orders, collections, recentVisits] = await Promise.all([

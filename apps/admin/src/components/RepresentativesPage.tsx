@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { useIndustryScope } from '../industry/useIndustryScope';
 import { targetTypesForIndustry, formatTargetValue, monthRange, customPeriodLabel, TARGET_TYPE_LABELS } from '../lib/targetTypes';
+import { KpiDetailModal } from './KpiDetailModal';
 import './MasterDataPages.css';
 import './RepresentativesPage.css';
 
@@ -20,11 +21,11 @@ function initialsOf(name: string) { return name.split(/\s+/).filter(Boolean).sli
 // Dashboard data — reuses existing endpoints (/clients, /field-visits, /orders,
 // /collections, /follow-ups) and matches rows to this rep via the nested
 // sales_representatives.employee_code, since none of these types expose a raw rep FK.
-type RepMatch = { sales_representatives?: { employee_code?: string } | null };
+type RepMatch = { sales_representatives?: { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null };
 type RepClient = { id: string; client_name: string; client_code?: string | null; city?: string | null; sales_representative_client_assignments?: { status?: string; sales_representatives?: { employee_code?: string } | null }[] };
-type RepVisit = RepMatch & { id: string; check_in_time: string; check_out_time?: string | null };
-type RepOrder = RepMatch & { id: string; order_number: string; status: string; total_amount: number; created_at: string };
-type RepCollection = RepMatch & { id: string; amount: number; collected_at: string };
+type RepVisit = RepMatch & { id: string; check_in_time: string; check_out_time?: string | null; status?: string; outcome?: string | null; unlisted_client_name?: string | null; clients?: { client_name?: string | null; client_code?: string | null } | null };
+type RepOrder = RepMatch & { id: string; order_number: string; status: string; total_amount: number; created_at: string; clients?: { client_name?: string | null } | null };
+type RepCollection = RepMatch & { id: string; amount: number; collected_at: string; clients?: { client_name?: string | null } | null; sale_orders?: { order_number?: string | null } | null };
 type RepFollowUp = RepMatch & { id: string; title: string; status: string; due_at: string };
 type RepDashboard = { clients: RepClient[]; visits: RepVisit[]; orders: RepOrder[]; collections: RepCollection[]; followUps: RepFollowUp[] };
 const blankDashboard: RepDashboard = { clients: [], visits: [], orders: [], collections: [], followUps: [] };
@@ -64,6 +65,7 @@ export function RepresentativesPage() {
   const [targetMsg, setTargetMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [targetSaving, setTargetSaving] = useState(false);
   const [showTargetForm, setShowTargetForm] = useState(false);
+  const [kpiView, setKpiView] = useState<null | 'visits' | 'orders' | 'collections'>(null);
   const [menuFor, setMenuFor] = useState<{ id: string; top: number; left: number } | null>(null);
 
   // List-wide summary rows(all clients/visits/orders/collections), scoped to
@@ -95,6 +97,17 @@ export function RepresentativesPage() {
     return map;
   }, [items, scopedClients, allVisits, allOrders, allCollections]);
 
+  // The records behind the Visits / Orders / Collections Today cards. Same reps and same "today" rule as
+  // summaryByCode, so the popup rows always add up to the number on the card.
+  const repCodes = useMemo(() => new Set(items.map((item) => item.employee_code)), [items]);
+  const ofListedRep = (row: RepMatch) => { const code = row.sales_representatives?.employee_code; return Boolean(code && repCodes.has(code)); };
+  const byNewest = <T,>(rows: T[], when: (row: T) => string) => [...rows].sort((a, b) => new Date(when(b)).getTime() - new Date(when(a)).getTime());
+  const todayVisitRows = useMemo(() => byNewest(allVisits.filter((v) => ofListedRep(v) && isToday(v.check_in_time)), (v) => v.check_in_time), [allVisits, repCodes]); // eslint-disable-line react-hooks/exhaustive-deps
+  const todayOrderRows = useMemo(() => byNewest(allOrders.filter((o) => ofListedRep(o) && isToday(o.created_at)), (o) => o.created_at), [allOrders, repCodes]); // eslint-disable-line react-hooks/exhaustive-deps
+  const todayCollectionRows = useMemo(() => byNewest(allCollections.filter((c) => ofListedRep(c) && isToday(c.collected_at)), (c) => c.collected_at), [allCollections, repCodes]); // eslint-disable-line react-hooks/exhaustive-deps
+  const repLabel = (row: RepMatch) => row.sales_representatives?.user_profiles?.display_name ?? row.sales_representatives?.employee_code ?? '—';
+  const timeOf = (iso?: string | null) => (iso ? new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—');
+
   const filtered = items.filter((item) => {
     if (status !== 'all' && item.status !== status) return false;
     if (designationFilter !== 'all' && (item.designation ?? '') !== designationFilter) return false;
@@ -109,6 +122,14 @@ export function RepresentativesPage() {
 
   const filtersActive = status !== 'all' || designationFilter !== 'all' || search.trim() !== '';
   const clearFilters = () => { setStatus('all'); setDesignationFilter('all'); setSearch(''); };
+
+  // Total / Active / Inactive cards filter the table below; the "today" cards open the actual records.
+  function showRepsBy(next: 'all' | Representative['status']) {
+    setStatus(next); setDesignationFilter('all'); setSearch('');
+    setKpiView(null);
+    window.setTimeout(() => document.getElementById('rep-table')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  }
+  const noOtherFilter = designationFilter === 'all' && search.trim() === '';
 
   const totalReps = items.length;
   const activeReps = items.filter((i) => i.status === 'active').length;
@@ -254,15 +275,15 @@ export function RepresentativesPage() {
       </div>
 
           <div className="kpi-grid rep-kpi-grid">
-        <div className="kpi-card" data-tone="ink"><div className="kpi-icon kpi-icon-ink">◈</div><div><span>Total Representatives</span><strong>{totalReps}</strong></div></div>
-        <div className="kpi-card" data-tone="green"><div className="kpi-icon kpi-icon-green">✓</div><div><span>Active</span><strong>{activeReps}</strong></div></div>
-        <div className="kpi-card" data-tone="red"><div className="kpi-icon kpi-icon-red">⊘</div><div><span>Inactive</span><strong>{inactiveReps}</strong></div></div>
-        <div className="kpi-card" data-tone="blue"><div className="kpi-icon kpi-icon-blue">◔</div><div><span>Visits Today</span><strong>{visitsToday}</strong></div></div>
-        <div className="kpi-card" data-tone="amber"><div className="kpi-icon kpi-icon-amber">▤</div><div><span>Orders Today</span><strong>{ordersToday}</strong></div></div>
-        <div className="kpi-card" data-tone="green"><div className="kpi-icon kpi-icon-green">₹</div><div><span>Collections Today</span><strong>{money(collectionsToday)}</strong></div></div>
+        <button type="button" className="kpi-card" data-tone="ink" data-active={status === 'all' && noOtherFilter} onClick={() => showRepsBy('all')} title="Show all representatives"><div className="kpi-icon kpi-icon-ink">◈</div><div><span>Total Representatives</span><strong>{totalReps}</strong></div></button>
+        <button type="button" className="kpi-card" data-tone="green" data-active={status === 'active' && noOtherFilter} onClick={() => showRepsBy('active')} title="Show active representatives"><div className="kpi-icon kpi-icon-green">✓</div><div><span>Active</span><strong>{activeReps}</strong></div></button>
+        <button type="button" className="kpi-card" data-tone="red" data-active={status === 'inactive' && noOtherFilter} onClick={() => showRepsBy('inactive')} title="Show inactive representatives"><div className="kpi-icon kpi-icon-red">⊘</div><div><span>Inactive</span><strong>{inactiveReps}</strong></div></button>
+        <button type="button" className="kpi-card" data-tone="blue" data-active={kpiView === 'visits'} onClick={() => setKpiView('visits')} title="See today's visits"><div className="kpi-icon kpi-icon-blue">◔</div><div><span>Visits Today</span><strong>{visitsToday}</strong></div></button>
+        <button type="button" className="kpi-card" data-tone="amber" data-active={kpiView === 'orders'} onClick={() => setKpiView('orders')} title="See today's orders"><div className="kpi-icon kpi-icon-amber">▤</div><div><span>Orders Today</span><strong>{ordersToday}</strong></div></button>
+        <button type="button" className="kpi-card" data-tone="green" data-active={kpiView === 'collections'} onClick={() => setKpiView('collections')} title="See today's collections"><div className="kpi-icon kpi-icon-green">₹</div><div><span>Collections Today</span><strong>{money(collectionsToday)}</strong></div></button>
       </div>
 
-      <div className="master-toolbar">
+      <div className="master-toolbar" id="rep-table">
         <div className="master-search">
           <input value={search} placeholder="Search name or employee code" onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void load(); }} />
           <select value={designationFilter} onChange={(event) => setDesignationFilter(event.target.value)}>
@@ -648,6 +669,58 @@ export function RepresentativesPage() {
           </div>
         );
       })()}
+
+      {kpiView === 'visits' && (
+        <KpiDetailModal
+          eyebrow="VISITS TODAY"
+          title="Today's field visits"
+          subtitle={`${todayVisitRows.length} visit(s) today · ${todayVisitRows.filter((v) => v.check_out_time).length} completed`}
+          columns={['Representative', 'Client', 'Check-in', 'Check-out', 'Status', 'Outcome']}
+          rows={todayVisitRows.map((v) => ({
+            id: v.id,
+            cells: [
+              repLabel(v),
+              v.clients?.client_name ?? v.unlisted_client_name ?? '—',
+              timeOf(v.check_in_time),
+              timeOf(v.check_out_time),
+              v.check_out_time ? <span className="status-badge status-completed">Completed</span> : <span className="status-badge status-pending">Checked in</span>,
+              v.outcome ? v.outcome.replaceAll('_', ' ') : '—',
+            ],
+          }))}
+          emptyText="No visits have been checked in today."
+          onClose={() => setKpiView(null)}
+        />
+      )}
+
+      {kpiView === 'orders' && (
+        <KpiDetailModal
+          eyebrow="ORDERS TODAY"
+          title="Today's orders"
+          subtitle={`${todayOrderRows.length} order(s) · ${money(todayOrderRows.reduce((sum, o) => sum + Number(o.total_amount ?? 0), 0))} total`}
+          columns={['Order no.', 'Representative', 'Client', 'Amount', 'Status', 'Time']}
+          rows={todayOrderRows.map((o) => ({
+            id: o.id,
+            cells: [o.order_number, repLabel(o), o.clients?.client_name ?? '—', money(Number(o.total_amount ?? 0)), o.status.replaceAll('_', ' '), timeOf(o.created_at)],
+          }))}
+          emptyText="No orders have been taken today."
+          onClose={() => setKpiView(null)}
+        />
+      )}
+
+      {kpiView === 'collections' && (
+        <KpiDetailModal
+          eyebrow="COLLECTIONS TODAY"
+          title="Today's collections"
+          subtitle={`${todayCollectionRows.length} collection(s) · ${money(collectionsToday)} collected`}
+          columns={['Representative', 'Client', 'Order', 'Amount', 'Time']}
+          rows={todayCollectionRows.map((c) => ({
+            id: c.id,
+            cells: [repLabel(c), c.clients?.client_name ?? '—', c.sale_orders?.order_number ?? '—', money(Number(c.amount ?? 0)), timeOf(c.collected_at)],
+          }))}
+          emptyText="No money has been collected today."
+          onClose={() => setKpiView(null)}
+        />
+      )}
     </section>
   );
 }

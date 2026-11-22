@@ -50,7 +50,7 @@ const STATUS_PILL: Record<DayStatus, string> = { online: 'on_field', signal_lost
 
 const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 function todayLocal() {
-  return new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in the browser's timezone
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); // YYYY-MM-DD in the business timezone (same as the server)
 }
 function ago(iso: string | null) {
   if (!iso) return 'No GPS yet';
@@ -127,7 +127,8 @@ export function WorkDayRoutePanel() {
   }, [selectedId, loadRoute]);
 
   const selectedRow = rows.find((row) => row.id === selectedId) ?? null;
-  const line = useMemo<[number, number][]>(() => (route?.points ?? []).map((p) => [p.latitude, p.longitude]), [route]);
+  // Very inaccurate points (more than 100 m) would draw zig-zags, so they are left out of the drawn line only.
+  const line = useMemo<[number, number][]>(() => (route?.points ?? []).filter((p) => p.accuracyMeters == null || p.accuracyMeters <= 100).map((p) => [p.latitude, p.longitude]), [route]);
   const visitMarks = useMemo(() => (route?.visits ?? []).filter((v) => v.check_in_lat != null && v.check_in_lng != null), [route]);
   const fitPoints = useMemo<[number, number][]>(
     () => [...line, ...visitMarks.map((v) => [v.check_in_lat as number, v.check_in_lng as number] as [number, number])],
@@ -228,7 +229,7 @@ export function WorkDayRoutePanel() {
                           <td>{visit.clients?.client_name ?? visit.unlisted_client_name ?? 'Unlisted client'}</td>
                           <td>{clock(visit.check_in_time)}</td>
                           <td>{visit.check_out_time ? clock(visit.check_out_time) : 'In progress'}</td>
-                          <td><span className="gps-badge" data-kind={visit.check_in_within_geofence === true ? 'verified' : visit.check_in_within_geofence === false ? 'mismatch' : 'unavailable'}>{visit.check_in_within_geofence === true ? 'At client' : visit.check_in_within_geofence === false ? 'Outside geofence' : 'No data'}</span></td>
+                          <td><span className="gps-badge" data-kind={visit.check_in_within_geofence === true ? 'verified' : visit.check_in_within_geofence === false ? 'mismatch' : 'unavailable'}>{visit.check_in_within_geofence === true ? 'At client' : visit.check_in_within_geofence === false ? 'Outside geofence' : visit.unlisted_client_name ? 'Unlisted client' : 'First visit · location being learned'}</span></td>
                           <td>{visit.outcome ? visit.outcome.replace(/_/g, ' ') : '—'}</td>
                         </tr>
                       ))}

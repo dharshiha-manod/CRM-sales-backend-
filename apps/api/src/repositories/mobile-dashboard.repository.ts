@@ -1,6 +1,6 @@
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { localNow } from '../services/beat-automation.service.js';
+import { localNow, startOfLocalDayIso } from '../services/beat-automation.service.js';
 
 const CHUNK = 200;
 
@@ -18,6 +18,23 @@ async function countScheduledVisitsToday(organizationId: string, representativeI
     return count ?? 0;
   } catch (error) {
     console.error('Mobile dashboard: scheduled visits count failed', error);
+    return 0;
+  }
+}
+
+// Real visits (check-ins) this rep has done today, not just the planned beat.
+async function countVisitsToday(organizationId: string, representativeId: string): Promise<number> {
+  try {
+    const { count, error } = await supabaseAdmin
+      .from('field_visits')
+      .select('id', { count: 'exact', head: true })
+      .eq('organization_id', organizationId)
+      .eq('representative_id', representativeId)
+      .gte('check_in_time', startOfLocalDayIso(localNow().date));
+    if (error) throw error;
+    return count ?? 0;
+  } catch (error) {
+    console.error('Mobile dashboard: visits today count failed', error);
     return 0;
   }
 }
@@ -83,11 +100,12 @@ export async function getMobileDashboard(organizationId: string, userId: string)
   if (assignmentsError) throw assignmentsError;
   const clients = (assignments ?? []).map((assignment) => assignment.clients).filter(Boolean);
 
-  const [scheduledVisits, pendingCollections, upcomingFollowUps] = await Promise.all([
+  const [scheduledVisits, visitsToday, pendingCollections, upcomingFollowUps] = await Promise.all([
     countScheduledVisitsToday(organizationId, representative.id as string),
+    countVisitsToday(organizationId, representative.id as string),
     countPendingCollections(organizationId, representative.id as string),
     countUpcomingFollowUps(organizationId, representative.id as string),
   ]);
 
-  return { representative, summary: { assignedClients: clients.length, scheduledVisits, pendingCollections, upcomingFollowUps }, clients };
+  return { representative, summary: { assignedClients: clients.length, scheduledVisits, visitsToday, pendingCollections, upcomingFollowUps }, clients };
 }

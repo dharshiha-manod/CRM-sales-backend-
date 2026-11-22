@@ -69,7 +69,7 @@ function LineEditor({ lines, products, onChange, rateLabel = 'Rate' }: { lines: 
   const set = (i: number, patch: Partial<Line>) => onChange(lines.map((l, k) => (k === i ? { ...l, ...patch } : l)));
   const pick = (i: number, id: string) => { const p = products.find((x) => x.id === id); set(i, { product_id: id, rate: p?.cost_price != null ? String(p.cost_price) : lines[i].rate, gst_percent: p?.tax_percent != null ? String(p.tax_percent) : lines[i].gst_percent }); };
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <div style={{ overflowX: 'auto', flexShrink: 0 }}>
       <table><thead><tr><th>Product</th><th>Qty</th><th>{rateLabel}</th><th>GST %</th><th /></tr></thead><tbody>
         {lines.map((l, i) => (
           <tr key={i}>
@@ -81,7 +81,7 @@ function LineEditor({ lines, products, onChange, rateLabel = 'Rate' }: { lines: 
           </tr>
         ))}
       </tbody></table>
-      <button type="button" className="quiet-button" onClick={() => onChange([...lines, { product_id: '', quantity: '', rate: '', gst_percent: '' }])}>+ Add product</button>
+<button type="button" className="quiet-button" style={{ alignSelf: 'flex-start' }} onClick={() => onChange([...lines, { product_id: '', quantity: '', rate: '', gst_percent: '' }])}>+ Add product</button>
     </div>
   );
 }

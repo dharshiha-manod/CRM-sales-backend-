@@ -1,8 +1,9 @@
 import type { RequestHandler } from 'express';
 import { z } from 'zod';
 import { AppError } from '../errors/app-error.js';
+import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 import { fieldActivityService } from '../services/field-activity.service.js';
-import { addWorkDayPings, endWorkDay, getActiveWorkDay, getWorkDayRoute, listWorkDayOverview, startWorkDay } from '../repositories/work-days.repository.js';
+import { addWorkDayPings, endWorkDay, getActiveWorkDay, getWorkDayRoute, listWorkDayHistory, listWorkDayOverview, startWorkDay } from '../repositories/work-days.repository.js';
 import { workDayEndSchema, workDayPingsSchema, workDayStartSchema } from '../validation/work-days.schemas.js';
 
 async function context(req: Parameters<RequestHandler>[0]) {
@@ -23,13 +24,19 @@ export const workDays: Record<string, RequestHandler> = {
   overview: async (req, res) => {
     const organizationId = organizationOnly(req);
     const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().parse(req.query.date);
-    res.json({ data: await listWorkDayOverview(organizationId, date) });
+    res.json({ data: await listWorkDayOverview(organizationId, date, resolveIndustryTypeId(req.industryScope!, undefined)) });
+  },
+  // Admin / manager: every rep's work days for the last N days (Tracking History), real GPS distance.
+  history: async (req, res) => {
+    const organizationId = organizationOnly(req);
+    const days = z.coerce.number().int().min(1).max(31).default(14).parse(req.query.days);
+    res.json({ data: await listWorkDayHistory(organizationId, days, resolveIndustryTypeId(req.industryScope!, undefined)) });
   },
   // Admin / manager: the full route (GPS points + visits) of one work day.
   route: async (req, res) => {
     const organizationId = organizationOnly(req);
     const workDayId = z.string().uuid().parse(req.params.id);
-    res.json({ data: await getWorkDayRoute(organizationId, workDayId) });
+    res.json({ data: await getWorkDayRoute(organizationId, workDayId, resolveIndustryTypeId(req.industryScope!, undefined)) });
   },
   today: async (req, res) => {
     const { organizationId, representativeId } = await context(req);

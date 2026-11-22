@@ -5,6 +5,12 @@ import { markBeatVisitDone } from '../services/beat-automation.service.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { getVisitConfig, getGpsConfig, getFollowUpConfig, loadSettingsSnapshot, industryTypeIdOfClient, industryTypeIdOfVisit } from '../lib/settings.js';
 const fail = (error: unknown): never => { throw error; };
+// Rejects check-in / check-out when the phone reports a fake (mock) GPS location.
+function assertNotMocked(location: unknown) {
+  if ((location as { mocked?: boolean } | null)?.mocked === true) {
+    throw new AppError(422, 'MOCK_LOCATION_DETECTED', 'Fake/mock GPS detected. Turn off mock location apps and try again.');
+  }
+}
 // Settings → GPS & Location → "Verification enabled" + "Minimum accuracy (meters)"
 async function assertGpsAccuracy(organizationId: string, accuracyMeters?: number | null, industryTypeId?: string | null) {
   const gpsConfig = await getGpsConfig(organizationId, industryTypeId);
@@ -43,14 +49,25 @@ export async function listNearbyAssignedClients(organizationId: string, represen
   }).filter((client) => client.distanceMeters <= radiusMeters).sort((a, b) => a.distanceMeters - b.distanceMeters);
 }
 
+// Auto-learn a client's location from the rep's first good check-in, so nobody has to type latitude/longitude.
+const AUTO_CAPTURE_MAX_ACCURACY_M = 50;
+type ClientLocationStatus = 'saved' | 'weak_gps' | 'already_set' | 'failed' | null;
+async function autoCaptureClientLocation(organizationId: string, clientId: string, location: { latitude: number; longitude: number }): Promise<boolean> {
+  const { data, error } = await supabaseAdmin.from('clients').update({ latitude: location.latitude, longitude: location.longitude })
+    .eq('id', clientId).eq('organization_id', organizationId).is('latitude', null).is('longitude', null).select('id');
+  if (error) { console.error('Auto-capture of client location failed', clientId, error); return false; }
+  return (data?.length ?? 0) > 0;
+}
+
 export async function checkIn(organizationId: string, representativeId: string, input: Record<string, unknown>) {
   // Visit and GPS settings are per industry — use the industry of the client being visited
   // (a visit to an unlisted client has none and falls back to the org-wide base).
   const industryTypeId = await industryTypeIdOfClient(organizationId, input.clientId as string | null | undefined);
   const visitConfig = await getVisitConfig(organizationId, industryTypeId);
   const location = input.location as { latitude: number; longitude: number; accuracyMeters?: number | null };
+  assertNotMocked(location);
   await assertGpsAccuracy(organizationId, location.accuracyMeters, industryTypeId);
-  let distance: number | null = null; let withinGeofence: boolean | null = null;
+  let distance: number | null = null; let withinGeofence: boolean | null = null; let captureClientLocation = false; let clientLocationStatus: ClientLocationStatus = null;
   if (input.clientId) {
     // A rep may only check in at a client that is actively assigned to them.
     const { data: assignment, error: assignmentError } = await supabaseAdmin.from('sales_representative_client_assignments').select('id').eq('organization_id', organizationId).eq('sales_representative_id', representativeId).eq('client_id', input.clientId as string).eq('status', 'active').maybeSingle();
@@ -59,6 +76,10 @@ export async function checkIn(organizationId: string, representativeId: string, 
     const { data: client, error: clientError } = await supabaseAdmin.from('clients').select('latitude, longitude, gps_radius_meters').eq('id', input.clientId as string).eq('organization_id', organizationId).maybeSingle();
     if (clientError) fail(clientError);
     if (!client) throw new AppError(404, 'CLIENT_NOT_FOUND', 'The selected client was not found.');
+    const clientHasLocation = client.latitude != null && client.longitude != null;
+    if (clientHasLocation) clientLocationStatus = 'already_set';
+    else if (location.accuracyMeters != null && location.accuracyMeters <= AUTO_CAPTURE_MAX_ACCURACY_M) captureClientLocation = true;
+    else clientLocationStatus = 'weak_gps';
     if (client.latitude != null && client.longitude != null) { distance = Math.round(distanceMeters(location.latitude, location.longitude, Number(client.latitude), Number(client.longitude))); withinGeofence = distance <= Number(client.gps_radius_meters ?? visitConfig.radiusMeters); }
     // Settings → Visit Configuration → Mandatory GPS verification
     if (visitConfig.mandatoryGpsVerification && withinGeofence === false) throw new AppError(422, 'OUTSIDE_GEOFENCE', `You are ${distance} m from the client, outside the allowed ${client.gps_radius_meters ?? visitConfig.radiusMeters} m radius. Move closer to check in.`);
@@ -66,7 +87,8 @@ export async function checkIn(organizationId: string, representativeId: string, 
    const { data, error } = await supabaseAdmin.from('field_visits').insert({ organization_id: organizationId, representative_id: representativeId, client_id: input.clientId, unlisted_client_name: input.unlistedClientName, notes: input.notes, check_in_lat: location.latitude, check_in_lng: location.longitude, check_in_accuracy_meters: location.accuracyMeters, check_in_distance_meters: distance, check_in_within_geofence: withinGeofence, status: 'checked_in' }).select('*, clients(client_code, client_name), sales_representatives(employee_code, user_profiles(display_name))').single();
   if (error) return fail(error);
   if (input.clientId) void markBeatVisitDone(organizationId, representativeId, input.clientId as string, data.id);
-  return data;
+  if (captureClientLocation && input.clientId) clientLocationStatus = (await autoCaptureClientLocation(organizationId, input.clientId as string, location)) ? 'saved' : 'failed';
+  return { ...data, client_location_status: clientLocationStatus };
 }
 
 export async function addPing(organizationId: string, representativeId: string, visitId: string, input: Record<string, unknown>) {
@@ -81,9 +103,10 @@ export async function checkOut(organizationId: string, representativeId: string,
   const industryTypeId = await industryTypeIdOfVisit(organizationId, visitId);
   const visitConfig = await getVisitConfig(organizationId, industryTypeId);
   const location = input.location as { latitude: number; longitude: number; accuracyMeters?: number | null };
+  assertNotMocked(location);
   await assertGpsAccuracy(organizationId, location.accuracyMeters, industryTypeId);
   const notes = input.notes as string | null | undefined;
-  const { data: activeVisit, error: visitError } = await supabaseAdmin.from('field_visits').select('id, check_in_time, clients(latitude, longitude, gps_radius_meters)').eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).in('status', ['checked_in', 'in_progress']).maybeSingle();
+  const { data: activeVisit, error: visitError } = await supabaseAdmin.from('field_visits').select('id, client_id, check_in_time, clients(latitude, longitude, gps_radius_meters)').eq('id', visitId).eq('organization_id', organizationId).eq('representative_id', representativeId).in('status', ['checked_in', 'in_progress']).maybeSingle();
   if (visitError) fail(visitError); if (!activeVisit) throw new AppError(404, 'ACTIVE_VISIT_NOT_FOUND', 'An active visit was not found.');
   // Settings → Visit Configuration → Minimum visit duration
   if (activeVisit.check_in_time) {
@@ -111,7 +134,14 @@ export async function checkOut(organizationId: string, representativeId: string,
       if (followUpError) console.error('Auto follow-up creation failed for visit', visitId, followUpError);
     }
   }
-  return data;
+  // Second chance to learn the client's location (the check-in GPS may have been too weak).
+  let clientLocationStatus: ClientLocationStatus = null;
+  if (activeVisit.client_id && client) {
+    if (client.latitude != null && client.longitude != null) clientLocationStatus = 'already_set';
+    else if (location.accuracyMeters != null && location.accuracyMeters <= AUTO_CAPTURE_MAX_ACCURACY_M) clientLocationStatus = (await autoCaptureClientLocation(organizationId, activeVisit.client_id as string, location)) ? 'saved' : 'failed';
+    else clientLocationStatus = 'weak_gps';
+  }
+  return { ...data, client_location_status: clientLocationStatus };
 }
 
 // Settings → Check-in/Check-out Configuration → Auto checkout (minutes).

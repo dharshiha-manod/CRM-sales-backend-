@@ -6,6 +6,7 @@ import { localNow, startOfLocalDayIso } from '../services/beat-automation.servic
 // automatically so a rep who forgets "End day" is not tracked forever.
 const MAX_DAY_HOURS = 14;
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
+const VISIT_GRACE_MS = 10 * 60 * 1000;
 const COLS = 'id, representative_id, started_at, ended_at, end_reason';
 
 type Gps = { latitude: number; longitude: number; accuracyMeters?: number | null };
@@ -101,7 +102,11 @@ export async function addWorkDayPings(organizationId: string, representativeId: 
   }
 
   const earliest = new Date(session.started_at).getTime() - CLOCK_SKEW_MS;
-  const latest = (session.ended_at ? new Date(session.ended_at).getTime() : Date.now()) + CLOCK_SKEW_MS;
+  // A day the rep ended by hand is closed at that moment. A day closed automatically (forgot "End day", or the phone
+  // was offline all day) still accepts the points the phone queued while offline, up to the maximum length of a day.
+  const closedAt = session.ended_at ? new Date(session.ended_at).getTime() : Date.now();
+  const autoWindowEnd = new Date(session.started_at).getTime() + MAX_DAY_HOURS * 3600 * 1000;
+  const latest = (session.end_reason === 'auto' ? Math.max(closedAt, autoWindowEnd) : closedAt) + CLOCK_SKEW_MS;
   const accepted = points.filter((point) => {
     const at = new Date(point.capturedAt).getTime();
     return Number.isFinite(at) && at >= earliest && at <= latest;
@@ -135,6 +140,13 @@ export async function addWorkDayPings(organizationId: string, representativeId: 
     });
     const { error: insertError } = await supabaseAdmin.from('field_activity_pings').upsert(rows, { onConflict: 'client_ping_id', ignoreDuplicates: true });
     if (insertError) throw insertError;
+    if (session.end_reason === 'auto' && session.ended_at) {
+      const newest = Math.max(...accepted.map((point) => new Date(point.capturedAt).getTime()));
+      if (newest > new Date(session.ended_at).getTime()) {
+        await supabaseAdmin.from('work_day_sessions').update({ ended_at: new Date(newest).toISOString() })
+          .eq('id', workDayId).eq('organization_id', organizationId).eq('end_reason', 'auto');
+      }
+    }
   }
   return { saved: accepted.length, skipped: points.length - accepted.length, dayActive: !session.ended_at };
 }
@@ -176,6 +188,7 @@ function distanceKm(points: PingRow[]): number {
   let meters = 0;
   let last: PingRow | null = null;
   for (const point of points) {
+    if (point.is_mocked === true) continue; // fake-GPS points must never add to the distance
     if (point.accuracy_meters != null && point.accuracy_meters > MAX_USEFUL_ACCURACY_M) continue;
     if (!last) { last = point; continue; }
     const segment = haversineMeters(last, point);
@@ -201,17 +214,32 @@ async function loadReps(organizationId: string, ids: string[]): Promise<Map<stri
   return map;
 }
 
+/** Reps whose membership is locked to this industry (a rep belongs to the industry of their membership). */
+async function repIdsForIndustry(organizationId: string, industryTypeId: string): Promise<Set<string>> {
+  const { data: reps, error } = await supabaseAdmin.from('sales_representatives').select('id, user_id').eq('organization_id', organizationId);
+  if (error) throw error;
+  const userIds = (reps ?? []).map((rep) => rep.user_id as string).filter(Boolean);
+  if (userIds.length === 0) return new Set();
+  const { data: members, error: memberError } = await supabaseAdmin.from('organization_memberships')
+    .select('user_id').eq('organization_id', organizationId).eq('industry_type_id', industryTypeId).in('user_id', userIds);
+  if (memberError) throw memberError;
+  const allowed = new Set((members ?? []).map((member) => member.user_id as string));
+  return new Set((reps ?? []).filter((rep) => allowed.has(rep.user_id as string)).map((rep) => rep.id as string));
+}
+
 export type WorkDayStatus = 'online' | 'signal_lost' | 'ended';
 
 /** Every rep's work day for one calendar day (BEAT_TIMEZONE): last seen, points, distance travelled. */
-export async function listWorkDayOverview(organizationId: string, date?: string) {
+export async function listWorkDayOverview(organizationId: string, date?: string, industryTypeId?: string | null) {
   const day = date ?? localNow().date;
   const from = startOfLocalDayIso(day);
   const to = new Date(Date.parse(from) + 24 * 3600 * 1000).toISOString();
   const { data, error } = await supabaseAdmin.from('work_day_sessions').select(COLS)
     .eq('organization_id', organizationId).gte('started_at', from).lt('started_at', to).order('started_at', { ascending: false });
   if (error) throw error;
-  const sessions = (data ?? []) as WorkDay[];
+  const allSessions = (data ?? []) as WorkDay[];
+  const allowedReps = industryTypeId ? await repIdsForIndustry(organizationId, industryTypeId) : null;
+  const sessions = allowedReps ? allSessions.filter((session) => allowedReps.has(session.representative_id)) : allSessions;
   const reps = await loadReps(organizationId, [...new Set(sessions.map((session) => session.representative_id))]);
 
   const rows = await Promise.all(sessions.map(async (session) => {
@@ -242,13 +270,87 @@ export async function listWorkDayOverview(organizationId: string, date?: string)
   return { date: day, rows };
 }
 
+// ───────────── Admin: Tracking History (several days, one row per rep per day) ─────────────
+const HISTORY_MAX_DAYS = 31;
+const HISTORY_CHUNK = 6; // work days summarised in parallel
+// A finished day does not change, so its distance is remembered until its GPS point count changes.
+const historyCache = new Map<string, { count: number; distanceKm: number; mockedPoints: number; lastSeenAt: string | null }>();
+
+async function countPings(organizationId: string, workDayId: string): Promise<number> {
+  const { count, error } = await supabaseAdmin.from('field_activity_pings').select('captured_at', { count: 'exact', head: true })
+    .eq('organization_id', organizationId).eq('work_day_id', workDayId);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/** Every rep's work days for the last N calendar days (BEAT_TIMEZONE), newest first, with real GPS distance. */
+export async function listWorkDayHistory(organizationId: string, days = 14, industryTypeId?: string | null) {
+  const span = Math.min(Math.max(Math.floor(days) || 1, 1), HISTORY_MAX_DAYS);
+  const today = localNow().date;
+  const firstDay = new Date(Date.parse(`${today}T00:00:00Z`) - (span - 1) * 86400000).toISOString().slice(0, 10);
+  const { data, error } = await supabaseAdmin.from('work_day_sessions').select(COLS)
+    .eq('organization_id', organizationId).gte('started_at', startOfLocalDayIso(firstDay)).order('started_at', { ascending: false }).limit(1000);
+  if (error) throw error;
+  const allowedReps = industryTypeId ? await repIdsForIndustry(organizationId, industryTypeId) : null;
+  const sessions = ((data ?? []) as WorkDay[]).filter((session) => !allowedReps || allowedReps.has(session.representative_id));
+  const reps = await loadReps(organizationId, [...new Set(sessions.map((session) => session.representative_id))]);
+  if (historyCache.size > 3000) historyCache.clear();
+
+  const rows: Awaited<ReturnType<typeof summarise>>[] = [];
+  async function summarise(session: WorkDay) {
+    const cacheKey = `${session.id}|${session.ended_at ?? 'open'}`;
+    let summary: { count: number; distanceKm: number; mockedPoints: number; lastSeenAt: string | null } | undefined;
+    if (session.ended_at) {
+      const cached = historyCache.get(cacheKey);
+      if (cached && cached.count === await countPings(organizationId, session.id)) summary = cached;
+    }
+    if (!summary) {
+      const pings = await fetchPings(organizationId, session.id);
+      summary = {
+        count: pings.length,
+        distanceKm: distanceKm(pings),
+        mockedPoints: pings.filter((point) => point.is_mocked === true).length,
+        lastSeenAt: pings.length ? pings[pings.length - 1].captured_at : null,
+      };
+      if (session.ended_at) historyCache.set(cacheKey, summary);
+    }
+    const lastSeenAt = summary.lastSeenAt ?? session.started_at;
+    const status: WorkDayStatus = session.ended_at ? 'ended'
+      : Date.now() - new Date(lastSeenAt).getTime() <= ONLINE_WITHIN_MS ? 'online' : 'signal_lost';
+    const rep = reps.get(session.representative_id);
+    return {
+      id: session.id,
+      representativeId: session.representative_id,
+      employeeCode: rep?.employeeCode ?? '',
+      repName: rep?.name ?? 'Sales rep',
+      date: localNow(new Date(session.started_at)).date,
+      startedAt: session.started_at,
+      endedAt: session.ended_at,
+      endReason: session.end_reason,
+      status,
+      pointCount: summary.count,
+      distanceKm: summary.distanceKm,
+      mockedPoints: summary.mockedPoints,
+      lastSeenAt: summary.lastSeenAt,
+    };
+  }
+  for (let index = 0; index < sessions.length; index += HISTORY_CHUNK) {
+    rows.push(...await Promise.all(sessions.slice(index, index + HISTORY_CHUNK).map(summarise)));
+  }
+  return { days: span, rows };
+}
+
 /** One work day's full route: GPS points in order, plus the visits done during that day. */
-export async function getWorkDayRoute(organizationId: string, workDayId: string) {
+export async function getWorkDayRoute(organizationId: string, workDayId: string, industryTypeId?: string | null) {
   const { data, error } = await supabaseAdmin.from('work_day_sessions').select(COLS)
     .eq('id', workDayId).eq('organization_id', organizationId).maybeSingle();
   if (error) throw error;
   const session = data as WorkDay | null;
   if (!session) throw new AppError(404, 'WORK_DAY_NOT_FOUND', 'Work day not found.');
+  // Out-of-industry work day = 404 (same as other scoped endpoints)
+  if (industryTypeId && !(await repIdsForIndustry(organizationId, industryTypeId)).has(session.representative_id)) {
+    throw new AppError(404, 'WORK_DAY_NOT_FOUND', 'Work day not found.');
+  }
 
   const pings = await fetchPings(organizationId, workDayId);
   const reps = await loadReps(organizationId, [session.representative_id]);
@@ -257,7 +359,9 @@ export async function getWorkDayRoute(organizationId: string, workDayId: string)
   const { data: visits, error: visitsError } = await supabaseAdmin.from('field_visits')
     .select('id, status, check_in_time, check_out_time, check_in_lat, check_in_lng, check_out_lat, check_out_lng, check_in_within_geofence, outcome, unlisted_client_name, clients(client_code, client_name)')
     .eq('organization_id', organizationId).eq('representative_id', session.representative_id)
-    .gte('check_in_time', session.started_at).lte('check_in_time', session.ended_at ?? new Date().toISOString())
+    // The phone starts the work day right after the first check-in, so allow a few minutes before started_at.
+    .gte('check_in_time', new Date(new Date(session.started_at).getTime() - VISIT_GRACE_MS).toISOString())
+    .lte('check_in_time', new Date(new Date(session.ended_at ?? new Date().toISOString()).getTime() + VISIT_GRACE_MS).toISOString())
     .order('check_in_time', { ascending: true });
   if (visitsError) throw visitsError;
 

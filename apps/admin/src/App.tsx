@@ -23,7 +23,8 @@ import { RouteBeatPage } from './components/RouteBeatPage';
 import { SchemeDiscountPage } from './components/SchemeDiscountPage';
 import { FmcgDistributorPage } from './components/FmcgDistributorPage';
 import { SchoolManagementPage } from './components/SchoolManagementPage';
-import { SchoolCompanyPage, SchoolSuppliersPage, SchoolPurchaseOrdersPage, SchoolGrnPage, SchoolSupplierPaymentsPage, SchoolInvoicesPage, SchoolCreditNotesPage, SchoolReportsPage } from './components/SchoolDistributorPages';
+import { SchoolCompanyPage, SchoolSuppliersPage, SchoolGrnPage, SchoolSupplierPaymentsPage, SchoolInvoicesPage, SchoolCreditNotesPage, SchoolReportsPage } from './components/SchoolDistributorPages';
+import { SchoolPurchaseOrdersPage } from './components/SchoolPurchaseOrdersPage';
 import { SchoolSalesCollectionPage } from './components/SchoolSalesCollectionPage';
 import { AcademicYearTermPage } from './components/AcademicYearTermPage';
 import { SpecificPricingDiscountPage } from './components/SpecificPricingDiscountPage'; 
@@ -99,6 +100,7 @@ import { INDUSTRY_CONFIGS } from './industry/mockData';
 import type { IndustryKey } from './industry/types';
 import { useIndustry, INDUSTRY_ORDER } from './industry/IndustryContext';
 import './sidebar-layout.css';
+import { PublicPurchaseOrderPage } from './components/PublicPurchaseOrderPage';
 type Page = 'dashboard' | 'clients' | 'representatives' | 'users' | 'leads' | 'fieldActivity' | 'products' | 'brandsCategories' | 'requirements' | 'quotations' | 'orders' | 'collections' | 'followUps' | 'calls' | 'reports' | 'target' | 'inventory' | 'gpsTracking' | 'settings' | 'notifications' | `industry:${string}`;
 const labels: Record<string, string> = { dashboard: 'Sales overview', clients: 'Clients', representatives: 'Sales representatives', users: 'User management', leads: 'Leads', fieldActivity: 'Field activity', products: 'Products', requirements: 'Requirements', quotations: 'Quotations', orders: 'Sales orders', collections: 'Collections', followUps: 'Follow-ups', calls: 'Calls & IVR', reports: 'Reports', target: 'Target', inventory: 'Inventory', gpsTracking: 'GPS Verified Tracking', settings: 'Settings', notifications: 'Notification' };
 
@@ -110,6 +112,8 @@ function moduleLabel(key: IndustryKey, moduleId: string): string {
 export default function App() {
   const publicToken = window.location.pathname.match(/^\/quote\/([^/]+)$/)?.[1];
   if (publicToken) return <PublicQuotationPage token={publicToken} />;
+  const publicPoToken = window.location.pathname.match(/^\/po\/([^/]+)$/)?.[1];
+  if (publicPoToken) return <PublicPurchaseOrderPage token={publicPoToken} />;  
   const [reportsOpen, setReportsOpen] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [loadingSession, setLoadingSession] = useState(Boolean(supabase));

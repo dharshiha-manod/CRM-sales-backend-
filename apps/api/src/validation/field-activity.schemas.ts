@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 const coordinate = z.number().finite();
-const gps = z.object({ latitude: coordinate.min(-90).max(90), longitude: coordinate.min(-180).max(180), accuracyMeters: z.number().finite().min(0).optional().nullable() });
+const gps = z.object({ latitude: coordinate.min(-90).max(90), longitude: coordinate.min(-180).max(180), accuracyMeters: z.number().finite().min(0).optional().nullable(), mocked: z.boolean().optional() });
 export const checkInSchema = z.object({ clientId: z.string().uuid().optional().nullable(), unlistedClientName: z.string().trim().min(2).max(240).optional().nullable(), notes: z.string().trim().max(10000).optional().nullable(), location: gps }).refine((data) => Boolean(data.clientId || data.unlistedClientName), { path: ['clientId'], message: 'Select a client or enter an unlisted client name.' });
 export const pingSchema = z.object({ location: gps });
 export const checkOutSchema = z.object({ location: gps, notes: z.string().trim().max(10000).optional().nullable(), outcome: z.enum(['sale_made', 'follow_up_needed', 'no_interest', 'other']).optional().nullable() });

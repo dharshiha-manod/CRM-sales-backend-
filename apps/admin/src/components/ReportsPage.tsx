@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { collectionsInInr, ordersInInr } from '../lib/inr';
 import { useIndustry } from '../industry/IndustryContext';
 import { REPORT_TERMS } from '../industry/reportConfig';
 import { TextileRollStockPanel } from './TextileRollStockPanel';
 import { kpiClick, goToPage } from '../lib/kpiClick';
-import { getReportMockData } from '../industry/reportMockData';
+import { CURRENCY_TYPES } from '../lib/targetTypes';
 import './ReportsPage.css';
 
 type RepRef = { employee_code?: string; user_profiles?: { display_name?: string | null } | null } | null;
@@ -19,6 +19,7 @@ type Order = { id: string; order_number: string; status: string; total_amount: n
 type CollectionRecord = { amount: number; collected_at: string; clients?: ClientRef; sales_representatives?: RepRef; sale_orders?: { order_number?: string } | null };
 type FollowUpRecord = { id: string; due_at: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; clients?: ClientRef; sales_representatives?: RepRef };
 type Visit = { id: string; status: string; check_in_time: string; clients?: ClientRef; sales_representatives?: RepRef };
+type TargetRow = { id: string; target_type: string; period_start: string; period_end: string; target_value: number; achieved_value: number; lifecycle: string; sales_representatives?: RepRef };
 
 const money = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Number(value || 0));
 const compactMoney = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', notation: 'compact', maximumFractionDigits: 1 }).format(Number(value || 0));
@@ -42,15 +43,16 @@ function repKey(rep?: RepRef): string {
   return rep?.employee_code ?? repName(rep);
 }
 
-type RangeKey = 'today' | 'week' | 'month' | 'quarter' | 'year';
+type RangeKey = 'today' | 'week' | 'month' | 'quarter' | 'year' | 'custom';
 const RANGES: { key: RangeKey; label: string }[] = [
   { key: 'today', label: 'Today' },
   { key: 'week', label: 'This week' },
   { key: 'month', label: 'This month' },
   { key: 'quarter', label: 'This quarter' },
   { key: 'year', label: 'This year' },
+  { key: 'custom', label: 'Custom' },
 ];
-function rangeBounds(key: RangeKey): [Date, Date] {
+function rangeBounds(key: RangeKey, customFrom = '', customTo = ''): [Date, Date] {
   const now = new Date();
   const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const end = new Date(startOfDay(now).getTime());
@@ -59,6 +61,13 @@ function rangeBounds(key: RangeKey): [Date, Date] {
   if (key === 'week') { const s = startOfDay(now); s.setDate(s.getDate() - s.getDay()); return [s, end]; }
   if (key === 'month') return [new Date(now.getFullYear(), now.getMonth(), 1), end];
   if (key === 'quarter') { const q = Math.floor(now.getMonth() / 3); return [new Date(now.getFullYear(), q * 3, 1), end]; }
+  if (key === 'custom') {
+    const parse = (v: string) => { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d); };
+    const from = customFrom ? parse(customFrom) : startOfDay(now);
+    let to = customTo ? parse(customTo) : startOfDay(now);
+    if (to < from) to = from;
+    return [from, new Date(to.getFullYear(), to.getMonth(), to.getDate() + 1)];
+  }
   return [new Date(now.getFullYear(), 0, 1), end];
 }
 function prevRangeBounds(start: Date, end: Date): [Date, Date] {
@@ -72,13 +81,15 @@ function pctChange(curr: number, prev: number): number | null {
 
 type Raw = {
   clients: Client[]; industryTypes: IndustryTypeOption[]; leads: Lead[]; quotations: Quotation[];
-  orders: Order[]; collections: CollectionRecord[]; followUps: FollowUpRecord[]; visits: Visit[];
+  orders: Order[]; collections: CollectionRecord[]; followUps: FollowUpRecord[]; visits: Visit[]; targets: TargetRow[];
 };
-const emptyRaw: Raw = { clients: [], industryTypes: [], leads: [], quotations: [], orders: [], collections: [], followUps: [], visits: [] };
+const emptyRaw: Raw = { clients: [], industryTypes: [], leads: [], quotations: [], orders: [], collections: [], followUps: [], visits: [], targets: [] };
 
 type Filters = { repCode: string; clientCode: string; productCode: string };
 const emptyFilters: Filters = { repCode: '', clientCode: '', productCode: '' };
 const PAGE_SIZE = 10;
+// Orders in these states are not real sales yet (or any more), so they stay out of every figure.
+const EXCLUDED_ORDER_STATUSES = new Set(['cancelled', 'pending_approval', 'rejected', 'draft']);
 
 // ── Small chart primitives — plain inline SVG, no chart library in this project ──
 
@@ -305,12 +316,15 @@ type TableRow = {
 export function ReportsPage() {
   const { activeIndustry, config } = useIndustry();
   const terms = REPORT_TERMS[activeIndustry];
-  const mock = useMemo(() => getReportMockData(activeIndustry), [activeIndustry]);
 
   const [raw, setRaw] = useState<Raw>(emptyRaw);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [range, setRange] = useState<RangeKey>('month');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const loadSeq = useRef(0);
   const [draftFilters, setDraftFilters] = useState<Filters>(emptyFilters);
   const [appliedFilters, setAppliedFilters] = useState<Filters>(emptyFilters);
   const [search, setSearch] = useState('');
@@ -318,31 +332,40 @@ export function ReportsPage() {
   const [pageNum, setPageNum] = useState(1);
 
   async function load() {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError('');
+    const failed: string[] = [];
+    const soft = (label: string) => () => { failed.push(label); return { data: [] }; };
     try {
-      const [clients, industryTypes, leads, quotations, orders, collections, followUps, visits] = await Promise.all([
-        api<{ data: Client[] }>('/clients').catch(() => ({ data: [] })),
-        api<{ data: IndustryTypeOption[] }>('/industry-types?status=active').catch(() => ({ data: [] })),
-        api<{ data: Lead[] }>('/leads').catch(() => ({ data: [] })),
-        api<{ data: Quotation[] }>('/quotations').catch(() => ({ data: [] })),
-        api<{ data: Order[] }>('/orders').then(ordersInInr).catch(() => ({ data: [] })),
-        api<{ data: CollectionRecord[] }>('/collections').then(collectionsInInr).catch(() => ({ data: [] })),
-        api<{ data: FollowUpRecord[] }>('/follow-ups').catch(() => ({ data: [] })),
-        api<{ data: Visit[] }>('/field-visits').catch(() => ({ data: [] })),
+      const [clients, industryTypes, leads, quotations, orders, collections, followUps, visits, targets] = await Promise.all([
+        api<{ data: Client[] }>('/clients').catch(soft('Clients')),
+        api<{ data: IndustryTypeOption[] }>('/industry-types?status=active').catch(soft('Industry types')),
+        api<{ data: Lead[] }>('/leads').catch(soft('Leads')),
+        api<{ data: Quotation[] }>('/quotations').catch(soft('Quotations')),
+        api<{ data: Order[] }>('/orders').then(ordersInInr).catch(soft('Orders')),
+        api<{ data: CollectionRecord[] }>('/collections').then(collectionsInInr).catch(soft('Collections')),
+        api<{ data: FollowUpRecord[] }>('/follow-ups').catch(soft('Follow-ups')),
+        api<{ data: Visit[] }>('/field-visits').catch(soft('Visits')),
+        api<{ data: TargetRow[] }>('/targets').catch(soft('Targets')),
       ]);
+      // A newer load (for example after switching industry) replaced this one: drop the stale answer.
+      if (seq !== loadSeq.current) return;
       setRaw({
         clients: clients.data ?? [], industryTypes: industryTypes.data ?? [], leads: leads.data ?? [],
         quotations: quotations.data ?? [], orders: orders.data ?? [], collections: collections.data ?? [],
-        followUps: followUps.data ?? [], visits: visits.data ?? [],
+        followUps: followUps.data ?? [], visits: visits.data ?? [], targets: targets.data ?? [],
       });
+      setWarnings(failed);
     } catch (caught) {
+      if (seq !== loadSeq.current) return;
       setError(caught instanceof Error ? caught.message : 'Unable to load reports.');
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }
-  useEffect(() => { void load(); }, []);
+  // The API scopes every list to the industry chosen in the header switcher, so reload whenever it changes.
+  useEffect(() => { void load(); }, [activeIndustry]);
   useEffect(() => { setPageNum(1); }, [activeIndustry, range, appliedFilters, search]);
 
   // ── Industry scoping — the single source of truth is useIndustry(); everything
@@ -357,24 +380,26 @@ export function ReportsPage() {
   );
   const industryClientCodes = useMemo(() => new Set(industryClients.map((c) => c.client_code)), [industryClients]);
   const industryClientNames = useMemo(() => new Set(industryClients.map((c) => c.client_name)), [industryClients]);
-  const belongsToIndustry = (ref?: ClientRef) =>
-    !!ref && ((!!ref.client_code && industryClientCodes.has(ref.client_code)) || (!!ref.client_name && industryClientNames.has(ref.client_name)));
+  // client_code is unique, so it decides when present. Names are only a fallback for records that carry no code.
+  const belongsToIndustry = (ref?: ClientRef) => {
+    if (!ref) return false;
+    if (ref.client_code) return industryClientCodes.has(ref.client_code);
+    return !!ref.client_name && industryClientNames.has(ref.client_name);
+  };
 
-  const [rangeStart, rangeEnd] = useMemo(() => rangeBounds(range), [range]);
+  const [rangeStart, rangeEnd] = useMemo(() => rangeBounds(range, customFrom, customTo), [range, customFrom, customTo]);
   const [prevStart, prevEnd] = useMemo(() => prevRangeBounds(rangeStart, rangeEnd), [rangeStart, rangeEnd]);
   const inRange = (value: string | undefined | null, start: Date, end: Date) => { if (!value) return false; const d = new Date(value); return d >= start && d < end; };
 
-  const industryOrders = useMemo(() => raw.orders.filter((o) => belongsToIndustry(o.clients)), [raw.orders, industryClientCodes, industryClientNames]);
+  const industryOrders = useMemo(() => raw.orders.filter((o) => belongsToIndustry(o.clients) && !EXCLUDED_ORDER_STATUSES.has(o.status)), [raw.orders, industryClientCodes, industryClientNames]);
   const industryQuotations = useMemo(() => raw.quotations.filter((q) => belongsToIndustry(q.clients)), [raw.quotations, industryClientCodes, industryClientNames]);
   const industryCollections = useMemo(() => raw.collections.filter((c) => belongsToIndustry(c.clients)), [raw.collections, industryClientCodes, industryClientNames]);
   const industryFollowUps = useMemo(() => raw.followUps.filter((f) => belongsToIndustry(f.clients)), [raw.followUps, industryClientCodes, industryClientNames]);
   const industryVisits = useMemo(() => raw.visits.filter((v) => belongsToIndustry(v.clients)), [raw.visits, industryClientCodes, industryClientNames]);
   const industryLeads = useMemo(() => raw.leads.filter((l) => l.industry_types?.code === activeIndustry.toUpperCase()), [raw.leads, activeIndustry]);
-  // Whether this industry has ANY recorded activity at all, in any time range.
-  // This — not the date-range filter — decides whether we show real numbers
-  // or the demo dataset. Real data always wins the moment it exists.
+  // Whether this industry has any recorded activity at all (any time range). Used only for the empty-state note.
   const hasRealActivity = industryOrders.length > 0 || industryCollections.length > 0 || industryVisits.length > 0 || industryFollowUps.length > 0 || industryLeads.some((lead) => Boolean(lead.next_action_due_at));
-  const usingMockData = !loading && !error && hasLoadedOnce(raw) && !hasRealActivity;
+  const industryMissing = !loading && !error && !activeIndustryType;
 
   const rangeOrders = useMemo(() => industryOrders.filter((o) => inRange(o.created_at, rangeStart, rangeEnd)), [industryOrders, rangeStart, rangeEnd]);
   const rangeQuotations = useMemo(() => industryQuotations.filter((q) => inRange(q.created_at, rangeStart, rangeEnd)), [industryQuotations, rangeStart, rangeEnd]);
@@ -449,20 +474,36 @@ export function ReportsPage() {
   const realPrevOutstanding = prevOrders.reduce((sum, o) => sum + Math.max(Number(o.total_amount || 0) - (collectedByOrder[o.order_number] ?? 0), 0), 0);
   const realPrevAov = prevOrders.length ? Math.round(realPrevSales / prevOrders.length) : 0;
 
-  // ── Sales trend — trailing 6 months, respects rep/client/product filters, not the date-range picker ──
+  // ── Sales trend — trailing 6 months, plus the 6 months before them for the dashed "previous" line.
+  // Respects rep / client / product filters, not the date-range picker. ──
+  const filteredCollectionsAllTime = useMemo(() => industryCollections.filter((c) => matchesRep(c.sales_representatives) && matchesClient(c.clients)), [industryCollections, appliedFilters, appliedClient]);
   const realSalesTrend = useMemo(() => {
-    const months: { label: string; value: number; collections: number }[] = [];
+    const months: { label: string; value: number; previous: number; collections: number }[] = [];
+    const sumOrders = (start: Date, end: Date) => filteredOrdersAllTime.filter((o) => { const c = new Date(o.created_at); return c >= start && c < end; }).reduce((sum, o) => sum + Number(o.total_amount || 0), 0);
     for (let i = 5; i >= 0; i -= 1) {
       const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i);
       const start = new Date(d.getFullYear(), d.getMonth(), 1);
       const end = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-      const value = filteredOrdersAllTime.filter((o) => { const c = new Date(o.created_at); return c >= start && c < end; }).reduce((sum, o) => sum + Number(o.total_amount || 0), 0);
-      const collections = industryCollections.filter((c) => { const cd = new Date(c.collected_at); return cd >= start && cd < end; }).reduce((sum, c) => sum + Number(c.amount || 0), 0);
-      months.push({ label: start.toLocaleDateString(undefined, { month: 'short' }), value, collections });
+      const previous = sumOrders(new Date(d.getFullYear(), d.getMonth() - 6, 1), new Date(d.getFullYear(), d.getMonth() - 5, 1));
+      const collections = filteredCollectionsAllTime.filter((c) => { const cd = new Date(c.collected_at); return cd >= start && cd < end; }).reduce((sum, c) => sum + Number(c.amount || 0), 0);
+      months.push({ label: start.toLocaleDateString(undefined, { month: 'short' }), value: sumOrders(start, end), previous, collections });
     }
     return months;
-  }, [filteredOrdersAllTime, industryCollections]);
-  const realPrevPeriodTrend = realSalesTrend.map((m) => Math.round(m.value * 0.85));
+  }, [filteredOrdersAllTime, filteredCollectionsAllTime]);
+  const realPrevPeriodTrend = realSalesTrend.map((m) => m.previous);
+
+  // ── Collection ageing — real: each order's unpaid balance, aged from the order date ──
+  const realAgeing = useMemo(() => {
+    const buckets = [0, 0, 0, 0];
+    const now = Date.now();
+    fOrders.forEach((o) => {
+      const due = Math.max(Number(o.total_amount || 0) - (collectedByOrder[o.order_number] ?? 0), 0);
+      if (!due) return;
+      const days = Math.floor((now - new Date(o.created_at).getTime()) / 86400000);
+      buckets[days <= 30 ? 0 : days <= 60 ? 1 : days <= 90 ? 2 : 3] += due;
+    });
+    return buckets;
+  }, [fOrders, collectedByOrder]);
 
   // ── Product performance (real) ──
   const realProductPerformance = useMemo(() => {
@@ -502,19 +543,39 @@ export function ReportsPage() {
 
   // ── Sales rep performance (real) ──
   const realRepPerformance = useMemo(() => {
-    const byRep: Record<string, { name: string; leads: number; proposals: number; orders: number; sales: number; collections: number }> = {};
-    const ensure = (rep?: RepRef) => { const key = repKey(rep); if (!byRep[key]) byRep[key] = { name: repName(rep), leads: 0, proposals: 0, orders: 0, sales: 0, collections: 0 }; return byRep[key]; };
-    fLeads.forEach((l) => { ensure(l.sales_representatives).leads += 1; });
+    const byRep: Record<string, { name: string; leads: number; converted: number; proposals: number; orders: number; sales: number; collections: number; visits: number; followUps: number }> = {};
+    const ensure = (rep?: RepRef) => { const key = repKey(rep); if (!byRep[key]) byRep[key] = { name: repName(rep), leads: 0, converted: 0, proposals: 0, orders: 0, sales: 0, collections: 0, visits: 0, followUps: 0 }; return byRep[key]; };
+    fLeads.forEach((l) => { const row = ensure(l.sales_representatives); row.leads += 1; if (l.status === 'converted') row.converted += 1; });
     fQuotations.forEach((q) => { ensure(q.sales_representatives).proposals += 1; });
     fOrders.forEach((o) => { const row = ensure(o.sales_representatives); row.orders += 1; row.sales += Number(o.total_amount || 0); });
     fCollections.forEach((c) => { ensure(c.sales_representatives).collections += Number(c.amount || 0); });
+    fVisits.forEach((v) => { ensure(v.sales_representatives).visits += 1; });
+    fFollowUps.forEach((f) => { ensure(f.sales_representatives).followUps += 1; });
+    fLeadFollowUps.forEach((l) => { ensure(l.sales_representatives).followUps += 1; });
     return Object.values(byRep).sort((a, b) => (b.sales + b.collections) - (a.sales + a.collections));
-  }, [fLeads, fQuotations, fOrders, fCollections]);
+  }, [fLeads, fQuotations, fOrders, fCollections, fVisits, fFollowUps, fLeadFollowUps]);
+
+  // ── Target vs Achievement (real) — amount-based targets (sales, order value, collections) whose period overlaps the selected range ──
+  const realTarget = useMemo(() => {
+    const day = (v: string) => v.slice(0, 10);
+    const rows = raw.targets.filter((t) => CURRENCY_TYPES.has(t.target_type) && t.lifecycle !== 'paused'
+      && new Date(`${day(t.period_start)}T00:00:00`) < rangeEnd && new Date(`${day(t.period_end)}T23:59:59`) >= rangeStart
+      && matchesRep(t.sales_representatives));
+    const byRep = new Map<string, { name: string; target: number; achieved: number }>();
+    rows.forEach((t) => {
+      const key = repKey(t.sales_representatives);
+      const row = byRep.get(key) ?? { name: repName(t.sales_representatives), target: 0, achieved: 0 };
+      row.target += Number(t.target_value || 0); row.achieved += Number(t.achieved_value || 0);
+      byRep.set(key, row);
+    });
+    const reps = [...byRep.values()].sort((a, b) => b.achieved - a.achieved);
+    return { overall: reps.reduce((sum, r) => sum + r.target, 0), achieved: reps.reduce((sum, r) => sum + r.achieved, 0), reps, hasTargets: rows.length > 0 };
+  }, [raw.targets, rangeStart, rangeEnd, appliedFilters]);
 
   // ── Visit & follow-up performance (real) ──
   const realVisitStats = useMemo(() => {
     const total = fVisits.length;
-    const completed = fVisits.filter((v) => v.status === 'completed').length;
+    const completed = fVisits.filter((v) => v.status === 'checked_out' || v.status === 'completed').length;
     const cancelled = fVisits.filter((v) => v.status === 'cancelled').length;
     const pending = total - completed - cancelled;
     return { total, completed, pending: Math.max(pending, 0), cancelled, rate: total ? Math.round((completed / total) * 100) : 0 };
@@ -533,7 +594,7 @@ export function ReportsPage() {
     return { overdue, pending, done, total: fFollowUps.length + fLeadFollowUps.length };
   }, [fFollowUps, fLeadFollowUps]);
 
-  // ── Real report-table rows, reshaped into the same TableRow the mock uses ──
+  // ── Report-table rows ──
   const realTableRows: TableRow[] = useMemo(() => fOrders.map((o) => {
     const firstItem = o.sale_order_items?.[0];
     const extraCount = (o.sale_order_items?.length ?? 0) - 1;
@@ -551,72 +612,46 @@ export function ReportsPage() {
       status: o.status,
     };
   }), [fOrders, collectedByOrder, config.label]);
-  const mockTableRows: TableRow[] = useMemo(() => mock.transactions.map((t) => ({
-    id: t.orderId, date: t.date, orderId: t.orderId, client: t.client, rep: t.rep, industryLabel: mock.industryLabel,
-    product: t.product, orderValue: t.orderValue, collection: t.collection, outstanding: t.outstanding, status: t.status,
-  })), [mock]);
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // View-model — real data if this industry has any recorded activity,
-  // otherwise the centralized demo dataset from reportMockData.ts. Every
-  // section below reads only from these `view.*` values, never branching
-  // on `usingMockData` itself, so removing the mock later is a one-line
-  // change (delete the else branch here).
-  // ═══════════════════════════════════════════════════════════════════════
-  const view = usingMockData
-    ? {
-        kpis: {
-          totalSales: mock.kpis.totalSales, totalOrders: mock.kpis.totalOrders, collections: mock.kpis.collections,
-          outstanding: mock.kpis.outstanding, avgOrderValue: mock.kpis.avgOrderValue,
-          deltaSales: mock.kpis.deltaSales, deltaOrders: mock.kpis.deltaOrders, deltaCollections: mock.kpis.deltaCollections,
-          deltaOutstanding: mock.kpis.deltaOutstanding, deltaAvgOrderValue: mock.kpis.deltaAvgOrderValue,
-        },
-        months: mock.months,
-        salesCurrent: mock.salesTrend,
-        salesPrevious: mock.salesTrendPrevious,
-        collectionsTrend: mock.collectionsTrend,
-        products: mock.products.map((p) => ({ name: p.name, revenue: p.revenue, orders: p.orders, growth: p.growth as number | null })),
-        clients: mock.clients,
-        target: mock.target,
-        reps: mock.reps.map((r) => ({ name: r.name, sales: r.sales, orders: r.orders, collections: r.collections, visits: r.visits, followUps: r.followUps, targetPct: r.targetPct as number | null, conversionRate: r.conversionRate as number | null })),
-        fieldActivity: mock.fieldActivity,
-        followUps: mock.followUps,
-        collection: mock.collection,
-        tableRows: mockTableRows,
-      }
-    : {
-        kpis: {
-          totalSales: realTotalSales, totalOrders: fOrders.length, collections: realTotalCollections,
-          outstanding: realOutstanding, avgOrderValue: realAvgOrderValue,
-          deltaSales: pctChange(realTotalSales, realPrevSales), deltaOrders: pctChange(fOrders.length, prevOrders.length),
-          deltaCollections: pctChange(realTotalCollections, realPrevCollected), deltaOutstanding: pctChange(realOutstanding, realPrevOutstanding),
-          deltaAvgOrderValue: pctChange(realAvgOrderValue, realPrevAov),
-        },
-        months: realSalesTrend.map((m) => m.label),
-        salesCurrent: realSalesTrend.map((m) => m.value),
-        salesPrevious: realPrevPeriodTrend,
-        collectionsTrend: realSalesTrend.map((m) => m.collections),
-        products: realProductPerformance.slice(0, 8).map((p) => ({ name: p.name, revenue: p.revenue, orders: p.orders, growth: null as number | null })),
-        clients: realClientPerformance.map((c) => ({ name: c.name, orders: c.orders, sales: c.sales, collections: c.collections, outstanding: Math.max(c.sales - c.collections, 0), growth: null as number | null })),
-        // No Target module exists in the backend yet — this section always shows the
-        // labeled demo dataset (see section header) regardless of `usingMockData`.
-        target: mock.target,
-        reps: realRepPerformance.map((r) => ({ name: r.name, sales: r.sales, orders: r.orders, collections: r.collections, visits: 0, followUps: 0, targetPct: null as number | null, conversionRate: null as number | null })),
-        fieldActivity: { total: realVisitStats.total, completed: realVisitStats.completed, pending: realVisitStats.pending, cancelled: realVisitStats.cancelled, weeklyTrend: [] as number[] },
-        followUps: { overdue: realFollowUpStats.overdue, pending: realFollowUpStats.pending, completed: realFollowUpStats.done, trend: [] as number[], highPriority: 0, upcoming: realFollowUpStats.pending },
-        collection: {
-          collected: realTotalCollections, outstanding: realOutstanding,
-          currentMonth: realSalesTrend[realSalesTrend.length - 1]?.collections ?? 0,
-          previousMonth: realSalesTrend[realSalesTrend.length - 2]?.collections ?? 0,
-          buckets: [
-            { label: '0\u201330 Days', value: Math.round(realOutstanding * 0.46) },
-            { label: '31\u201360 Days', value: Math.round(realOutstanding * 0.28) },
-            { label: '61\u201390 Days', value: Math.round(realOutstanding * 0.16) },
-            { label: '90+ Days', value: Math.round(realOutstanding * 0.1) },
-          ],
-        },
-        tableRows: realTableRows,
+  // View-model — every section below reads only from `view.*`, which is built from real, industry-scoped API data.
+  const view = {
+    kpis: {
+      totalSales: realTotalSales, totalOrders: fOrders.length, collections: realTotalCollections,
+      outstanding: realOutstanding, avgOrderValue: realAvgOrderValue,
+      deltaSales: pctChange(realTotalSales, realPrevSales), deltaOrders: pctChange(fOrders.length, prevOrders.length),
+      deltaCollections: pctChange(realTotalCollections, realPrevCollected), deltaOutstanding: pctChange(realOutstanding, realPrevOutstanding),
+      deltaAvgOrderValue: pctChange(realAvgOrderValue, realPrevAov),
+    },
+    months: realSalesTrend.map((m) => m.label),
+    salesCurrent: realSalesTrend.map((m) => m.value),
+    salesPrevious: realPrevPeriodTrend,
+    collectionsTrend: realSalesTrend.map((m) => m.collections),
+    products: realProductPerformance.slice(0, 8).map((p) => ({ name: p.name, revenue: p.revenue, orders: p.orders, growth: null as number | null })),
+    clients: realClientPerformance.map((c) => ({ name: c.name, orders: c.orders, sales: c.sales, collections: c.collections, outstanding: Math.max(c.sales - c.collections, 0), growth: null as number | null })),
+    target: realTarget,
+    reps: realRepPerformance.map((r) => {
+      const t = realTarget.reps.find((x) => x.name === r.name);
+      return {
+        name: r.name, sales: r.sales, orders: r.orders, collections: r.collections, visits: r.visits, followUps: r.followUps,
+        targetPct: t && t.target ? Math.round((t.achieved / t.target) * 100) : null as number | null,
+        conversionRate: r.leads ? Math.round((r.converted / r.leads) * 100) : null as number | null,
       };
+    }),
+    fieldActivity: { total: realVisitStats.total, completed: realVisitStats.completed, pending: realVisitStats.pending, cancelled: realVisitStats.cancelled, weeklyTrend: [] as number[] },
+    followUps: { overdue: realFollowUpStats.overdue, pending: realFollowUpStats.pending, completed: realFollowUpStats.done, trend: [] as number[], highPriority: 0, upcoming: realFollowUpStats.pending },
+    collection: {
+      collected: realTotalCollections, outstanding: realOutstanding,
+      currentMonth: realSalesTrend[realSalesTrend.length - 1]?.collections ?? 0,
+      previousMonth: realSalesTrend[realSalesTrend.length - 2]?.collections ?? 0,
+      buckets: [
+        { label: '0\u201330 Days', value: realAgeing[0] },
+        { label: '31\u201360 Days', value: realAgeing[1] },
+        { label: '61\u201390 Days', value: realAgeing[2] },
+        { label: '90+ Days', value: realAgeing[3] },
+      ],
+    },
+    tableRows: realTableRows,
+  };
 
   // ── Detailed report table — search / sort / paginate over `view.tableRows` ──
   const searchedRows = useMemo(() => {
@@ -634,7 +669,7 @@ export function ReportsPage() {
   const pagedRows = sortedRows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   function applyFilters() { setAppliedFilters(draftFilters); }
-  function resetFilters() { setDraftFilters(emptyFilters); setAppliedFilters(emptyFilters); setRange('month'); setSearch(''); }
+  function resetFilters() { setDraftFilters(emptyFilters); setAppliedFilters(emptyFilters); setRange('month'); setCustomFrom(''); setCustomTo(''); setSearch(''); }
 
   function exportCsv() {
     const header = ['Date', 'Order ID', 'Client', 'Sales Rep', 'Industry', 'Product', 'Order Value', 'Collection', 'Outstanding', 'Status'];
@@ -650,7 +685,6 @@ export function ReportsPage() {
 
   const rangeLabel = RANGES.find((r) => r.key === range)?.label ?? '';
   const productMax = Math.max(1, ...view.products.map((p) => p.revenue));
-  const salesMax = Math.max(1, ...view.salesCurrent, ...view.salesPrevious);
   const collectionsMax = Math.max(1, ...view.collection.buckets.map((b) => b.value));
   const fieldTotal = Math.max(view.fieldActivity.total, 1);
   const followUpTotal = Math.max(view.followUps.overdue + view.followUps.pending + view.followUps.completed, 1);
@@ -678,10 +712,17 @@ export function ReportsPage() {
       </div>
     </div>
 
-     <div className="rp-filter-bar">
+    <div className="rp-filter-bar">
       <div className="rp-filter-top-row">
         <div className="rp-range-bar">
           {RANGES.map((r) => <button key={r.key} className={`range-pill ${range === r.key ? 'active' : ''}`} onClick={() => setRange(r.key)}>{r.label}</button>)}
+          {range === 'custom' && (
+            <span className="range-custom">
+              <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+              <span>to</span>
+              <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+            </span>
+          )}
         </div>
       </div>
       <div className="rp-filter-controls">
@@ -710,15 +751,18 @@ export function ReportsPage() {
       </div>
     </div>
     {error && <p className="error-message">{error}<button className="link-button" onClick={() => void load()}>Retry</button></p>}
+    {!error && warnings.length > 0 && <p className="error-message">Some data could not be loaded ({warnings.join(', ')}), so these figures may be incomplete.<button className="link-button" onClick={() => void load()}>Retry</button></p>}
+    {!loading && !error && industryMissing && <p className="error-message">No {config.label} industry type is set up for this organisation, so there is nothing to report on yet.</p>}
+    {!loading && !error && !industryMissing && !hasRealActivity && <p className="ops-empty-inline">No {config.label} activity has been recorded yet, so every figure below is zero.</p>}
 
     {loading ? (
       <div className="kpi-grid rp-kpi-grid">
         {[0, 1, 2, 3, 4].map((i) => <div className="kpi-card" key={i}><div className="skeleton-block" style={{ width: '100%', height: '3rem' }} /></div>)}
       </div>
     ) : <>
-           <div className="kpi-grid rp-kpi-grid">
+      <div className="kpi-grid rp-kpi-grid">
         {kpiCards.map((k) => (
-     <div className="kpi-card" data-tone={k.tone} key={k.key} {...kpiClick(false, () => goToPage(KPI_TARGET_PAGE[k.key] ?? 'orders'))}>
+          <div className="kpi-card" data-tone={k.tone} key={k.key} {...kpiClick(false, () => goToPage(KPI_TARGET_PAGE[k.key] ?? 'orders'))}>
             <div className="kpi-card-top">
               <div className={`kpi-icon kpi-icon-${k.tone}`}>{k.icon}</div>
               {k.delta !== null && <small className={k.delta >= 0 ? 'text-trend-up' : 'text-trend-down'}>{k.delta >= 0 ? '\u2191' : '\u2193'} {Math.abs(k.delta)}%</small>}
@@ -729,7 +773,7 @@ export function ReportsPage() {
         ))}
       </div>
 
-            <div className="chart-grid rp-chart-grid-2">
+      <div className="chart-grid rp-chart-grid-2">
         <section className="ops-panel chart-panel">
           <header><div><p className="eyebrow">{terms.clientLabel} funded vs recorded</p><h2>Sales vs Collections</h2></div>
             <span className="chart-legend"><i className="legend-dot" style={{ background: 'var(--accent-blue-soft)', border: '1px solid var(--accent-blue)' }} />Sales<i className="legend-dot" style={{ background: 'var(--green)' }} />Collections</span>
@@ -801,27 +845,29 @@ export function ReportsPage() {
 
       <div className="chart-grid rp-chart-grid-2">
         <section className="ops-panel">
-          <header><div><p className="eyebrow">Demo data \u00b7 Target module not yet wired to backend</p><h2>Target vs Achievement</h2></div></header>
-          <div className="rp-target-overview">
-            <RadialProgress pct={Math.round((view.target.achieved / Math.max(view.target.overall, 1)) * 100)} />
-            <div className="rp-target-figures">
-              <div><span>Overall target</span><strong>{money(view.target.overall)}</strong></div>
-              <div><span>Achieved</span><strong>{money(view.target.achieved)}</strong></div>
-              <div><span>Achievement rate</span><strong>{Math.round((view.target.achieved / Math.max(view.target.overall, 1)) * 100)}%</strong></div>
+          <header><div><p className="eyebrow">{rangeLabel} · amount targets</p><h2>Target vs Achievement</h2></div></header>
+          {view.target.hasTargets ? (<>
+            <div className="rp-target-overview">
+              <RadialProgress pct={Math.round((view.target.achieved / Math.max(view.target.overall, 1)) * 100)} />
+              <div className="rp-target-figures">
+                <div><span>Overall target</span><strong>{money(view.target.overall)}</strong></div>
+                <div><span>Achieved</span><strong>{money(view.target.achieved)}</strong></div>
+                <div><span>Achievement rate</span><strong>{Math.round((view.target.achieved / Math.max(view.target.overall, 1)) * 100)}%</strong></div>
+              </div>
             </div>
-          </div>
-          <div className="rp-target-reps">
-            {view.target.reps.map((r) => {
-              const pct = Math.round((r.achieved / Math.max(r.target, 1)) * 100);
-              return (
-                <div className="rp-target-rep-row" key={r.name}>
-                  <span className="rp-mini-name"><i className="rep-avatar" style={{ background: avatarColor(r.name) }}>{initials(r.name)}</i>{r.name}</span>
-                  <div className="bar-track"><div className="bar-fill" style={{ width: `${Math.min(pct, 100)}%`, background: pct >= 90 ? 'var(--green)' : pct >= 60 ? 'var(--accent-blue)' : 'var(--amber)' }} /></div>
-                  <span className="rp-target-pct">{pct}%</span>
-                </div>
-              );
-            })}
-          </div>
+            <div className="rp-target-reps">
+              {view.target.reps.map((r) => {
+                const pct = Math.round((r.achieved / Math.max(r.target, 1)) * 100);
+                return (
+                  <div className="rp-target-rep-row" key={r.name}>
+                    <span className="rp-mini-name"><i className="rep-avatar" style={{ background: avatarColor(r.name) }}>{initials(r.name)}</i>{r.name}</span>
+                    <div className="bar-track"><div className="bar-fill" style={{ width: `${Math.min(pct, 100)}%`, background: pct >= 90 ? 'var(--green)' : pct >= 60 ? 'var(--accent-blue)' : 'var(--amber)' }} /></div>
+                    <span className="rp-target-pct">{pct}%</span>
+                  </div>
+                );
+              })}
+            </div>
+          </>) : <div className="ops-empty"><strong>No amount targets for this period</strong><p>Set sales, order value or collection targets on the Targets page and they will show up here.</p></div>}
         </section>
 
         <section className="ops-panel">
@@ -905,18 +951,11 @@ export function ReportsPage() {
           </div>
           <div className="rp-pagination">
             <button className="quiet-button" disabled={currentPage <= 1} onClick={() => setPageNum(currentPage - 1)}>Previous</button>
-            <span>Page {currentPage} of {totalPages} \u00b7 {sortedRows.length} orders</span>
+            <span>Page {currentPage} of {totalPages} · {sortedRows.length} orders</span>
             <button className="quiet-button" disabled={currentPage >= totalPages} onClick={() => setPageNum(currentPage + 1)}>Next</button>
           </div>
         </> : <div className="ops-empty"><strong>No orders match these filters</strong><p>Try widening the date range or clearing a filter.</p></div>}
       </section>
     </>}
   </section>;
-}
-
-function hasLoadedOnce(raw: Raw): boolean {
-  // A cheap "did the initial fetch resolve" signal: once loaded, `industryTypes`
-  // is always an array (possibly empty). We just need loading===false upstream;
-  // this guards against showing the demo banner during the very first paint.
-  return Array.isArray(raw.industryTypes);
 }

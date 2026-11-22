@@ -13,9 +13,11 @@ import { all, bad, diffDays, industryProducts, num, r2, today, type Row } from '
 import { isGstin } from '../lib/textile-invoice-math.js';
 import { createSchoolCreditNote, createSchoolInvoice } from '../lib/school-gst.js';
 import { cancelGrn, createGrn, createPurchaseOrder, createSupplierPayment, setPurchaseOrderStatus, supplierOutstanding } from '../lib/school-purchase.js';
+import { emailPurchaseOrder } from '../lib/school-po-mail.js';
 
 export const schoolDistributorRouter = Router();
 const manager = requireRoles('super_admin', 'admin', 'sales_manager');
+const SKIP_STATUS = '("cancelled","rejected","draft","pending_approval")';
 type Req = Parameters<RequestHandler>[0];
 
 const org = (req: Req) => { const v = req.header('x-organization-id'); if (!v) throw new AppError(400, 'ORGANIZATION_CONTEXT_REQUIRED', 'x-organization-id is required'); return v; };
@@ -102,13 +104,38 @@ schoolDistributorRouter.delete('/school/suppliers/:id', authenticate, manager, r
 
 // ------------------------------------------------------------------ Purchase orders
 schoolDistributorRouter.get('/school/purchase-orders', authenticate, manager, route(async (req, res, industry) => {
-  res.json({ data: await all(() => supabaseAdmin.from('school_purchase_orders').select('*, school_suppliers(supplier_name, supplier_code)').eq('organization_id', org(req)).eq('industry_type_id', industry).order('created_at', { ascending: false })) });
+  res.json({ data: await all(() => supabaseAdmin.from('school_purchase_orders').select('*, school_suppliers(supplier_name, supplier_code, gstin, address, city, state, phone, email)').eq('organization_id', org(req)).eq('industry_type_id', industry).order('created_at', { ascending: false })) });
 }));
 schoolDistributorRouter.post('/school/purchase-orders', authenticate, manager, route(async (req, res, industry) => {
   res.status(201).json({ data: await createPurchaseOrder(org(req), industry, body(req), actorOf(req)) });
 }));
 schoolDistributorRouter.patch('/school/purchase-orders/:id', authenticate, manager, route(async (req, res, industry) => {
   res.json({ data: await setPurchaseOrderStatus(org(req), industry, idOf(req), String(body(req).status ?? '')) });
+}));
+
+// Suggested purchase quantities. What still has to go out on live School orders that are not dispatched yet, plus the
+// product's minimum stock buffer, less what is on the shelf and already on open purchase orders.
+schoolDistributorRouter.get('/school/purchase-suggestions', authenticate, manager, route(async (req, res, industry) => {
+  const o = org(req);
+  const [products, orders, openPos] = await Promise.all([
+    industryProducts(o, industry),
+    all(() => supabaseAdmin.from('sale_orders').select('id, status, dispatch_status, clients!inner(industry_type_id), sale_order_items(product_id, quantity, free_quantity)').eq('organization_id', o).eq('clients.industry_type_id', industry).not('status', 'in', SKIP_STATUS)),
+    all(() => supabaseAdmin.from('school_purchase_orders').select('lines').eq('organization_id', o).eq('industry_type_id', industry).in('status', ['Sent', 'Partially received'])),
+  ]);
+  const demand = new Map<string, number>();
+  for (const ord of orders) {
+    if (['dispatched', 'delivered'].includes(String(ord.dispatch_status ?? 'pending'))) continue;
+    for (const item of (ord.sale_order_items ?? []) as Row[]) demand.set(String(item.product_id), (demand.get(String(item.product_id)) ?? 0) + num(item.quantity) + num(item.free_quantity));
+  }
+  const incoming = new Map<string, number>();
+  for (const po of openPos) for (const l of (po.lines ?? []) as Row[]) incoming.set(String(l.product_id), (incoming.get(String(l.product_id)) ?? 0) + Math.max(0, num(l.quantity) - num(l.received_quantity)));
+  const items = products.map((p) => {
+    const stock = p.stock_quantity === null || p.stock_quantity === undefined ? null : num(p.stock_quantity);
+    const min = p.min_stock_level === null || p.min_stock_level === undefined ? null : num(p.min_stock_level);
+    const need = demand.get(String(p.id)) ?? 0; const onOrder = incoming.get(String(p.id)) ?? 0;
+    return { product_id: p.id, stock, min_stock_level: min, pending_orders: need, on_order: onOrder, suggested: Math.ceil(Math.max(need + (min ?? 0) - (stock ?? 0) - onOrder, 0)) };
+  }).filter((r) => r.suggested > 0 && (r.stock !== null || r.pending_orders > 0)).sort((a, b) => b.suggested - a.suggested);
+  res.json({ data: { items } });
 }));
 
 // ------------------------------------------------------------------ Goods receipt (GRN)
@@ -144,7 +171,7 @@ schoolDistributorRouter.get('/school/invoices', authenticate, manager, route(asy
 }));
 schoolDistributorRouter.get('/school/invoices/pending-orders', authenticate, manager, route(async (req, res, industry) => {
   const orders = await all(() => supabaseAdmin.from('sale_orders').select('id, order_number, total_amount, dispatch_status, status, clients!inner(client_name, industry_type_id)')
-    .eq('organization_id', org(req)).eq('clients.industry_type_id', industry).in('dispatch_status', ['dispatched', 'delivered']).not('status', 'in', '(cancelled,rejected,draft,pending_approval)'));
+    .eq('organization_id', org(req)).eq('clients.industry_type_id', industry).in('dispatch_status', ['dispatched', 'delivered']).not('status', 'in', SKIP_STATUS));
   const invoiced = new Set((await all(() => supabaseAdmin.from('school_invoices').select('order_id').eq('organization_id', org(req)).eq('industry_type_id', industry).neq('status', 'Cancelled'))).map((r) => String(r.order_id)));
   res.json({ data: orders.filter((o) => !invoiced.has(String(o.id))).map((o) => ({ id: o.id, order_number: o.order_number, client_name: (Array.isArray(o.clients) ? o.clients[0] : o.clients)?.client_name ?? null, total_amount: o.total_amount, delivery_status: o.dispatch_status })) });
 }));

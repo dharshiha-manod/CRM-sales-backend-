@@ -6,7 +6,7 @@ import { ensureLocationPermission, getCurrentLocation, type GpsReading } from '.
 export const TRACKING_TASK = 'field-sales-work-day-tracking';
 
 // Tune these for battery vs. detail. One point per minute is enough for a route trail.
-const TIME_INTERVAL_MS = 60000;
+const TIME_INTERVAL_MS = 30000;
 const BATCH_SIZE = 100;
 const MAX_QUEUE = 5000;
 
@@ -160,7 +160,7 @@ export async function startTracking(session: WorkDaySession): Promise<TrackingMo
     const background = await Location.requestBackgroundPermissionsAsync();
     if (background.status !== 'granted') throw new Error('Background location not granted');
     await Location.startLocationUpdatesAsync(TRACKING_TASK, {
-      accuracy: Location.Accuracy.Balanced,
+      accuracy: Location.Accuracy.High,
       timeInterval: TIME_INTERVAL_MS,
       distanceInterval: 0,
       pausesUpdatesAutomatically: false,
@@ -173,7 +173,7 @@ export async function startTracking(session: WorkDaySession): Promise<TrackingMo
     });
   } catch {
     foregroundWatcher = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.Balanced, timeInterval: TIME_INTERVAL_MS, distanceInterval: 0 },
+      { accuracy: Location.Accuracy.High, timeInterval: TIME_INTERVAL_MS, distanceInterval: 0 },
       (location) => { void enqueueLocations([location]); },
     );
   }
@@ -222,7 +222,7 @@ export async function startWorkDay(location?: GpsReading): Promise<{ session: Wo
 export async function endWorkDay(): Promise<void> {
   await flushQueue(); // get the route to the server before closing the day
   let location: GpsReading | null = null;
-  try { location = await getCurrentLocation(); } catch { /* ending the day does not need a fix */ }
+  try { location = await getCurrentLocation({ maxWaitMs: 5000 }); } catch { /* ending the day does not need a fix */ }
   await api('/work-days/end', { method: 'POST', body: { location } });
   await stopTracking();
   await flushQueue();
