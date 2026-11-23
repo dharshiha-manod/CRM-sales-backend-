@@ -59,8 +59,6 @@ fmcgOperationsRouter.post('/fmcg/returns/:id/decision', authenticate, approvers,
 });
 fmcgOperationsRouter.patch('/fmcg/returns/:id', authenticate, approvers, async (req, res) => {
   res.json({ data: await updateReturn(org(req), req.auth!.sub as string, req.industryScope!, paramId(req), returnSchema.parse(req.body ?? {})) });
-});fmcgOperationsRouter.patch('/fmcg/returns/:id', authenticate, approvers, async (req, res) => {
-  res.json({ data: await updateReturn(org(req), req.auth!.sub as string, req.industryScope!, paramId(req), returnSchema.parse(req.body ?? {})) });
 });
 fmcgOperationsRouter.delete('/fmcg/returns/:id', authenticate, approvers,async (req, res) => { await deleteReturn(org(req), req.industryScope!, paramId(req)); res.status(204).send(); });
 

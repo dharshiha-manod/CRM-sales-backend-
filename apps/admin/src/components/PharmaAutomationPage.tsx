@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api } from '../lib/api';
-import './PharmaAutomationPage.css';
+import './Pharmaautomationpage.css';
 import { Actions, Loading, Page, Status, Table, money, money0, msgOf, send, dShow, useIndustryId, useList, useProducts } from './PharmaDistributorPages';
 
 type Row = Record<string, any>;

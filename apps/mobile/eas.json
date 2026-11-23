@@ -9,7 +9,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://REPLACE-WITH-YOUR-HTTPS-DOMAIN/api",
+       "EXPO_PUBLIC_API_URL": "https://channel-swampland-facelift.ngrok-free.dev/api",
         "EXPO_PUBLIC_SUPABASE_URL": "https://zotsmpnahmizhsamnerf.supabase.co",
         "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_OkqGMBF_DqgbqXGzd7AGnA_7_K5Lykt",
         "EXPO_PUBLIC_ORGANIZATION_ID": "b74cff22-94db-4282-b895-b447e96b791d"

@@ -35,6 +35,15 @@
         "FOREGROUND_SERVICE_LOCATION"
       ]
     },
-    "experiments": { "typedRoutes": true }
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "33502ef3-327f-48d0-a5bf-bc65530e5ea1"
+      }
+    },
+    "owner": "dharshiha"
   }
 }

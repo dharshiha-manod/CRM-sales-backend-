@@ -2,7 +2,7 @@
 // Local vs International is DERIVED from the client's country, never typed.
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from './supabase.js';
-
+import { todayLocal } from './ist-date.js';
 export const HOME_COUNTRY = 'IN';
 export const HOME_CURRENCY = 'INR';
 export type MarketScope = 'local' | 'international';
@@ -37,7 +37,7 @@ export async function isMultiCurrencyIndustry(org: string, industryTypeId?: stri
  * (Currency Management: From currency -> To currency INR, effective / expiry dates).
  */
 async function lookupRateToInr(org: string, industryTypeId: string, industryCode: string, currency: string): Promise<number | null> {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal();
   if (industryCode === 'trading') {
     const { data, error } = await supabaseAdmin.from('trading_currency_rates').select('exchange_rate, effective_date, expiry_date')
       .eq('organization_id', org).eq('industry_type_id', industryTypeId).eq('base_currency', currency).eq('target_currency', HOME_CURRENCY)

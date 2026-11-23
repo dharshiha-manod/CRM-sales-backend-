@@ -110,9 +110,15 @@ schoolDistributorRouter.post('/school/purchase-orders', authenticate, manager, r
   res.status(201).json({ data: await createPurchaseOrder(org(req), industry, body(req), actorOf(req)) });
 }));
 schoolDistributorRouter.patch('/school/purchase-orders/:id', authenticate, manager, route(async (req, res, industry) => {
-  res.json({ data: await setPurchaseOrderStatus(org(req), industry, idOf(req), String(body(req).status ?? '')) });
+  const status = String(body(req).status ?? '');
+  const data = await setPurchaseOrderStatus(org(req), industry, idOf(req), status);
+  // Marking a PO as Sent e-mails it to the supplier automatically (once). A mail problem never blocks the status change.
+  const email = status === 'Sent' ? await emailPurchaseOrder(org(req), industry, idOf(req)) : null;
+  res.json({ data, email });
 }));
-
+schoolDistributorRouter.post('/school/purchase-orders/:id/send', authenticate, manager, route(async (req, res, industry) => {
+  res.json({ data: await emailPurchaseOrder(org(req), industry, idOf(req), { resend: true }) });
+}));
 // Suggested purchase quantities. What still has to go out on live School orders that are not dispatched yet, plus the
 // product's minimum stock buffer, less what is on the shelf and already on open purchase orders.
 schoolDistributorRouter.get('/school/purchase-suggestions', authenticate, manager, route(async (req, res, industry) => {

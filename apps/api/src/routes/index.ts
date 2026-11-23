@@ -47,7 +47,8 @@ import { pharmaDistributorRouter } from './pharma-distributor.routes.js';
 import { pharmaAutomationRouter } from './pharma-automation.routes.js';
 import { pharmaAutomationPlusRouter } from './pharma-automation-plus.routes.js';
 import { vehicleRouter } from './vehicle.routes.js';
-
+import { fmcgPurchaseRouter } from './fmcg-purchase.routes.js';
+import { fmcgAutomationRouter } from './fmcg-automation.routes.js';
 export const apiRouter = Router();
 apiRouter.get('/health', health);
 apiRouter.use('/auth', authRouter);
@@ -99,3 +100,5 @@ apiRouter.use(pharmaDistributorRouter);
 apiRouter.use(pharmaAutomationRouter);
 apiRouter.use(pharmaAutomationPlusRouter);
 apiRouter.use(vehicleRouter);
+apiRouter.use(fmcgPurchaseRouter);
+apiRouter.use(fmcgAutomationRouter);

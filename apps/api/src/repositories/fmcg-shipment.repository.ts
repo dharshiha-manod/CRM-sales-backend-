@@ -136,7 +136,7 @@ export async function createShipment(org: string, scope: IndustryScope, userId: 
 }
 type UpdateInput = { status?: unknown; transportRef?: unknown; shippedAt?: unknown; expectedArrival?: unknown; deliveredAt?: unknown; notes?: unknown;
   transporterName?: unknown; driverName?: unknown; driverPhone?: unknown; ewayBillNo?: unknown; ewayBillValidUntil?: unknown; invoiceNo?: unknown;
-  receivedBy?: unknown; podFileUrl?: unknown; receipt?: unknown };
+  receivedBy?: unknown; podFileUrl?: unknown; receipt?: unknown; freightCost?: unknown; freightSell?: unknown };
 /** Optional text that must match a pattern (digits only etc.); blank clears it. */
 function patternOrNull(value: unknown, label: string, pattern: RegExp, hint: string, max: number): string | null {
   const v = textOrNull(value, label, max);

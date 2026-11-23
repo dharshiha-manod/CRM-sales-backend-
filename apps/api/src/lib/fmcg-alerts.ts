@@ -1,10 +1,11 @@
-// FMCG alerts computed on the server (so every device and the mobile app see the same list):
+  // FMCG alerts computed on the server (so every device and the mobile app see the same list):
 //  - expired batches and batches expiring within the "Expiry warning (days)" Setting, with units still on hand
 //  - products at or below their minimum stock level (products.min_stock_level)
 // Read-only. The admin Notifications page and dashboards can call GET /fmcg/alerts instead of reading browser storage.
 import { supabaseAdmin } from './supabase.js';
 import { getFmcgExpiryRules } from './settings.js';
 import { daysUntilExpiry } from './stock.js';
+import { todayLocal } from './ist-date.js';
 
 const num = (v: unknown) => Number(v ?? 0) || 0;
 const fail = (error: unknown): never => { throw error; };
@@ -23,7 +24,7 @@ async function industryProductIds(org: string, industryTypeId: string): Promise<
   return ids;
 }
 
-export async function getFmcgAlerts(org: string, industryTypeId: string, today = new Date().toISOString().slice(0, 10)) {
+export async function getFmcgAlerts(org: string, industryTypeId: string, today = todayLocal()) {  
   const productIds = await industryProductIds(org, industryTypeId);
   if (productIds.length === 0) return { expiry: [] as ExpiryAlert[], lowStock: [] as LowStockAlert[], warningDays: 0 };
   const { expiryWarningDays } = await getFmcgExpiryRules(org);

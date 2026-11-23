@@ -6,6 +6,7 @@ import { assertRecordInScope, isGlobalRole, type IndustryScope } from '../lib/in
 import { changeProductStock } from './products.repository.js';
 import { changeBatch } from '../lib/stock.js';
 import { getFmcgExpiryRules } from '../lib/settings.js';
+import { todayLocal } from '../lib/ist-date.js';
 
 const fail = (error: unknown): never => { throw error; };
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a valid date.').nullable().optional();
@@ -30,7 +31,7 @@ export function addDays(date: string, days: number): string {
 }
 
 /** <product code>-<yymmdd of manufacture>-<running no.>, e.g. BEV-DAIR-761-261008-01. Skips numbers already used by that product. */
-export function autoBatchNo(productCode: string, mfgDate: string | null | undefined, existing: string[], today = new Date().toISOString().slice(0, 10)): string {
+export function autoBatchNo(productCode: string, mfgDate: string | null | undefined, existing: string[], today = todayLocal()): string {
   const day = (mfgDate || today).replace(/-/g, '').slice(2);
   const prefix = `${productCode}-${day}`;
   const used = new Set(existing.map((n) => n.toLowerCase()));

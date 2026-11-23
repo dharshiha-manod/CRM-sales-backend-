@@ -8,6 +8,7 @@
 //  - Buy X get Y: free units are EXTRA units shipped at no charge (floor(qty / X) * Y). They do not change the price.
 import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from './supabase.js';
+import { todayLocal } from './ist-date.js';
 
 export type SchemeType = 'percentage' | 'flat_amount' | 'buy_x_get_y' | 'slab' | 'slab_free' | 'value_slab' | 'special_price' | 'pack_off';
 // One slab row. slab: minQuantity + discountPercent. slab_free: minQuantity + freeQuantity. value_slab: minValue (INR) + discountPercent.
@@ -89,7 +90,7 @@ export function bestSchemeFor(schemes: LiveScheme[], productId: string, quantity
 /** Schemes in force today for one industry that cover at least one of the given products. */
 export async function loadLiveSchemes(org: string, industryTypeId: string | null | undefined, productIds: string[]): Promise<LiveScheme[]> {
   if (!industryTypeId || productIds.length === 0) return [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal(); // business (IST) date, same as the stock engine
   const { data, error } = await supabaseAdmin.from('fmcg_schemes')
     .select('id, name, scheme_type, discount_percent, discount_amount, buy_quantity, free_quantity, slabs, fmcg_scheme_products(product_id)')
     .eq('organization_id', org).eq('industry_type_id', industryTypeId).eq('status', 'active')

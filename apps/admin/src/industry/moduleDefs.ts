@@ -10,10 +10,14 @@ export interface ModuleDef {
 
 export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
   fmcg: [
+    { id: 'automation', label: 'Automation Center', icon: '⚙' },
     { id: 'route-beat', label: 'Route / Beat Management', icon: '⌖' },
     { id: 'scheme-discount', label: 'Scheme / Discount Management', icon: '％' },
     { id: 'shipment', label: 'Shipments', icon: '🚚' },
     { id: 'distributor', label: 'Distributor Management', icon: '▤' },
+        { id: 'vendors', label: 'Vendors / Companies', icon: '🏭' },
+    { id: 'purchase-orders', label: 'Purchase Orders', icon: '🧾' },
+    { id: 'grn', label: 'Goods Receipt (GRN)', icon: '📥' },
     { id: 'sales-return-damage', label: 'Sales Return & Damage Management', icon: '↩' },
      { id: 'batch-expiry', label: 'Batch & Expiry Management', icon: '⏱' },
       { id: 'currency-rates', label: 'Currency Rates', icon: '¤' },

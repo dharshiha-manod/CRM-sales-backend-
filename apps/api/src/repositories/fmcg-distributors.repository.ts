@@ -6,12 +6,13 @@ import { AppError } from '../errors/app-error.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { getClientCredit } from '../lib/credit.js';
 import { orderBase } from '../lib/fmcg-market.js';
+import { todayLocal } from '../lib/ist-date.js';
 
 const fail = (code: string, e: { message: string }): never => { throw new AppError(500, code, e.message); };
 const num = (v: unknown) => Number(v ?? 0) || 0;
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const r1 = (v: number) => Math.round(v * 10) / 10;
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => todayLocal();
 const daysBetween = (from: string, to: string) => Math.round((Date.parse(to.slice(0, 10)) - Date.parse(from.slice(0, 10))) / 86_400_000);
 const addDays = (date: string, n: number) => new Date(Date.parse(date) + n * 86_400_000).toISOString().slice(0, 10);
 const NOT_RECEIVED = '(cancelled,rejected,pending_approval)';
