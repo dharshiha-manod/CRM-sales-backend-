@@ -197,6 +197,8 @@ export function SchoolPurchaseOrdersPage() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [pageError, setPageError] = useState('');
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [unassigned, setUnassigned] = useState<Row[]>([]);
   const [view, setView] = useState<Row | null>(null);
 
   useEffect(() => {
@@ -290,6 +292,18 @@ export function SchoolPurchaseOrdersPage() {
       else setMessage(`Purchase order ${res.data.po_number} ${send ? `created, marked Sent${mailNote(info)}` : 'saved as Draft'}.`);
     } catch (err) { setFormError(messageOf(err, 'Unable to create.')); } finally { setBusy(false); }
   }
+  // One click: a Draft PO per supplier from pending orders + low stock (supplier and rate come from the last purchase of each product).
+  async function autoDraft() {
+    setPageError(''); setMessage(''); setUnassigned([]); setAutoBusy(true);
+    try {
+      const r = await api<{ data: { created: Row[]; unassigned: Row[]; failed: Row[] } }>(`/school/purchase-orders/auto-draft?industryTypeId=${industryId}`, { method: 'POST', body: JSON.stringify({ industryTypeId: industryId }) });
+      const d = r.data;
+      setMessage(d.created.length ? `${d.created.length} draft order(s) created: ${d.created.map((c) => `${c.po_number} (${c.supplier_name}, ${c.lines} item(s))`).join('; ')}. Check them, then mark Sent.` : 'Nothing to order right now.');
+      setUnassigned(d.unassigned);
+      if (d.failed.length) setPageError(d.failed.map((f) => `${f.supplier_name}: ${f.reason}`).join(' | '));
+      await reload();
+    } catch (err) { setPageError(err instanceof Error ? err.message : 'Unable to create the draft orders.'); } finally { setAutoBusy(false); }
+  }
   async function setStatus(po: Row, status: string) {
     setPageError(''); setMessage('');
        try {
@@ -336,11 +350,13 @@ export function SchoolPurchaseOrdersPage() {
 
       <div className="master-toolbar" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <button type="button" className="primary-action" onClick={() => openNew()}>+ New purchase order</button>
+        <button type="button" className="quiet-button" disabled={autoBusy || !industryId} onClick={() => void autoDraft()}>{autoBusy ? 'Drafting…' : '⚡ Draft orders from pending orders & low stock'}</button>
         <input placeholder="Search PO number or supplier" value={search} onChange={(e) => setSearch(e.target.value)} style={{ minWidth: 240 }} />
         <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{STATUSES.map((s) => <button key={s} type="button" style={chip(filter === s)} onClick={() => setFilter(s)}>{s}</button>)}</span>
       </div>
       {(error || pageError) && <p className="error-message">{error || pageError}</p>}
       {message && <p className="success-message">{message}</p>}
+      {unassigned.length > 0 && <p className="error-message">No supplier known yet for: {unassigned.map((u) => `${u.product_code} ${u.product_name} (${u.suggested})`).join(', ')}. Place these with + New purchase order.</p>}
       {!activeSuppliers.length && !suppliers.loading && <p className="error-message">Add a supplier first (Suppliers / Publishers), then create purchase orders.</p>}
 
       {shown.length === 0 ? <p className="empty-state">{loading ? 'Loading…' : 'No purchase orders match.'}</p> : (

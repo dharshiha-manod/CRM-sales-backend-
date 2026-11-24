@@ -5,6 +5,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { api } from '../lib/api';
 import { accuracyLevel, formatDistance } from '../lib/geo';
 import { getCurrentLocation, type GpsReading } from '../lib/location';
+import { sendOrQueue } from '../lib/outbox';
+import { takeVisitPhoto } from '../lib/photo';
 import { colors, radius, shadow } from '../lib/theme';
 import { ensureWorkDayStarted, isTrackingRunning, setActiveVisitId } from '../lib/tracking';
 import { AppButton } from './AppButton';
@@ -75,6 +77,7 @@ export function FieldVisitPanel({ clients, refreshKey = 0, onChanged }: { client
   const [cart, setCart] = useState<CatalogCartItem[]>([]);
   const [pendingRequests, setPendingRequests] = useState<PendingProductRequest[]>([]);
   const [pickerVisible, setPickerVisible] = useState(false);
+  const [photoBusy, setPhotoBusy] = useState(false);
   const [, forceTick] = useState(0);
   const pingTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -136,6 +139,21 @@ export function FieldVisitPanel({ clients, refreshKey = 0, onChanged }: { client
   function openClientMap(client: AssignedClient) {
     if (client.latitude == null || client.longitude == null) return;
     router.push({ pathname: '/client-map', params: { clientName: client.client_name, latitude: String(client.latitude), longitude: String(client.longitude) } } as never);
+  }
+
+  async function addPhoto() {
+    if (!activeVisit) return;
+    setPhotoBusy(true);
+    try {
+      const dataUrl = await takeVisitPhoto();
+      if (!dataUrl) return;
+      const { queued } = await sendOrQueue('Visit photo', `/field-visits/${activeVisit.id}/photos`, 'POST', { dataUrl });
+      setNotice(queued ? { tone: 'warn', text: 'No network. Photo saved on your phone and will upload automatically.' } : { tone: 'ok', text: 'Photo added to this visit.' });
+    } catch (cause) {
+      setNotice({ tone: 'error', text: (cause as Error).message });
+    } finally {
+      setPhotoBusy(false);
+    }
   }
 
   function addProduct(product: { id: string; product_name: string }) {
@@ -285,6 +303,8 @@ export function FieldVisitPanel({ clients, refreshKey = 0, onChanged }: { client
               </View>
             ) : null}
           </View>
+
+                <AppButton title="📷 Add visit photo" variant="secondary" compact loading={photoBusy} disabled={photoBusy || working !== null} onPress={() => void addPhoto()} />
 
           <Text style={styles.label}>Outcome</Text>
           <View style={styles.outcomeRow}>

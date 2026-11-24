@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { fieldActivity } from '../controllers/field-activity.controller.js';
+import { visitPhotos } from '../controllers/visit-photos.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { requireRoles } from '../middleware/authorize.js';
 
@@ -15,3 +16,4 @@ fieldActivityRouter.post('/field-visits/:id/activities', authenticate, requireRo
 fieldActivityRouter.post('/field-visits/check-in', authenticate, requireRoles('sales_representative'), fieldActivity.checkIn);
 fieldActivityRouter.post('/field-visits/:id/pings', authenticate, requireRoles('sales_representative'), fieldActivity.ping);
 fieldActivityRouter.patch('/field-visits/:id/check-out', authenticate, requireRoles('sales_representative'), fieldActivity.checkOut);
+fieldActivityRouter.post('/field-visits/:id/photos', authenticate, requireRoles('sales_representative'), visitPhotos.upload);

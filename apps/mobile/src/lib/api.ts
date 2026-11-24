@@ -17,7 +17,7 @@ export async function api<T>(path: string, options?: { method?: 'GET' | 'POST' |
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: { message?: string; code?: string; details?: unknown } } | null;
-    const error = Object.assign(new Error(body?.error?.message ?? `Request failed (${response.status})`), { code: body?.error?.code, details: body?.error?.details });
+    const error = Object.assign(new Error(body?.error?.message ?? `Request failed (${response.status})`), { code: body?.error?.code, details: body?.error?.details, status: response.status });
     throw error;
   }
   return response.json() as Promise<T>;

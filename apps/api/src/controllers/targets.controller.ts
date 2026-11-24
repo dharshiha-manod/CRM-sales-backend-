@@ -1,5 +1,6 @@
 import type { RequestHandler } from 'express';
 import { AppError } from '../errors/app-error.js';
+import { fieldActivityService } from '../services/field-activity.service.js';
 import { targetsService } from '../services/targets.service.js';
 import { targetAdjustSchema, targetCreateSchema, targetLifecycleSchema, targetUpdateSchema } from '../validation/targets.schemas.js';
 
@@ -20,6 +21,7 @@ export const targets: Record<string, RequestHandler> = {
     };
     res.json({ data: await targetsService.list(org(req), filters, scope(req)) });
   },
+  mine: async (req, res) => { const organizationId = org(req); const rep = await fieldActivityService.currentRepresentative(organizationId, req.auth!.sub!); res.json({ data: await targetsService.mine(organizationId, rep.id as string) }); },
   get: async (req, res) => res.json({ data: await targetsService.get(org(req), id(req.params.id), scope(req)) }),
   create: async (req, res) => res.status(201).json({ data: await targetsService.create(org(req), req.auth!.sub!, targetCreateSchema.parse(req.body)) }),
   update: async (req, res) => res.json({ data: await targetsService.update(org(req), id(req.params.id), scope(req), targetUpdateSchema.parse(req.body)) }),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { AppButton } from './AppButton';
 import { colors, radius, shadow } from '../lib/theme';
@@ -59,7 +59,11 @@ export function WorkDayPanel({ refreshKey = 0, onChanged }: { refreshKey?: numbe
   }, [readLocal]);
 
   useEffect(() => { void load(); }, [load, refreshKey]);
-  useEffect(() => subscribeTracking(() => { void readLocal(); }), [readLocal]);
+   useEffect(() => subscribeTracking(() => { void readLocal(); }), [readLocal]);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => { if (state === 'active') void load(); });
+    return () => sub.remove();
+  }, [load]);
   useEffect(() => {
     const id = setInterval(() => { forceTick((current) => current + 1); void readLocal(); }, 30000);
     return () => clearInterval(id);

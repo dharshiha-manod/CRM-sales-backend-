@@ -8,7 +8,9 @@
     "userInterfaceStyle": "automatic",
     "plugins": [
       "expo-router",
-      "expo-secure-store",
+         "expo-secure-store",
+      ["expo-notifications", { "color": "#2563eb" }],
+      ["expo-image-picker", { "cameraPermission": "Allow Field Sales to take photos during visits." }],
       [
         "expo-location",
         {

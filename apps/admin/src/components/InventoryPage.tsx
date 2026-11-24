@@ -341,6 +341,7 @@ export function InventoryPage() {
   type ApiBatch = { product_id: string; batch_no: string; mfg_date: string | null; expiry_date: string | null; quantity: number };
   const [batches, setBatches] = useState<ApiBatch[]>([]);
   async function loadBatches() {
+    if (activeIndustry !== 'fmcg') { setBatches([]); return; }   // CHANGED: batches endpoint is FMCG only
     try {
       const res = await api<{ data: ApiBatch[] }>('/fmcg/batches');
       setBatches(res.data ?? []);

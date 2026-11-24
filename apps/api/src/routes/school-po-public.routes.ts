@@ -1,6 +1,6 @@
 // Public (no login) endpoints used by the supplier's purchase order page. Mounted under /public next to the quotation links.
 import { Router } from 'express';
-import { getPublicPo, markPoOpened, respondPublicPo } from '../lib/school-po-mail.js';
+import { getPublicPo, markPoOpened, respondPublicPo, shipPublicPo } from '../lib/school-po-mail.js';
 
 export const schoolPoPublicRouter = Router();
 const tokenOf = (v: unknown) => String(Array.isArray(v) ? v[0] : v ?? '');
@@ -13,4 +13,7 @@ schoolPoPublicRouter.post('/school-po/:token/opened', async (req, res, next) => 
 });
 schoolPoPublicRouter.post('/school-po/:token/respond', async (req, res, next) => {
   try { res.json({ data: await respondPublicPo(tokenOf(req.params.token), (req.body ?? {}) as Record<string, unknown>) }); } catch (e) { next(e); }
+});
+schoolPoPublicRouter.post('/school-po/:token/shipped', async (req, res, next) => {
+  try { res.json({ data: await shipPublicPo(tokenOf(req.params.token), (req.body ?? {}) as Record<string, unknown>) }); } catch (e) { next(e); }
 });

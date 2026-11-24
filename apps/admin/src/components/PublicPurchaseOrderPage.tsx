@@ -25,6 +25,9 @@ export function PublicPurchaseOrderPage({ token }: { token: string }) {
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState('');
+  const [ship, setShip] = useState({ invoice_no: '', vehicle_no: '', eta: '', note: '' });
+  const [shipped, setShipped] = useState(false);
+  const [shipError, setShipError] = useState('');
 
   useEffect(() => {
     const t = encodeURIComponent(token);
@@ -36,6 +39,12 @@ export function PublicPurchaseOrderPage({ token }: { token: string }) {
     setSaving(true); setError('');
     try { const r = await call(`/public/school-po/${encodeURIComponent(token)}/respond`, 'POST', { decision, delivery_date: date || undefined, note }); setDone(r.supplier_response); }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to save.'); } finally { setSaving(false); }
+  }
+
+  async function sendShipment() {
+    setSaving(true); setShipError('');
+    try { await call(`/public/school-po/${encodeURIComponent(token)}/shipped`, 'POST', ship); setShipped(true); }
+    catch (e) { setShipError(e instanceof Error ? e.message : 'Unable to save.'); } finally { setSaving(false); }
   }
 
   if (error && !po) return <main style={page}><div style={{ ...card, padding: 32, textAlign: 'center' }}><h2>Purchase order unavailable</h2><p>{error}</p></div></main>;
@@ -80,6 +89,24 @@ export function PublicPurchaseOrderPage({ token }: { token: string }) {
               </div>
             </div>
           ) : <p style={{ marginTop: 20, color: '#64748b' }}>This order is {String(po.status).toLowerCase()} and can no longer be answered.</p>}
+
+          {po.can_ship && (
+            <div style={{ marginTop: 18, padding: 18, borderRadius: 10, background: '#f8f7ff', border: '1px solid #ddd6fe' }}>
+              <h3 style={{ margin: '0 0 4px' }}>Shipment details</h3>
+              {shipped || po.shipped_at ? (
+                <p style={{ margin: 0, fontSize: 14 }}><b>✓ Shipment noted.</b> The buyer's warehouse can now see this order as arriving{po.shipment_invoice_no || ship.invoice_no ? ` with invoice ${po.shipment_invoice_no || ship.invoice_no}` : ''}.</p>
+              ) : (<>
+                <p style={{ margin: '0 0 10px', fontSize: 13, color: '#475569' }}>Sent the goods? Tell the buyer so the warehouse is ready. This also confirms the order.</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+                  <label style={{ fontSize: 13 }}>Your invoice no.<input style={input} value={ship.invoice_no} onChange={(e) => setShip({ ...ship, invoice_no: e.target.value })} /></label>
+                  <label style={{ fontSize: 13 }}>Vehicle / LR no.<input style={input} value={ship.vehicle_no} onChange={(e) => setShip({ ...ship, vehicle_no: e.target.value })} /></label>
+                  <label style={{ fontSize: 13 }}>Arriving on<input type="date" style={input} value={ship.eta} onChange={(e) => setShip({ ...ship, eta: e.target.value })} /></label>
+                </div>
+                {shipError && <p style={{ color: '#b42318', fontSize: 14 }}>{shipError}</p>}
+                <button type="button" disabled={saving} onClick={() => void sendShipment()} style={{ marginTop: 12, background: '#5925dc', color: '#fff', border: 0, borderRadius: 8, padding: '11px 24px', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>Mark as shipped</button>
+              </>)}
+            </div>
+          )}
         </div>
         <footer style={{ padding: '14px 26px', background: '#f8fafc', borderTop: '1px solid #e5e9ef', fontSize: 12, color: '#64748b' }}>{po.company?.name} {po.company?.address} {po.company?.gstin ? `· GSTIN ${po.company.gstin}` : ''} {po.company?.phone ?? ''} {po.company?.email ?? ''}</footer>
       </div>

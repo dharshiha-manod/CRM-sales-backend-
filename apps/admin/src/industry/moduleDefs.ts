@@ -26,6 +26,9 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
        { id: 'customs-clearance', label: 'Customs & Clearance', icon: '🛃' },
     { id: 'shipment-charges', label: 'Shipment Charges', icon: '₹' },
     { id: 'customer-invoices', label: 'Customer Invoices', icon: '🧾' },
+        { id: 'credit-control', label: 'Credit Control', icon: '🛡' },
+       { id: 'cheques', label: 'Cheque Tracker', icon: '🏦' },
+    { id: 'trips', label: 'Delivery Trips', icon: '🚛' },
   ],
   trading: [
     { id: 'deal', label: 'Deal Management', icon: '◆' },
@@ -33,6 +36,7 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'purchase-enquiry', label: 'Purchase Enquiry', icon: '✉' },
     { id: 'price-rate-list', label: 'Price List / Rate Management', icon: '₹' },
    { id: 'shipment', label: 'Shipment Management', icon: '🚚' },
+       { id: 'trips', label: 'Delivery Trips', icon: '🚛' },
     { id: 'sales-order', label: 'Sales Order Management', icon: '🧾' },
     { id: 'trade-documents', label: 'Trade Documents', icon: '📄' },
     { id: 'currency', label: 'Currency Management', icon: '＄' },
@@ -71,6 +75,7 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'suppliers', label: 'Suppliers / Publishers', icon: '🏭' },
     { id: 'purchase-orders', label: 'Purchase Orders', icon: '🧾' },
     { id: 'grn', label: 'Goods Receipt (GRN)', icon: '📦' },
+    { id: 'purchase-returns', label: 'Purchase Returns', icon: '↩' },
     { id: 'supplier-payments', label: 'Supplier Bills & Payments', icon: '₹' },
     { id: 'gst-invoices', label: 'GST Sales Invoices', icon: '🧾' },
     { id: 'credit-notes', label: 'GST Credit Notes', icon: '↩' },
@@ -78,6 +83,7 @@ export const INDUSTRY_MODULES: Record<IndustryKey, ModuleDef[]> = {
     { id: 'report-low-stock', label: 'Low stock', icon: '▪', group: 'reports' },
     { id: 'report-stock-movements', label: 'Stock movement register', icon: '▪', group: 'reports' },
     { id: 'report-gst-register', label: 'GST sales register', icon: '▪', group: 'reports' },
+    { id: 'report-cash-book', label: 'Cash & bank book', icon: '▪', group: 'reports' },
   ],
   pharma: [
     { id: 'automation', label: 'Automation Center', icon: '⚡' },

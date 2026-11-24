@@ -103,6 +103,8 @@ import './sidebar-layout.css';
 import { PublicPurchaseOrderPage } from './components/PublicPurchaseOrderPage';
 import { FmcgVendorsPage, FmcgPurchaseOrdersPage, FmcgGrnPage } from './components/FmcgPurchasePages';
 import { FmcgAutomationPage } from './components/FmcgAutomationPage';
+import { FmcgCreditControlPage, FmcgChequesPage } from './components/FmcgCreditPages';
+import { FmcgTripsPage } from './components/FmcgTripsPage';
 type Page = 'dashboard' | 'clients' | 'representatives' | 'users' | 'leads' | 'fieldActivity' | 'products' | 'brandsCategories' | 'requirements' | 'quotations' | 'orders' | 'collections' | 'followUps' | 'calls' | 'reports' | 'target' | 'inventory' | 'gpsTracking' | 'settings' | 'notifications' | `industry:${string}`;
 const labels: Record<string, string> = { dashboard: 'Sales overview', clients: 'Clients', representatives: 'Sales representatives', users: 'User management', leads: 'Leads', fieldActivity: 'Field activity', products: 'Products', requirements: 'Requirements', quotations: 'Quotations', orders: 'Sales orders', collections: 'Collections', followUps: 'Follow-ups', calls: 'Calls & IVR', reports: 'Reports', target: 'Target', inventory: 'Inventory', gpsTracking: 'GPS Verified Tracking', settings: 'Settings', notifications: 'Notification' };
 
@@ -167,6 +169,7 @@ content['industry:school:school-management'] = <SchoolManagementPage />;
   content['industry:school:suppliers'] = <SchoolSuppliersPage />;
   content['industry:school:purchase-orders'] = <SchoolPurchaseOrdersPage />;
   content['industry:school:grn'] = <SchoolGrnPage />;
+
   content['industry:school:supplier-payments'] = <SchoolSupplierPaymentsPage />;
   content['industry:school:gst-invoices'] = <SchoolInvoicesPage />;
   content['industry:school:credit-notes'] = <SchoolCreditNotesPage />;
@@ -237,6 +240,9 @@ content['industry:trading:trade-finance-lc'] = <TradeFinanceLCPage />;
   content['industry:vehicle:returns'] = <VehicleReturnsPage />;
   content['industry:vehicle:invoices'] = <VehicleInvoicePage />;
   content['industry:vehicle:insights'] = <VehicleInsightsPage />;
+    content['industry:fmcg:credit-control'] = <FmcgCreditControlPage />;
+  content['industry:fmcg:cheques'] = <FmcgChequesPage />;
+    content['industry:fmcg:trips'] = <FmcgTripsPage />;
   const isPharma = activeIndustry === 'pharma'; // Pharma Distributor / Wholesaler hides field-sales / rep menus (other industries unchanged)
    const pageBase = page.split(':').slice(0, 3).join(':');
   const item = (value: Page, text: string, icon: string) => (

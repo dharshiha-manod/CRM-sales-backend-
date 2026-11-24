@@ -9,6 +9,8 @@ import { FieldVisitPanel } from '../src/components/FieldVisitPanel';
 import { WorkDayPanel } from '../src/components/WorkDayPanel';
 import { SignInScreen } from '../src/components/SignInScreen';
 import { api } from '../src/lib/api';
+import { registerForPush } from '../src/lib/notifications';
+import { flushOutbox, getOutboxCount, subscribeOutbox } from '../src/lib/outbox';
 import { supabase } from '../src/lib/supabase';
 import { colors, radius, shadow } from '../src/lib/theme';
 
@@ -44,7 +46,15 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState('');
-
+  const [outbox, setOutbox] = useState(0);
+  useEffect(() => {
+    if (!session) return;
+    void registerForPush();
+    void flushOutbox();
+    const update = () => void getOutboxCount().then(setOutbox);
+    update();
+    return subscribeOutbox(update);
+  }, [session]);
   const refresh = useCallback(async () => {
     setError('');
     try {
@@ -105,7 +115,9 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        {error ? <View style={styles.errorBox}><Ionicons name="cloud-offline-outline" size={18} color={colors.danger} /><Text style={styles.error}>{error}</Text></View> : null}
+              {error ? <View style={styles.errorBox}><Ionicons name="cloud-offline-outline" size={18} color={colors.danger} /><Text style={styles.error}>{error}</Text></View> : null}
+
+        {outbox > 0 ? <View style={styles.errorBox}><Ionicons name="cloud-upload-outline" size={18} color={colors.warn} /><Text style={styles.error}>{outbox} item(s) upload aaga kaathirukku. Network vandha automatic-ah pogum.</Text></View> : null}
 
         <WorkDayPanel refreshKey={refreshKey} />
 
@@ -118,17 +130,27 @@ export default function HomeScreen() {
 
         <FieldVisitPanel clients={dashboard?.clients ?? []} refreshKey={refreshKey} onChanged={() => void refresh()} />
 
-        <Pressable style={styles.stockLink} onPress={() => router.push('/stock' as never)} accessibilityRole="button">
-          <View style={styles.stockIcon}><Ionicons name="cube-outline" size={22} color={colors.brand} /></View>
-          <View style={styles.headerText}>
-            <Text style={styles.stockTitle}>My stock &amp; requests</Text>
-            <Text style={styles.stockMeta}>See what you carry and ask for more</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={colors.muted} />
-        </Pressable>
+              <HomeLink icon="notifications-outline" title="Follow-ups" meta="Due, overdue, mark done or reschedule" onPress={() => router.push('/follow-ups' as never)} />
+        <HomeLink icon="wallet-outline" title="Collections" meta="Record payments on your orders" onPress={() => router.push('/collections' as never)} />
+        <HomeLink icon="person-add-outline" title="Leads" meta="Add a new lead from the field" onPress={() => router.push('/leads' as never)} />
+        <HomeLink icon="trophy-outline" title="My targets" meta="Target vs achievement" onPress={() => router.push('/targets' as never)} />
+        <HomeLink icon="cube-outline" title="My stock & requests" meta="See what you carry and ask for more" onPress={() => router.push('/stock' as never)} />
       </ScrollView>
       <StatusBar style="auto" />
     </SafeAreaView>
+  );
+}
+
+function HomeLink({ icon, title, meta, onPress }: { icon: keyof typeof Ionicons.glyphMap; title: string; meta: string; onPress: () => void }) {
+  return (
+    <Pressable style={styles.stockLink} onPress={onPress} accessibilityRole="button">
+      <View style={styles.stockIcon}><Ionicons name={icon} size={22} color={colors.brand} /></View>
+      <View style={styles.headerText}>
+        <Text style={styles.stockTitle}>{title}</Text>
+        <Text style={styles.stockMeta}>{meta}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={20} color={colors.muted} />
+    </Pressable>
   );
 }
 

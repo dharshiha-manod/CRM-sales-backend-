@@ -9,6 +9,7 @@ import { releaseStockForOrder, takeStockForOrder } from '../lib/stock.js';
 import type { IndustryScope } from '../lib/industry-scope.js';
 import { createReturn, decideReturn, deleteReturn, type ReturnInput } from './sales-returns.repository.js';
 import { createRefund, type RefundInput } from './fmcg-refunds.repository.js';
+import { assertNoLiveSchoolInvoice, autoInvoiceOnDispatch, createCreditNotesFromReturns } from '../lib/school-gst.js';
 
 const fail = (code: string, error: { message: string }): never => { throw new AppError(500, code, error.message, error); };
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a valid date.');
@@ -324,6 +325,7 @@ export async function updateSchoolDelivery(org: string, industryTypeId: string, 
     throw new AppError(422, 'INVALID_DELIVERY_STEP', current === 'delivered' ? 'A delivered order cannot be changed. Record a sales return instead.' : `An order cannot go from ${current} to ${target}.`);
   }
   const note = input.note?.trim() || null;
+  if (target === 'pending') await assertNoLiveSchoolInvoice(org, orderId, 'moved back to pending'); // the GST invoice must be cancelled before the goods go back to stock
   const nowIso = new Date().toISOString();
   if (target === 'delivered' && !input.receivedBy?.trim()) throw new AppError(422, 'RECEIVER_REQUIRED', 'Enter the name of the person at the school who received the goods.');
   // Claim the step first: only one request can move the order out of its current state, so a double click or two users
@@ -353,6 +355,7 @@ export async function updateSchoolDelivery(org: string, industryTypeId: string, 
     await unclaim();
     fail('SCHOOL_DELIVERY_FAILED', saveError);
   }
+  if (target === 'dispatched' || target === 'delivered') await autoInvoiceOnDispatch(org, industryTypeId, orderId); // GST invoice raised automatically; never blocks, retried on delivery
   if (target === 'delivered') await completeOrderIfSettled(org, orderId); // delivered + fully paid -> completed
   return saved;
 }
@@ -382,7 +385,9 @@ export async function createSchoolReturn(org: string, userId: string, scope: Ind
 }
 export async function decideSchoolReturn(org: string, userId: string, scope: IndustryScope, industryTypeId: string, id: string, status: 'approved' | 'rejected') {
   await assertSchoolReturn(org, industryTypeId, id);
-  return decideReturn(org, userId, scope, id, status);
+  const decided = await decideReturn(org, userId, scope, id, status);
+  if (status === 'approved') await createCreditNotesFromReturns(org, industryTypeId, [id], userId).catch(() => undefined); // credit note raised automatically when the invoice exists
+  return decided;
 }
 export async function deleteSchoolReturn(org: string, scope: IndustryScope, industryTypeId: string, id: string) {
   await assertSchoolReturn(org, industryTypeId, id);

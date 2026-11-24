@@ -10,7 +10,7 @@ import { todayLocal } from '../lib/ist-date.js';
 import { getFmcgAlerts } from '../lib/fmcg-alerts.js';
 import { classifyScheme, poLateDays, type SchemeHealth } from '../lib/fmcg-automation-rules.js';
 import { createReorderDrafts, reorderPlan } from '../routes/fmcg-purchase.routes.js';
-
+import { syncChequeRegister } from '../lib/fmcg-credit.js';
 type Row = Record<string, any>;
 
 async function pageAll(build: () => any): Promise<Row[]> {
@@ -70,7 +70,8 @@ export async function todaySummary(org: string, it: string) {
 export async function runAutomationForScope(org: string, it: string, actor: string | null = null) {
   const expired = await expireSchemes(org, it);
   const reorder = await createReorderDrafts(org, it, actor, 'Auto-drafted by Automation Center (low stock)');
-  return { schemesExpired: expired, draftsCreated: reorder.created.map((p) => ({ id: p.id, po_number: p.po_number })), productsWithoutVendor: reorder.unassigned.length };
+  const chequesRegistered = await syncChequeRegister(org, it); // every cheque collection gets a tracker row
+  return { chequesRegistered, schemesExpired: expired, draftsCreated: reorder.created.map((p) => ({ id: p.id, po_number: p.po_number })), productsWithoutVendor: reorder.unassigned.length };
 }
 
 let running = false;

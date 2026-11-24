@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';  
+import * as Location from 'expo-location';
 import { router, useLocalSearchParams } from 'expo-router';
 import { ActivityIndicator, Button, Linking, Platform, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
@@ -19,10 +20,17 @@ export default function ClientMapScreen() {
   useEffect(() => {
     if (!hasClientLocation) return;
     let cancelled = false;
+    let watcher: Location.LocationSubscription | null = null;
     async function loadRepLocation() {
       try {
         const location = await getCurrentLocation();
-        if (!cancelled) setRepLocation(location);
+        if (cancelled) return;
+        setRepLocation(location);
+        watcher = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, timeInterval: 3000, distanceInterval: 5 },
+          (position) => { if (!cancelled) setRepLocation({ latitude: position.coords.latitude, longitude: position.coords.longitude, accuracyMeters: position.coords.accuracy }); },
+        );
+        if (cancelled) watcher.remove();
       } catch (cause) {
         if (!cancelled) setLocationError(cause instanceof Error ? cause.message : 'Could not get your current location.');
       } finally {
@@ -30,11 +38,13 @@ export default function ClientMapScreen() {
       }
     }
     void loadRepLocation();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; watcher?.remove(); };
   }, [hasClientLocation]);
 
+  const fitted = useRef(false);
   useEffect(() => {
-    if (!repLocation) return;
+    if (!repLocation || fitted.current) return;
+    fitted.current = true;
     map.current?.fitToCoordinates([
       { latitude, longitude },
       { latitude: repLocation.latitude, longitude: repLocation.longitude },

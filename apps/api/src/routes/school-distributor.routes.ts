@@ -9,10 +9,10 @@ import { requireRoles } from '../middleware/authorize.js';
 import { resolveIndustryTypeId } from '../lib/industry-scope.js';
 import { isSchoolIndustry } from '../lib/school.js';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { all, bad, diffDays, industryProducts, num, r2, today, type Row } from '../lib/pharma-db.js';
+import { addDays, all, bad, diffDays, industryProducts, num, r2, today, type Row } from '../lib/pharma-db.js';
 import { isGstin } from '../lib/textile-invoice-math.js';
-import { createSchoolCreditNote, createSchoolInvoice } from '../lib/school-gst.js';
-import { cancelGrn, createGrn, createPurchaseOrder, createSupplierPayment, setPurchaseOrderStatus, supplierOutstanding } from '../lib/school-purchase.js';
+import { createCreditNotesFromReturns, createInvoicesForPending, createSchoolCreditNote, createSchoolInvoice, pendingInvoiceOrders, pendingReturnCredits } from '../lib/school-gst.js';
+import { arrivals, cancelGrn, cancelPurchaseReturn, createDraftPosFromSuggestions, createGrn, createPurchaseReturn, createPurchaseOrder, createSupplierPayment, receiveAgainstPo, setPurchaseOrderStatus, supplierOutstanding } from '../lib/school-purchase.js';
 import { emailPurchaseOrder } from '../lib/school-po-mail.js';
 
 export const schoolDistributorRouter = Router();
@@ -60,6 +60,7 @@ schoolDistributorRouter.put('/school/company-profile', authenticate, manager, ro
   const keys = ['company_name', 'gstin', 'pan', 'address', 'city', 'state', 'pincode', 'phone', 'email', 'invoice_prefix', 'bank_name', 'bank_account', 'bank_ifsc', 'terms'] as const;
   const row: Row = Object.fromEntries(keys.map((k) => [k, blank((input as Row)[k])]));
   row.invoice_prefix = row.invoice_prefix ?? 'INV';
+  if (typeof (input as Row).auto_invoice_on_dispatch === 'boolean') row.auto_invoice_on_dispatch = (input as Row).auto_invoice_on_dispatch;
   const { data, error } = await supabaseAdmin.from('school_company_profile')
     .upsert({ ...row, organization_id: org(req), industry_type_id: industry, updated_at: new Date().toISOString() }, { onConflict: 'organization_id,industry_type_id' }).select().single();
   if (error) throw error;
@@ -176,10 +177,7 @@ schoolDistributorRouter.get('/school/invoices', authenticate, manager, route(asy
   res.json({ data: await all(() => supabaseAdmin.from('school_invoices').select('*, clients(client_name, client_code), sale_orders(order_number)').eq('organization_id', org(req)).eq('industry_type_id', industry).order('created_at', { ascending: false })) });
 }));
 schoolDistributorRouter.get('/school/invoices/pending-orders', authenticate, manager, route(async (req, res, industry) => {
-  const orders = await all(() => supabaseAdmin.from('sale_orders').select('id, order_number, total_amount, dispatch_status, status, clients!inner(client_name, industry_type_id)')
-    .eq('organization_id', org(req)).eq('clients.industry_type_id', industry).in('dispatch_status', ['dispatched', 'delivered']).not('status', 'in', SKIP_STATUS));
-  const invoiced = new Set((await all(() => supabaseAdmin.from('school_invoices').select('order_id').eq('organization_id', org(req)).eq('industry_type_id', industry).neq('status', 'Cancelled'))).map((r) => String(r.order_id)));
-  res.json({ data: orders.filter((o) => !invoiced.has(String(o.id))).map((o) => ({ id: o.id, order_number: o.order_number, client_name: (Array.isArray(o.clients) ? o.clients[0] : o.clients)?.client_name ?? null, total_amount: o.total_amount, delivery_status: o.dispatch_status })) });
+  res.json({ data: await pendingInvoiceOrders(org(req), industry) });
 }));
 schoolDistributorRouter.post('/school/invoices', authenticate, manager, route(async (req, res, industry) => {
   res.status(201).json({ data: await createSchoolInvoice(org(req), industry, String(body(req).orderId ?? ''), actorOf(req)) });
@@ -217,7 +215,7 @@ schoolDistributorRouter.get('/school/reports/receivables-ageing', authenticate, 
   const orderIds = [...new Set(invoices.map((i) => String(i.order_id)))];
   const paid = new Map<string, number>();
   for (let i = 0; i < orderIds.length; i += 100) {
-    const rows = await all(() => supabaseAdmin.from('collections').select('sale_order_id, amount').eq('organization_id', org(req)).in('sale_order_id', orderIds.slice(i, i + 100)));
+    const rows = await all(() => supabaseAdmin.from('sales_collections').select('sale_order_id, amount').eq('organization_id', org(req)).in('sale_order_id', orderIds.slice(i, i + 100)));
     for (const c of rows) paid.set(String(c.sale_order_id), (paid.get(String(c.sale_order_id)) ?? 0) + num(c.amount));
   }
   const now = today();
@@ -273,4 +271,55 @@ schoolDistributorRouter.get('/school/reports/gst-register', authenticate, manage
   const sum = (rows: Row[], k: string) => r2(rows.reduce((s, r) => s + num(r[k]), 0));
   const net = (k: string) => r2(sum(inv, k) - sum(cn, k));
   res.json({ data: { from, to, invoices: inv, creditNotes: cn, net: { taxable: net('taxable_amount'), cgst: net('cgst_amount'), sgst: net('sgst_amount'), igst: net('igst_amount'), total: net('total_amount') } } });
+}));
+// ------------------------------------------------------------------ Automation routes (receiving desk, bulk invoicing, return credit notes)
+schoolDistributorRouter.get('/school/arrivals', authenticate, manager, route(async (req, res, industry) => {
+  res.json({ data: await arrivals(org(req), industry) });
+}));
+schoolDistributorRouter.post('/school/purchase-orders/:id/receive', authenticate, manager, route(async (req, res, industry) => {
+  res.status(201).json({ data: await receiveAgainstPo(org(req), industry, idOf(req), (req.body ?? {}) as Row, actorOf(req)) });
+}));
+schoolDistributorRouter.post('/school/invoices/bulk', authenticate, manager, route(async (req, res, industry) => {
+  res.json({ data: await createInvoicesForPending(org(req), industry, actorOf(req)) });
+}));
+schoolDistributorRouter.get('/school/credit-notes/pending-returns', authenticate, manager, route(async (req, res, industry) => {
+  res.json({ data: await pendingReturnCredits(org(req), industry) });
+}));
+schoolDistributorRouter.post('/school/credit-notes/from-returns', authenticate, manager, route(async (req, res, industry) => {
+  const ids = Array.isArray(body(req).returnIds) ? (body(req).returnIds as unknown[]).map(String) : null;
+  res.json({ data: await createCreditNotesFromReturns(org(req), industry, ids, actorOf(req)) });
+}));
+// ------------------------------------------------------------------ Purchase returns (goods sent back to a supplier)
+schoolDistributorRouter.get('/school/purchase-returns', authenticate, manager, route(async (req, res, industry) => {
+  res.json({ data: await all(() => supabaseAdmin.from('school_purchase_returns').select('*, school_suppliers(supplier_name, supplier_code), school_grns(grn_number)').eq('organization_id', org(req)).eq('industry_type_id', industry).order('created_at', { ascending: false })) });
+}));
+schoolDistributorRouter.post('/school/purchase-returns', authenticate, manager, route(async (req, res, industry) => {
+  res.status(201).json({ data: await createPurchaseReturn(org(req), industry, body(req), actorOf(req)) });
+}));
+schoolDistributorRouter.post('/school/purchase-returns/:id/cancel', authenticate, manager, route(async (req, res, industry) => {
+  res.json({ data: await cancelPurchaseReturn(org(req), industry, idOf(req)) });
+}));
+// One click: Draft purchase orders (one per supplier) from pending orders and low stock.
+schoolDistributorRouter.post('/school/purchase-orders/auto-draft', authenticate, manager, route(async (req, res, industry) => {
+  res.json({ data: await createDraftPosFromSuggestions(org(req), industry, actorOf(req)) });
+}));
+// Cash & bank book: money received from schools (collections) against money paid to suppliers, by payment mode, for a period (default: this month).
+schoolDistributorRouter.get('/school/reports/cash-book', authenticate, manager, route(async (req, res, industry) => {
+  const t = today();
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from ?? '')) ? String(req.query.from) : `${t.slice(0, 7)}-01`;
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to ?? '')) ? String(req.query.to) : t;
+  const [inRows, outRows] = await Promise.all([
+    all(() => supabaseAdmin.from('sales_collections').select('id, amount, mode, reference_no, collected_at, sale_orders(order_number), clients!inner(client_name, industry_type_id)')
+      .eq('organization_id', org(req)).eq('clients.industry_type_id', industry).gte('collected_at', from).lt('collected_at', addDays(to, 1)).order('collected_at', { ascending: false })),
+    all(() => supabaseAdmin.from('school_supplier_payments').select('id, payment_number, payment_date, amount, mode, reference_no, school_suppliers(supplier_name), school_grns(grn_number)')
+      .eq('organization_id', org(req)).eq('industry_type_id', industry).gte('payment_date', from).lte('payment_date', to).order('payment_date', { ascending: false })),
+  ]);
+  const key = (m: unknown) => String(m ?? 'other').trim().toLowerCase().replace(/\s+/g, '_') || 'other';
+  const label: Record<string, string> = { cash: 'Cash', upi: 'UPI', bank_transfer: 'Bank transfer', cheque: 'Cheque', other: 'Other' };
+  const modes = new Map<string, { mode: string; in: number; out: number; net: number }>();
+  const add = (m: unknown, k: 'in' | 'out', v: number) => { const id = key(m); const row = modes.get(id) ?? { mode: label[id] ?? id, in: 0, out: 0, net: 0 }; row[k] = r2(row[k] + v); row.net = r2(row.in - row.out); modes.set(id, row); };
+  for (const r of inRows) add(r.mode, 'in', num(r.amount));
+  for (const r of outRows) add(r.mode, 'out', num(r.amount));
+  const totalIn = r2(inRows.reduce((s, r) => s + num(r.amount), 0)); const totalOut = r2(outRows.reduce((s, r) => s + num(r.amount), 0));
+  res.json({ data: { from, to, receipts: inRows, payments: outRows, by_mode: [...modes.values()], totals: { in: totalIn, out: totalOut, net: r2(totalIn - totalOut) } } });
 }));

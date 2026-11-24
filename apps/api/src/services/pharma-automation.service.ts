@@ -194,12 +194,35 @@ export async function companyName(orgId: string, it: string) {
   const { data } = await supabaseAdmin.from('pharma_company_profile').select('company_name').eq('organization_id', orgId).eq('industry_type_id', it).maybeSingle();
   return str((data as Row | null)?.company_name) || 'Our team';
 }
+/** Keeps one live payment follow-up per invoice: a paid invoice closes its reminders, and older pending reminders are replaced by the newest. Pharma invoices only. */
+async function tidyPaymentFollowUps(orgId: string, it: string, openDues: Row[]) {
+  try {
+    const invs = await all(() => supabaseAdmin.from('pharma_invoices').select('order_id').eq('organization_id', orgId).eq('industry_type_id', it));
+    const orderIds = [...new Set(invs.map((i) => String(i.order_id)))];
+    const openOrders = new Set(openDues.map((d) => String(d.order_id)));
+    const cancel: string[] = [];
+    for (let i = 0; i < orderIds.length; i += 100) {
+      const { data, error } = await supabaseAdmin.from('follow_ups').select('id, sale_order_id, title, created_at').eq('organization_id', orgId).in('sale_order_id', orderIds.slice(i, i + 100)).eq('status', 'pending').or('title.like.Payment*,title.like.ESCALATION*').order('created_at', { ascending: false });
+      if (error) throw error;
+      const keptFor = new Set<string>();
+      for (const f of (data ?? []) as Row[]) {
+        const oid = String(f.sale_order_id);
+        if (!openOrders.has(oid)) { cancel.push(String(f.id)); continue; }
+        if (!String(f.title).startsWith('Payment')) continue;
+        if (keptFor.has(oid)) cancel.push(String(f.id)); else keptFor.add(oid);
+      }
+    }
+    for (let i = 0; i < cancel.length; i += 100) await supabaseAdmin.from('follow_ups').update({ status: 'cancelled' }).eq('organization_id', orgId).in('id', cancel.slice(i, i + 100));
+  } catch { /* housekeeping only; reminders still run */ }
+}
 /** Payment reminders: 3 days before, on the due date, and 7 days after (days configurable). Each stage fires once per invoice. */
 export async function runReminders(orgId: string, it: string, actor: string | null = null) {
   const st = await getSettings(orgId, it); const out = { followUps: 0, emails: 0, whatsapp: 0, checked: 0 };
   if (!st.auto_reminders) return out;
   const co = await companyName(orgId, it);
-  for (const d of (await invoiceDues(orgId, it)).filter((x) => x.open > 0.005)) {
+  const openDues = (await invoiceDues(orgId, it)).filter((x) => x.open > 0.005);
+  await tidyPaymentFollowUps(orgId, it, openDues);
+  for (const d of openDues) {
     out.checked += 1;
     // overdue reminders repeat every 7 days (overdue, overdue-w1, overdue-w2 ...), each once. The first keeps its old key, so nothing already sent is repeated.
     const week = Math.floor(Math.max(0, d.days_overdue - st.remind_after_days) / 7);

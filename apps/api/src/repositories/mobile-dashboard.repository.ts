@@ -99,6 +99,9 @@ export async function getMobileDashboard(organizationId: string, userId: string)
   const { data: assignments, error: assignmentsError } = await supabaseAdmin.from('sales_representative_client_assignments').select('id, assigned_at, clients(id, client_code, client_name, client_type, phone, city, status, priority, latitude, longitude)').eq('organization_id', organizationId).eq('sales_representative_id', representative.id).eq('status', 'active').order('assigned_at', { ascending: false });
   if (assignmentsError) throw assignmentsError;
   const clients = (assignments ?? []).map((assignment) => assignment.clients).filter(Boolean);
+  const { data: industryRows, error: industryError } = await supabaseAdmin.from('sales_representative_industry_types').select('industry_types(id, name, code)').eq('organization_id', organizationId).eq('sales_representative_id', representative.id);
+  if (industryError) throw industryError;
+  const industries = (industryRows ?? []).map((row) => (Array.isArray(row.industry_types) ? row.industry_types[0] : row.industry_types)).filter(Boolean);
 
   const [scheduledVisits, visitsToday, pendingCollections, upcomingFollowUps] = await Promise.all([
     countScheduledVisitsToday(organizationId, representative.id as string),
@@ -107,5 +110,5 @@ export async function getMobileDashboard(organizationId: string, userId: string)
     countUpcomingFollowUps(organizationId, representative.id as string),
   ]);
 
-  return { representative, summary: { assignedClients: clients.length, scheduledVisits, visitsToday, pendingCollections, upcomingFollowUps }, clients };
+  return { representative, summary: { assignedClients: clients.length, scheduledVisits, visitsToday, pendingCollections, upcomingFollowUps }, clients, industries };
 }

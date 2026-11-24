@@ -250,3 +250,12 @@ async function withAchievement<T extends {
     return { ...r, achieved_value: achieved, activity: { orders: a.ordersCount, collections: a.collections, visits: a.visits, newCustomers: a.newCustomers } };
   });
 }
+
+export async function listMyTargets(organizationId: string, representativeId: string) {
+  const since = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const { data, error } = await supabaseAdmin.from('sales_targets').select(SELECT)
+    .eq('organization_id', organizationId).eq('representative_id', representativeId)
+    .eq('lifecycle', 'active').gte('period_end', since).order('period_start', { ascending: false });
+  if (error) fail(error);
+  return withAchievement(organizationId, data ?? []);
+}

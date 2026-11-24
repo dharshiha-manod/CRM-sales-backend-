@@ -6,6 +6,7 @@ import { requireRoles } from '../middleware/authorize.js';
 const manager = requireRoles('super_admin', 'admin', 'sales_manager');
 
 export const targetsRouter = Router();
+targetsRouter.get('/targets/mine', authenticate, requireRoles('sales_representative'), targets.mine);
 targetsRouter.get('/targets', authenticate, manager, targets.list);
 targetsRouter.get('/targets/:id', authenticate, manager, targets.get);
 targetsRouter.post('/targets', authenticate, manager, targets.create);

@@ -118,6 +118,8 @@ export async function getPublicPo(token: string) {
     subtotal: po.subtotal, tax_amount: po.tax_amount, total_amount: po.total_amount,
     supplier_response: po.supplier_response, responded_at: po.responded_at, supplier_delivery_date: po.supplier_delivery_date, supplier_note: po.supplier_note,
     can_respond: !po.supplier_response && ['Sent', 'Partially received'].includes(String(po.status)),
+    can_ship: po.supplier_response !== 'Declined' && ['Sent', 'Partially received'].includes(String(po.status)),
+    shipped_at: po.shipped_at ?? null, shipment_invoice_no: po.shipment_invoice_no ?? null, shipment_vehicle_no: po.shipment_vehicle_no ?? null, shipment_eta: po.shipment_eta ?? null,
     company: { name: co.company_name ?? null, gstin: co.gstin ?? null, address: [co.address, co.city, co.state, co.pincode].filter(Boolean).join(' '), phone: co.phone ?? null, email: co.email ?? null },
   };
 }
@@ -153,4 +155,28 @@ export async function respondPublicPo(token: string, input: Row): Promise<{ supp
     }
   } catch (err) { logger.warn({ err }, 'School PO response notice failed'); }
   return { supplier_response: response };
+}
+
+/** The supplier tells us the goods are on the way. Shipping also counts as accepting the order, and the ETA becomes the expected date. */
+export async function shipPublicPo(token: string, input: Row): Promise<{ shipped: true }> {
+  const po = await byToken(token);
+  if (!['Sent', 'Partially received'].includes(String(po.status))) throw bad('This order is no longer open.');
+  if (po.supplier_response === 'Declined') throw bad('You declined this order, so it cannot be shipped.');
+  const invoice = str(input.invoice_no).slice(0, 60); const vehicle = str(input.vehicle_no).slice(0, 60); const eta = str(input.eta); const note = str(input.note).slice(0, 300);
+  if (!invoice && !vehicle) throw bad('Enter your invoice number or the vehicle / LR number.');
+  if (eta && (!/^\d{4}-\d{2}-\d{2}$/.test(eta) || eta < String(po.order_date).slice(0, 10) || Date.parse(eta) > Date.now() + 365 * 86_400_000)) throw bad('Enter a valid arrival date.');
+  const now = new Date().toISOString();
+  const patch: Row = { shipped_at: now, shipment_invoice_no: invoice || null, shipment_vehicle_no: vehicle || null, shipment_eta: eta || null, shipment_note: note || null, viewed_at: po.viewed_at ?? now };
+  if (!po.supplier_response) { patch.supplier_response = 'Confirmed'; patch.responded_at = now; }
+  if (eta) patch.expected_date = eta;
+  const { error } = await supabaseAdmin.from('school_purchase_orders').update(patch).eq('id', po.id);
+  if (error) throw error;
+  try {
+    const co = await companyOf(String(po.organization_id), String(po.industry_type_id)); const mailer = transport();
+    if (mailer && str(co.email)) {
+      await mailer.sendMail({ from: env.MAIL_FROM, to: str(co.email), subject: `${po.po_number} shipped by ${str(one(po.school_suppliers)?.supplier_name) || 'supplier'}`,
+        html: `<p><b>${esc(one(po.school_suppliers)?.supplier_name)}</b> has shipped purchase order <b>${esc(po.po_number)}</b>.</p><p>Invoice: <b>${esc(invoice || '—')}</b> · Vehicle / LR: <b>${esc(vehicle || '—')}</b>${eta ? ` · Arriving: <b>${esc(eta)}</b>` : ''}</p>${note ? `<p>${esc(note)}</p>` : ''}<p>It now shows in Goods Receipt under Arriving.</p>` });
+    }
+  } catch (err) { logger.warn({ err }, 'School PO shipment notice failed'); }
+  return { shipped: true };
 }
