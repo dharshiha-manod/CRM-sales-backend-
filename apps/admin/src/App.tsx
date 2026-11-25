@@ -23,7 +23,7 @@ import { RouteBeatPage } from './components/RouteBeatPage';
 import { SchemeDiscountPage } from './components/SchemeDiscountPage';
 import { FmcgDistributorPage } from './components/FmcgDistributorPage';
 import { SchoolManagementPage } from './components/SchoolManagementPage';
-import { SchoolCompanyPage, SchoolSuppliersPage, SchoolGrnPage, SchoolSupplierPaymentsPage, SchoolInvoicesPage, SchoolCreditNotesPage, SchoolReportsPage } from './components/SchoolDistributorPages';
+import { SchoolCompanyPage, SchoolSuppliersPage, SchoolGrnPage, SchoolSupplierPaymentsPage, SchoolInvoicesPage, SchoolCreditNotesPage, SchoolPurchaseReturnsPage, SchoolReportsPage } from './components/SchoolDistributorPages';
 import { SchoolPurchaseOrdersPage } from './components/SchoolPurchaseOrdersPage';
 import { SchoolSalesCollectionPage } from './components/SchoolSalesCollectionPage';
 import { AcademicYearTermPage } from './components/AcademicYearTermPage';
@@ -169,6 +169,7 @@ content['industry:school:school-management'] = <SchoolManagementPage />;
   content['industry:school:suppliers'] = <SchoolSuppliersPage />;
   content['industry:school:purchase-orders'] = <SchoolPurchaseOrdersPage />;
   content['industry:school:grn'] = <SchoolGrnPage />;
+  content['industry:school:purchase-returns'] = <SchoolPurchaseReturnsPage />;
 
   content['industry:school:supplier-payments'] = <SchoolSupplierPaymentsPage />;
   content['industry:school:gst-invoices'] = <SchoolInvoicesPage />;

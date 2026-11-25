@@ -165,3 +165,4 @@ export { SchoolGrnPage } from './SchoolGrnPage';
 export { SchoolSupplierPaymentsPage } from './SchoolSupplierPaymentsPage';
 export { SchoolInvoicesPage } from './SchoolInvoicesPage';
 export { SchoolCreditNotesPage } from './SchoolCreditNotesPage';
+export { SchoolPurchaseReturnsPage } from './SchoolPurchaseReturnsPage';
